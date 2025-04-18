@@ -1,0 +1,24 @@
+# I/O Systems
+1. Keyboard Driver: Implement PS/2 keyboard interrupt handling and input buffer
+2. Basic Shell: Create a command-line interface to interact with your OS
+3. File System: Implement a basic in-memory filesystem or read from disk
+
+# Memory Management
+1. Paging Setup: Implement proper memory paging to enable virtual memory
+2. Heap Allocation: Create a heap memory manager with malloc/free functions
+3. Memory Map: Parse the multiboot memory map to know available RAM regions
+
+# Process Management
+1. Basic Task Switching: Implement context switching between simple tasks
+2. Simple Scheduler: Create a round-robin scheduler to run multiple processes
+3. User Space: Set up user mode and privilege separation from kernel
+
+# System Services
+1. System Clock: Set up the PIT (Programmable Interval Timer) for timing
+2. Interrupt Handling: Improve your IDT (Interrupt Descriptor Table) setup
+3. System Calls: Create an interface for user programs to request kernel services
+
+# Development Tools
+1. Debugging: Add better debug output capabilities
+2. CPUID Detection: Identify CPU features at runtime
+3. Unit Testing: Build a test framework for kernel components
