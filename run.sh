@@ -2,7 +2,7 @@
 
 # Set QEMU options
 QEMU="qemu-system-i386"
-ISO="deanos.iso"
+BIN="deanos.iso"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -11,19 +11,23 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}=== Building DeanOS ===${NC}"
-# First run the build script
-./build.sh
+# Set directory names
+ISO_DIR="isodir"
+BOOT_DIR="$ISO_DIR/boot"
+GRUB_DIR="$BOOT_DIR/grub"
 
-# Check if build was successful
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Build failed, not running QEMU${NC}"
-    exit 1
-fi
+# Create directories if they don't exist
+mkdir -p $ISO_DIR
+mkdir -p $BOOT_DIR
+mkdir -p $GRUB_DIR
 
-# Check if ISO exists
-if [ ! -f "$ISO" ]; then
-    echo -e "${RED}Error: $ISO not found even though build reported success${NC}"
+cp deanos.bin isodir/boot/
+cp grub.cfg isodir/boot/grub/
+grub-mkrescue -o deanos.iso isodir
+
+# Check if BIN exists
+if [ ! -f "$BIN" ]; then
+    echo -e "${RED}Error: $BIN not found even though build reported success${NC}"
     exit 1
 fi
 
@@ -36,8 +40,8 @@ echo -e "${BLUE}=== Running DeanOS in QEMU ===${NC}"
 echo -e "${GREEN}Press Ctrl+Alt+G to release mouse focus${NC}"
 echo -e "${GREEN}Type 'quit' in the QEMU monitor to exit${NC}"
 
-# Run QEMU with the ISO
-$QEMU -cdrom "$ISO" -m "$MEMORY" -boot "$BOOT_ORDER" $ADDITIONAL_OPTIONS
+# Run QEMU with the BIN
+$QEMU -cdrom "$BIN"
 
 # Check if QEMU exited successfully
 if [ $? -ne 0 ]; then

@@ -21,7 +21,7 @@ header_start:
 .word 5                           /* Type: framebuffer */
 .word 0                           /* Flags */
 .long 20                          /* Size */
-.long 1024                        /* Width */
+.long 1024                       /* Width */
 .long 768                         /* Height */
 .long 32                          /* Depth */
 

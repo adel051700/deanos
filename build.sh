@@ -10,6 +10,7 @@ BOOT_DIR="$ISO_DIR/boot"
 GRUB_DIR="$BOOT_DIR/grub"
 
 # Create directories if they don't exist
+mkdir -p $ISO_DIR
 mkdir -p $BOOT_DIR
 mkdir -p $GRUB_DIR
 
