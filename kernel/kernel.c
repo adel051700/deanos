@@ -11,10 +11,6 @@ static void pause(void) {
 }
 
 void kernel_main(void) {
-    for (int i = 0; i<259; i++) {
-        if(i>= 10 && i<=14) continue;
-        terminal_putchar(i);
-    }
     // Disable interrupts - we'll use polling for keyboard
     __asm__ __volatile__("cli"); 
     

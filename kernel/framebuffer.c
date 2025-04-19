@@ -66,8 +66,13 @@ void framebuffer_clear(uint32_t color) {
  */
 void framebuffer_drawchar(uint32_t x, uint32_t y, char c, uint32_t color, uint32_t bg_color, int scale) {
     int idx = (unsigned char)c;
+    
+    if (idx > 18){
+        idx += 4;
+    }
+
     for (int row = 0; row < 16; row++) {
-        uint32_t bits = font8x16[idx][row];
+        uint8_t bits = font8x16[idx][row];
         for (int col = 0; col < 8; col++) {
             if (bits & (1 << (7-col))) {
                 for (int dy = 0; dy < scale; dy++) {
