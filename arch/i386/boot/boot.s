@@ -54,6 +54,9 @@ stack_top:
 .global _start
 .type _start, @function
 _start:
+    /* Disable interrupts until we're ready */
+    cli
+    
     /* Set up the stack */
     mov $stack_top, %esp
 

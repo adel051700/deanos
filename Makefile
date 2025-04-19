@@ -23,11 +23,18 @@ kernel/kernel_init.o \
 kernel/framebuffer.o \
 kernel/tty.o \
 kernel/font8x16.o \
+kernel/idt.o \
+kernel/io.o \
+kernel/interrupt.o \
+kernel/keyboard.o \
+kernel/shell.o \
 arch/i386/boot/crti.o \
-arch/i386/boot/boot.o
+arch/i386/boot/boot.o \
+arch/i386/interrupt.o
 
 # LibC Files
 LIBC_OBJS=\
+libc/stdio/itoa.o \
 libc/string/memset.o \
 libc/string/memcmp.o \
 libc/string/strlen.o \
