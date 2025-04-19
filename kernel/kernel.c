@@ -24,7 +24,6 @@ void kernel_main(void) {
     shell_initialize();
     
     // Display welcome message
-    terminal_writestring("System initialized.\n");
     
     // Main kernel loop - polling keyboard
     while (1) {

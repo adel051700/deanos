@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#define SHELL_PROMPT "DeanOS> "
+#define SHELL_PROMPT "DeanOS $ "
 #define MAX_COMMAND_LENGTH 256
 
 static char command_buffer[MAX_COMMAND_LENGTH];
@@ -29,6 +29,7 @@ static void cmd_echo(const char* args);
 static void cmd_color(const char* args);
 static void cmd_cls(const char* args);
 static void cmd_about(const char* args);
+static void cmd_dean(const char* args);
 
 // Command table
 static const command_t commands[] = {
@@ -37,6 +38,7 @@ static const command_t commands[] = {
     {"color", cmd_color, "Change text color (usage: color [red|green|blue|white])"},
     {"cls", cmd_cls, "Clear the screen"},
     {"about", cmd_about, "Show information about DeanOS"},
+    {"dean", cmd_dean, "It's a surprise:)"},
     {NULL, NULL, NULL} // End of table marker
 };
 
@@ -198,4 +200,13 @@ static void cmd_about(const char* args) {
     terminal_writestring("DeanOS - A minimal operating system\n");
     terminal_writestring("Created as a learning project\n");
     terminal_writestring("Version 0.1\n");
+}
+
+static void cmd_dean(const char* args) {
+    (void)args; // Unused
+
+    terminal_setscale(2);
+    terminal_writestring("Dean Moore!\n");
+    terminal_setscale(1);
+    
 }

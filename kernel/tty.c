@@ -146,6 +146,28 @@ void terminal_putchar(char c) {
         calculate_line_positions();
     } else if (c == '\r') {
         term_cursor_x = 0;
+    } else if (c == '\b') {
+        // Handle backspace character
+        if (term_cursor_x > 0) {
+            term_cursor_x--;
+            // Clear the character at the current position by replacing it with a space
+            term_buffer[term_cursor_y][term_cursor_x] = ' ';
+            uint32_t y_pos = line_positions[term_cursor_y];
+            // Redraw the space character to erase the previous character
+            framebuffer_drawchar(term_cursor_x * 8 * current_scale, y_pos, 
+                             ' ', term_color, term_bg, current_scale);
+        } else if (term_cursor_y > 0) {
+            // If at beginning of line and not first line, move up to end of previous line
+            term_cursor_y--;
+            term_cursor_x = TERM_COLS - 1;
+            // Find the last non-space character on the previous line
+            while (term_cursor_x > 0 && term_buffer[term_cursor_y][term_cursor_x] == ' ') {
+                term_cursor_x--;
+            }
+            if (term_buffer[term_cursor_y][term_cursor_x] != ' ') {
+                term_cursor_x++; // Position after the last character
+            }
+        }
     } else {
         if (term_cursor_x < TERM_COLS && term_cursor_y < TERM_ROWS) {
             term_buffer[term_cursor_y][term_cursor_x] = c;
