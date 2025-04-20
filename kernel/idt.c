@@ -110,6 +110,8 @@ void idt_initialize() {
 
     // Set up all ISRs (0-31)
     for (int i = 0; i < 32; i++) {
+        // 0x08 = kernel code segment selector
+        // 0x8E = Present (0x80) | DPL=0 (0x00) | Storage Segment (0x00) | 32-bit Interrupt Gate (0x0E)
         idt_set_gate(i, (uint32_t)(&isr0) + (i * 16), 0x08, 0x8E);
     }
     

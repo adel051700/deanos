@@ -67,23 +67,29 @@ void framebuffer_clear(uint32_t color) {
 void framebuffer_drawchar(uint32_t x, uint32_t y, char c, uint32_t color, uint32_t bg_color, int scale) {
     int idx = (unsigned char)c;
     
+    // Adjust index to account for CP437 character set mapping discrepancies
+    // This aligns control characters with their positions in the font array
     if (idx > 8){
         idx += 1;
         if(idx > 18){
             idx += 4;
         }
     }
-
+    
+    // Draw character pixel by pixel using font bitmap data
     for (int row = 0; row < 16; row++) {
         uint8_t bits = font8x16[idx][row];
         for (int col = 0; col < 8; col++) {
+            // Check if this pixel should be foreground or background
             if (bits & (1 << (7-col))) {
+                // Draw foreground pixel (scaled)
                 for (int dy = 0; dy < scale; dy++) {
                     for (int dx = 0; dx < scale; dx++) {
                         g_fb[(y + row * scale + dy) * g_pitch + (x + col * scale + dx)] = color;
                     }
                 }
             } else {
+                // Draw background pixel (scaled)
                 for (int dy = 0; dy < scale; dy++) {
                     for (int dx = 0; dx < scale; dx++) {
                         g_fb[(y + row * scale + dy) * g_pitch + (x + col * scale + dx)] = bg_color;

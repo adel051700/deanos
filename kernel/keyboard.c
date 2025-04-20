@@ -94,12 +94,15 @@ int keyboard_data_available(void) {
 
 /**
  * Check if keyboard has pending data and process it
- * This polling-based approach is more reliable
+ * 
+ * This polling-based approach reads scancodes directly from the PS/2 controller.
+ * PS/2 keyboards send make codes (key press) and break codes (key release, with bit 7 set).
+ * This function translates these scancodes to ASCII based on the US keyboard layout.
  */
 void keyboard_update(void) {
-    // Check if there's data in the keyboard controller
+    // Check if there's data in the keyboard controller (bit 0 of status port 0x64)
     if (inb(0x64) & 1) {
-        // Read the scancode
+        // Read the scancode from data port 0x60
         uint8_t scancode = inb(0x60);
         
         // Process key press/release
