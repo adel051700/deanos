@@ -4,11 +4,11 @@
 #include <kernel/tty.h>
 
 /**
- * Terminal dimensions based on standard character size (8x16 pixels)
+ * Terminal dimensions based on character size (8x16 pixels)
  * These define the logical grid size for text display
  */
-#define TERM_COLS 80  // Standard 80-column text mode width
-#define TERM_ROWS 30  // Number of text rows in the terminal
+#define TERM_COLS 128  //128-column text mode width
+#define TERM_ROWS 48 // Number of text rows in the terminal
 
 /**
  * External framebuffer function declarations
