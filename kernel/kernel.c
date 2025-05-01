@@ -2,28 +2,33 @@
 #include <stdint.h>
 #include <kernel/tty.h>
 #include <kernel/idt.h>
+#include <kernel/gdt.h>
 #include <kernel/keyboard.h>
 #include <kernel/shell.h>
+#include <kernel/interrupt.h>
 
-// Function to pause execution briefly
-static void pause(void) {
-    for (volatile int i = 0; i < 500000; i++) { }
-}
+// Initialize timer (new declaration)
+void timer_initialize(uint32_t frequency);
 
 void kernel_main(void) {
-    // Disable interrupts - we'll use polling for keyboard
-    __asm__ __volatile__("cli"); 
+    // Initialize GDT first
+    gdt_initialize();
     
     // Set up the IDT
     idt_initialize();
     
-    // Initialize keyboard (polling mode)
+    // Initialize timer (100 Hz)
+    timer_initialize(100);
+    
+    // Initialize keyboard (polling mode in the current implementation)
     keyboard_initialize();
     
     // Initialize shell
     shell_initialize();
     
-    // Display welcome message
+    // Enable interrupts
+    interrupts_enable();
+    
     
     // Main kernel loop - polling keyboard
     while (1) {
@@ -35,7 +40,5 @@ void kernel_main(void) {
             shell_process_char(c);
         }
         
-        // Small delay to reduce CPU usage
-        pause();
     }
 }

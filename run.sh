@@ -1,5 +1,5 @@
 #!/bin/bash
-
+make -j$(nproc) || { echo "Build failed"; exit 1; }
 # Set QEMU options
 QEMU="qemu-system-i386"
 BIN="deanos.iso"
@@ -41,7 +41,7 @@ echo -e "${GREEN}Press Ctrl+Alt+G to release mouse focus${NC}"
 echo -e "${GREEN}Type 'quit' in the QEMU monitor to exit${NC}"
 
 # Run QEMU with the BIN
-$QEMU -cdrom "$BIN"
+$QEMU -cdrom "$BIN" -vnc :1
 
 # Check if QEMU exited successfully
 if [ $? -ne 0 ]; then

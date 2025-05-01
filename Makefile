@@ -30,6 +30,7 @@ kernel/framebuffer.c \
 kernel/tty.c \
 kernel/font8x16.c \
 kernel/idt.c \
+kernel/gdt.c \
 kernel/io.c \
 kernel/interrupt.c \
 kernel/keyboard.c \
@@ -38,7 +39,8 @@ kernel/shell.c
 ARCH_SRCS = \
 arch/i386/boot/crti.s \
 arch/i386/boot/boot.s \
-arch/i386/interrupt.c
+arch/i386/interrupt.s \
+arch/i386/gdt.s
 
 # LibC Files (source paths)
 LIBC_SRCS = \
@@ -99,6 +101,8 @@ $(ARCH_BUILD_DIR)/%.o: arch/i386/%.s
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f deanos.bin
+	rm -f deanos.iso
+	rm -rf isodir
 
 install: deanos.bin
 	mkdir -p $(DESTDIR)/boot
