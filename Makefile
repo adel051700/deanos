@@ -5,6 +5,7 @@ BUILD_DIR = build
 KERNEL_BUILD_DIR = $(BUILD_DIR)/kernel
 LIBC_BUILD_DIR = $(BUILD_DIR)/libc
 ARCH_BUILD_DIR = $(BUILD_DIR)/arch/i386
+DESTDIR = isodir
 
 # Cross-compiler settings
 CFLAGS?=-O2 -g
@@ -36,8 +37,10 @@ kernel/interrupt.c \
 kernel/keyboard.c \
 kernel/shell.c
 
-ARCH_SRCS = \
-arch/i386/boot/crti.s \
+ARCH_C_SRCS = \
+arch/i386/boot/crti.c
+
+ARCH_ASM_SRCS = \
 arch/i386/boot/boot.s \
 arch/i386/interrupt.s \
 arch/i386/gdt.s
@@ -55,18 +58,21 @@ libc/string/strspn.c \
 libc/string/strpbrk.c
 
 # Convert source paths to object paths in build directory
-KERNEL_OBJS = $(patsubst kernel/%.c,$(KERNEL_BUILD_DIR)/%.o,$(KERNEL_SRCS))
-LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(LIBC_SRCS))
-ARCH_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(filter %.s,$(ARCH_SRCS))) \
-            $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(filter %.c,$(ARCH_SRCS)))
+KERNEL_OBJS = $(patsubst kernel/%.c,$(KERNEL_BUILD_DIR)/%.o,$(filter kernel/%.c,$(KERNEL_SRCS)))
+LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(filter libc/%.c,$(LIBC_SRCS)))
+ARCH_C_OBJS = $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(ARCH_C_SRCS))
+ARCH_ASM_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(ARCH_ASM_SRCS))
 
 # All object files
-ALL_OBJS = $(KERNEL_OBJS) $(LIBC_OBJS) $(ARCH_OBJS)
+ALL_OBJS = $(ARCH_ASM_OBJS) $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LIBC_OBJS)
 
-.PHONY: all clean install directories
-.SUFFIXES: .o .c .s .a
+.PHONY: all clean install directories iso run
+.SUFFIXES: .o .c .s
 
-all: directories deanos.bin
+all: deanos.bin
+
+deanos.bin: directories $(ALL_OBJS) arch/i386/boot/linker.ld
+	$(CC) -T arch/i386/boot/linker.ld -o $@ $(CFLAGS) $(ALL_OBJS) $(LDFLAGS) $(LIBS)
 
 # Create build directories
 directories:
@@ -75,38 +81,38 @@ directories:
 	@mkdir -p $(LIBC_BUILD_DIR)/string
 	@mkdir -p $(ARCH_BUILD_DIR)/boot
 
-deanos.bin: $(ALL_OBJS) arch/i386/boot/linker.ld
-	$(CC) -T arch/i386/boot/linker.ld -o $@ $(CFLAGS) $(ALL_OBJS) $(LDFLAGS) $(LIBS)
-
 # Compile C files from kernel directory
-$(KERNEL_BUILD_DIR)/%.o: kernel/%.c
-	@mkdir -p $(dir $@)
+$(KERNEL_BUILD_DIR)/%.o: kernel/%.c | directories
 	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
 
 # Compile C files from libc directory
-$(LIBC_BUILD_DIR)/%.o: libc/%.c
-	@mkdir -p $(dir $@)
+$(LIBC_BUILD_DIR)/%.o: libc/%.c | directories
 	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
 
 # Compile C files from arch directory
-$(ARCH_BUILD_DIR)/%.o: arch/i386/%.c
-	@mkdir -p $(dir $@)
+$(ARCH_BUILD_DIR)/%.o: arch/i386/%.c | directories
 	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
 
 # Assemble assembly files from arch directory
-$(ARCH_BUILD_DIR)/%.o: arch/i386/%.s
-	@mkdir -p $(dir $@)
+$(ARCH_BUILD_DIR)/%.o: arch/i386/%.s | directories
 	$(AS) $< -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f deanos.bin
 	rm -f deanos.iso
-	rm -rf isodir
+	rm -rf $(DESTDIR)
 
 install: deanos.bin
-	mkdir -p $(DESTDIR)/boot
-	cp $< $(DESTDIR)/boot
+	mkdir -p $(DESTDIR)/boot/grub
+	cp deanos.bin $(DESTDIR)/boot/
+	cp grub.cfg $(DESTDIR)/boot/grub/
+
+iso: install
+	grub-mkrescue -o deanos.iso $(DESTDIR)
+
+run: iso
+	qemu-system-i386 -cdrom deanos.iso
 
 # Include dependency files
 -include $(ALL_OBJS:.o=.d)
