@@ -35,7 +35,8 @@ kernel/gdt.c \
 kernel/io.c \
 kernel/interrupt.c \
 kernel/keyboard.c \
-kernel/shell.c
+kernel/shell.c \
+kernel/rtc.c
 
 ARCH_C_SRCS = \
 arch/i386/boot/crti.c
@@ -112,6 +113,10 @@ iso: install
 	grub-mkrescue -o deanos.iso $(DESTDIR)
 
 run: iso
+	make clean
+	make
+	make install
+	make iso
 	qemu-system-i386 -cdrom deanos.iso
 
 # Include dependency files

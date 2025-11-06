@@ -11,5 +11,7 @@ void terminal_writestring(const char* data);
 void terminal_setcolor(uint32_t color);
 void terminal_setbackground(uint32_t color);
 void terminal_setscale(uint32_t scale);
+void terminal_update_cursor(void);
+void terminal_enable_cursor(void);
 
 #endif

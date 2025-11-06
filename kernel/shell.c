@@ -1,6 +1,7 @@
-#include <kernel/shell.h>
-#include <kernel/tty.h>
-#include <kernel/keyboard.h>  // Add this include
+#include "include/kernel/shell.h"
+#include "include/kernel/tty.h"
+#include "include/kernel/keyboard.h"
+#include "include/kernel/rtc.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -30,6 +31,8 @@ static void cmd_color(const char* args);
 static void cmd_cls(const char* args);
 static void cmd_about(const char* args);
 static void cmd_dean(const char* args);
+static void cmd_time(const char* args);
+static void cmd_uptime(const char* args);
 
 // Command table
 static const command_t commands[] = {
@@ -39,6 +42,8 @@ static const command_t commands[] = {
     {"cls", cmd_cls, "Clear the screen"},
     {"about", cmd_about, "Show information about DeanOS"},
     {"dean", cmd_dean, "It's a surprise:)"},
+    {"time", cmd_time, "Display current time and date"},
+    {"uptime", cmd_uptime, "Display system uptime"},
     {NULL, NULL, NULL} // End of table marker
 };
 
@@ -48,6 +53,7 @@ static const command_t commands[] = {
 void shell_initialize(void) {
     command_length = 0;
     terminal_writestring(SHELL_PROMPT);
+    terminal_enable_cursor();  // Enable cursor now that we're ready for input
 }
 
 /**
@@ -209,4 +215,95 @@ static void cmd_dean(const char* args) {
     terminal_writestring("Dean Moore!\n");
     terminal_setscale(1);
     
+}
+
+/**
+ * Time command - display current time and date
+ */
+static void cmd_time(const char* args) {
+    (void)args; // Unused
+    
+    rtc_time_t time;
+    rtc_read_time(&time);
+    
+    // Display date
+    terminal_writestring("Date: ");
+    char buffer[16];
+    
+    // Day
+    itoa(time.day, buffer, 10);
+    if (time.day < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring("/");
+    
+    // Month
+    itoa(time.month, buffer, 10);
+    if (time.month < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring("/");
+    
+    // Year
+    itoa(time.year, buffer, 10);
+    terminal_writestring(buffer);
+    terminal_writestring("\n");
+    
+    // Display time
+    terminal_writestring("Time: ");
+    
+    // Hour
+    itoa(time.hour, buffer, 10);
+    if (time.hour < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring(":");
+    
+    // Minute
+    itoa(time.minute, buffer, 10);
+    if (time.minute < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring(":");
+    
+    // Second
+    itoa(time.second, buffer, 10);
+    if (time.second < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring("\n");
+}
+
+/**
+ * Uptime command - display system uptime
+ */
+static void cmd_uptime(const char* args) {
+    (void)args; // Unused
+    
+    uptime_t uptime;
+    get_uptime(&uptime);
+    
+    terminal_writestring("System uptime: ");
+    char buffer[16];
+    
+    if (uptime.days > 0) {
+        itoa(uptime.days, buffer, 10);
+        terminal_writestring(buffer);
+        terminal_writestring(" day");
+        if (uptime.days != 1) terminal_writestring("s");
+        terminal_writestring(", ");
+    }
+    
+    // Hours
+    itoa(uptime.hours, buffer, 10);
+    if (uptime.hours < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring(":");
+    
+    // Minutes
+    itoa(uptime.minutes, buffer, 10);
+    if (uptime.minutes < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring(":");
+    
+    // Seconds
+    itoa(uptime.seconds, buffer, 10);
+    if (uptime.seconds < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring("\n");
 }

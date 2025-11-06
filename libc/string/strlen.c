@@ -1,5 +1,4 @@
-// filepath: /home/adel/deanos/libc/string/strlen.c
-#include <../include/string.h>
+#include "../include/string.h"
 
 /**
  * Calculates the length of a string

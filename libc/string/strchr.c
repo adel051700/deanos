@@ -1,5 +1,4 @@
-// filepath: /home/adel/deanos/libc/string/strchr.c
-#include <../include/string.h>
+#include "../include/string.h"
 
 /**
  * Locates the first occurrence of a character in a string

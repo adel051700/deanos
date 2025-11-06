@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include <string.h>
-#include <kernel/gdt.h>
+#include "include/kernel/gdt.h"
 
 // GDT entry structure
 struct gdt_entry {

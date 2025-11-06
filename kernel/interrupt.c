@@ -1,7 +1,8 @@
-#include <kernel/interrupt.h>
-#include <kernel/idt.h>
-#include <kernel/io.h>
-#include <kernel/tty.h>
+#include "include/kernel/interrupt.h"
+#include "include/kernel/idt.h"
+#include "include/kernel/io.h"
+#include "include/kernel/tty.h"
+#include "include/kernel/rtc.h"
 #include <stdio.h>
 
 // Function pointer array for interrupt handlers
@@ -26,7 +27,30 @@ void isr_handler(struct registers* regs) {
         terminal_writestring("\nEXCEPTION: ");
         
         // Print the exception name
-        if (regs->int_no < sizeof(exception_names) / sizeof(char*)) {
+        const char *exception_names[] = {
+            "Division By Zero",
+            "Debug",
+            "Non Maskable Interrupt",
+            "Breakpoint",
+            "Into Detected Overflow",
+            "Out of Bounds",
+            "Invalid Opcode",
+            "No Coprocessor",
+            "Double Fault",
+            "Coprocessor Segment Overrun",
+            "Bad TSS",
+            "Segment Not Present",
+            "Stack Fault",
+            "General Protection Fault",
+            "Page Fault",
+            "Unknown Interrupt",
+            "Coprocessor Fault",
+            "Alignment Check",
+            "Machine Check",
+            "Reserved"
+        };
+        
+        if (regs->int_no < 20) {
             terminal_writestring(exception_names[regs->int_no]);
         } else {
             terminal_writestring("Unknown Exception");
@@ -79,43 +103,4 @@ void irq_handler(struct registers* regs) {
     if (interrupt_handlers[regs->int_no]) {
         interrupt_handlers[regs->int_no](regs);
     }
-}
-
-/**
- * Setup a basic timer interrupt handler
- */
-static volatile uint32_t tick = 0;
-
-static void timer_callback(struct registers *regs) {
-    (void)regs; // Unused parameter
-    
-    tick++;
-    
-    // Display tick count every second (assuming PIT is set to ~100Hz)
-    if (tick % 100 == 0) {
-        char tick_str[16];
-        itoa(tick / 100, tick_str, 10);
-        terminal_writestring("\rSystem uptime: ");
-        terminal_writestring(tick_str);
-        terminal_writestring(" seconds");
-    }
-}
-
-/**
- * Initialize the system timer
- */
-void timer_initialize(uint32_t frequency) {
-    // Register our timer callback
-    register_interrupt_handler(32, timer_callback);
-    
-    // Intel 8253/8254 PIT (Programmable Interval Timer) setup
-    // Input clock runs at 1.193182 MHz
-    uint32_t divisor = 1193180 / frequency;
-    
-    // Send operational command
-    outb(0x43, 0x36);  // Command: channel 0, access mode: lobyte/hibyte, mode 3 (square wave)
-    
-    // Set divisor
-    outb(0x40, divisor & 0xFF);          // Low byte
-    outb(0x40, (divisor >> 8) & 0xFF);   // High byte
 }

@@ -1,4 +1,4 @@
-#include <string.h>
+#include "../include/string.h"
 
 /**
  * Sets the first 'num' bytes of the block of memory pointed by 'ptr'

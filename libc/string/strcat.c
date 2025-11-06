@@ -1,5 +1,4 @@
-// filepath: /home/adel/deanos/libc/string/strcat.c
-#include <../include/string.h>
+#include "../include/string.h"
 
 /**
  * Concatenates the source string to the destination string

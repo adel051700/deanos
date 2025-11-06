@@ -1,5 +1,5 @@
-#include <stdio.h>
-#include <string.h>
+#include "../include/stdio.h"
+#include "../include/string.h"
 
 /**
  * Convert an integer to a string representation in the given base

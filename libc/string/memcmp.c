@@ -1,4 +1,4 @@
-#include <../include/string.h>
+#include "../include/string.h"
 
 /**
  * Compares the first 'num' bytes of the memory areas 'ptr1' and 'ptr2'.

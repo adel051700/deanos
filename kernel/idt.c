@@ -1,5 +1,5 @@
-#include <kernel/idt.h>
-#include <kernel/io.h>
+#include "include/kernel/idt.h"
+#include "include/kernel/io.h"
 #include <string.h>
 
 #define IDT_ENTRIES 256

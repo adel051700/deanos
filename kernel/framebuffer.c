@@ -1,8 +1,8 @@
 #include <stdint.h>
 #include <stddef.h>
-#include <kernel/tty.h>
-#include <kernel/font.h>
-#include <kernel/multiboot.h>
+#include "include/kernel/tty.h"
+#include "include/kernel/font.h"
+#include "include/kernel/multiboot.h"
 
 /**
  * Multiboot2 framebuffer tag type identifier

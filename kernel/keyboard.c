@@ -1,6 +1,6 @@
-#include <kernel/keyboard.h>
-#include <kernel/io.h>
-#include <kernel/tty.h>
+#include "include/kernel/keyboard.h"
+#include "include/kernel/io.h"
+#include "include/kernel/tty.h"
 #include <stdint.h>
 
 // US keyboard layout mapping scancode -> ASCII
@@ -67,9 +67,7 @@ void keyboard_initialize(void) {
     // Mark as initialized
     keyboard_initialized = 1;
     
-    // Print initialization message
-    terminal_writestring("Keyboard initialized (polling mode).\n");
-}
+ }
 
 /**
  * Get a character from the keyboard buffer if available

@@ -8,8 +8,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <kernel/tty.h>
-#include <kernel/multiboot.h>
+#include "include/kernel/tty.h"
+#include "include/kernel/multiboot.h"
 
 /**
  * Global variables holding multiboot information passed by bootloader
