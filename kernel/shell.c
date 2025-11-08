@@ -2,6 +2,7 @@
 #include "include/kernel/tty.h"
 #include "include/kernel/keyboard.h"
 #include "include/kernel/rtc.h"
+#include "include/kernel/pit.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -33,6 +34,7 @@ static void cmd_about(const char* args);
 static void cmd_dean(const char* args);
 static void cmd_time(const char* args);
 static void cmd_uptime(const char* args);
+static void cmd_ticks(const char* args);
 
 // Command table
 static const command_t commands[] = {
@@ -44,6 +46,7 @@ static const command_t commands[] = {
     {"dean", cmd_dean, "It's a surprise:)"},
     {"time", cmd_time, "Display current time and date"},
     {"uptime", cmd_uptime, "Display system uptime"},
+    {"ticks", cmd_ticks, "Show timer ticks and uptime"},
     {NULL, NULL, NULL} // End of table marker
 };
 
@@ -191,10 +194,11 @@ static void cmd_color(const char* args) {
  * Clear screen command
  */
 static void cmd_cls(const char* args) {
-    (void)args; // Unused
-    
-    framebuffer_clear(0x000000);  // Clear screen to black
-    terminal_initialize();
+    (void)args;
+    uint32_t cursor_color = terminal_get_color();
+    terminal_initialize();      // reset buffers and clear screen
+    terminal_enable_cursor();   // show cursor again
+    terminal_setcolor(cursor_color); // restore text color
 }
 
 /**
@@ -212,7 +216,12 @@ static void cmd_dean(const char* args) {
     (void)args; // Unused
 
     terminal_setscale(2);
-    terminal_writestring("Dean Moore!\n");
+    terminal_writestring(" _____                    ____   _____ \n");
+    terminal_writestring("|  __ \\                  / __ \\ / ____|\n");
+    terminal_writestring("| |  | | ___  __ _ _ __ | |  | | (___  \n");
+    terminal_writestring("| |  | |/ _ \\/ _` | '_ \\| |  | |\\___ \\\n");
+    terminal_writestring("| |__| |  __/ (_| | | | | |__| |____) |\n");
+    terminal_writestring("|_____/ \\___|\\__,_|_| |_|\\____/|_____/\n");
     terminal_setscale(1);
     
 }
@@ -306,4 +315,23 @@ static void cmd_uptime(const char* args) {
     if (uptime.seconds < 10) terminal_writestring("0");
     terminal_writestring(buffer);
     terminal_writestring("\n");
+}
+
+static void cmd_ticks(const char* args) {
+    (void)args;
+    
+    uint64_t ticks = pit_get_ticks();
+    uint64_t uptime_ms = pit_get_uptime_ms();
+    
+    char buffer[32];
+    
+    terminal_writestring("Ticks since boot: ");
+    itoa((int)ticks, buffer, 10);
+    terminal_writestring(buffer);
+    terminal_writestring("\n");
+    
+    terminal_writestring("Uptime: ");
+    itoa((int)uptime_ms, buffer, 10);
+    terminal_writestring(buffer);
+    terminal_writestring(" ms\n");
 }

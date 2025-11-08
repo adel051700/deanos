@@ -1,78 +1,82 @@
-/* Multiboot2 header */
-.set ALIGN,    1<<0
-.set MEMINFO,  1<<1
-.set FLAGS,    ALIGN | MEMINFO
-.set MAGIC,    0xE85250D6          /* Multiboot2 magic number */
-.set ARCH,     0                   /* Protected mode i386 */
-.set HEADER_LEN, header_end - header_start
-.set CHECKSUM, -(MAGIC + ARCH + HEADER_LEN)
+// Multiboot2 constants
+.set MULTIBOOT2_MAGIC,              0xE85250D6
+.set MULTIBOOT2_ARCHITECTURE,       0           // 0 = i386
+.set MULTIBOOT2_HEADER_LENGTH,      (multiboot_header_end - multiboot_header)
+.set MULTIBOOT2_CHECKSUM,           -(MULTIBOOT2_MAGIC + MULTIBOOT2_ARCHITECTURE + MULTIBOOT2_HEADER_LENGTH)
 
-/* Multiboot2 header */
+// Multiboot2 header - must be in first 32KB of kernel
 .section .multiboot
 .align 8
-header_start:
-.long MAGIC                        /* Magic number */
-.long ARCH                         /* Architecture: i386 (protected mode) */
-.long HEADER_LEN                   /* Header length */
-.long CHECKSUM                     /* Checksum */
+multiboot_header:
+    .long MULTIBOOT2_MAGIC
+    .long MULTIBOOT2_ARCHITECTURE
+    .long MULTIBOOT2_HEADER_LENGTH
+    .long MULTIBOOT2_CHECKSUM
+    
+    // Framebuffer tag - request specific video mode
+    .align 8
+framebuffer_tag_start:
+    .short 5                        // Type: framebuffer
+    .short 0                        // Flags
+    .long framebuffer_tag_end - framebuffer_tag_start
+    .long 1024                      // Width
+    .long 768                       // Height
+    .long 32                        // Depth (bits per pixel)
+framebuffer_tag_end:
+    
+    // End tag - required
+    .align 8
+    .short 0                        // Type: end
+    .short 0                        // Flags
+    .long 8                         // Size
+multiboot_header_end:
 
-/* Add framebuffer tag */
-.align 8
-.word 5                           /* Type: framebuffer */
-.word 0                           /* Flags */
-.long 20                          /* Size */
-.long 1024                       /* Width */
-.long 768                         /* Height */
-.long 32                          /* Depth */
-
-/* Required end tag */
-.align 8
-.word 0    /* Type - end tag */
-.word 0    /* Flags */
-.long 8    /* Size */
-header_end:
-
-    /* Define global variables to store multiboot info */
-.section .data
-.global multiboot_magic
-multiboot_magic:
-    .long 0
-
-.global multiboot_info_addr
-multiboot_info_addr:
-    .long 0
-
-/* Stack setup */
+// Stack setup
 .section .bss
 .align 16
 stack_bottom:
-.skip 16384 # 16 KiB
+.skip 16384                         // 16 KB stack
 stack_top:
 
-/* Entry point */
+// Export symbols for C code
+.section .data
+.global multiboot_info_addr
+.global multiboot_magic
+
+multiboot_info_addr:
+    .long 0
+
+multiboot_magic:
+    .long 0
+
+// Kernel entry point
 .section .text
 .global _start
 .type _start, @function
+
 _start:
-    /* Disable interrupts until we're ready */
-    cli
+    // Bootloader puts multiboot info address in EBX and magic in EAX
+    // Save them before we do anything else
+    movl %eax, multiboot_magic
+    movl %ebx, multiboot_info_addr
     
-    /* Set up the stack */
-    mov $stack_top, %esp
-
-    /* Save multiboot info to global variables */
-    mov %eax, multiboot_magic
-    mov %ebx, multiboot_info_addr
-
-    /* Call global constructors */
+    // Set up the stack
+    movl $stack_top, %esp
+    
+    // Reset EFLAGS
+    pushl $0
+    popf
+    
+    // Call global constructors (hardware init, framebuffer setup, etc.)
     call call_constructors
-
-    /* Call kernel main with no arguments */
+    
+    // Call the kernel main function
     call kernel_main
-
-    /* Infinite loop */
+    
+    // If kernel_main returns, hang the system
     cli
-1:  hlt
-    jmp 1b
+hang:
+    hlt
+    jmp hang
 
 .size _start, . - _start

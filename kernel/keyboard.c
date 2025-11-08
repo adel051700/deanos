@@ -1,6 +1,7 @@
 #include "include/kernel/keyboard.h"
 #include "include/kernel/io.h"
 #include "include/kernel/tty.h"
+#include "include/kernel/interrupt.h"
 #include <stdint.h>
 
 // US keyboard layout mapping scancode -> ASCII
@@ -33,6 +34,62 @@ static unsigned int ctrl_pressed = 0;
 static unsigned int alt_pressed = 0;
 static int keyboard_initialized = 0;
 
+// Forward declaration for the buffer enqueue function
+static void keyboard_buffer_enqueue(char c);
+
+/**
+ * Keyboard interrupt handler (IRQ1)
+ */
+static void keyboard_irq_handler(struct registers* regs) {
+    (void)regs; // Unused for now
+
+    // When IRQ1 fires, there is ALWAYS data available.
+    // Reading from 0x60 is safe and expected.
+    // DO NOT read from 0x64 (status port) inside the interrupt handler!
+    uint8_t scancode = inb(0x60);
+    
+    // Process key press/release
+    if (scancode & 0x80) {
+        // Key release (bit 7 set)
+        scancode &= 0x7F; // Remove the highest bit to get the actual scancode
+        
+        // Handle modifier key releases
+        if (scancode == 0x2A || scancode == 0x36) { // Left or right shift
+            shift_pressed = 0;
+        } else if (scancode == 0x1D) { // Left control
+            ctrl_pressed = 0;
+        } else if (scancode == 0x38) { // Left alt
+            alt_pressed = 0;
+        }
+    } else {
+        // Key press
+        if (scancode == 0x2A || scancode == 0x36) { // Left or right shift
+            shift_pressed = 1;
+        } else if (scancode == 0x1D) { // Left control
+            ctrl_pressed = 1;
+        } else if (scancode == 0x38) { // Left alt
+            alt_pressed = 1;
+        } else if (scancode < 128) {
+            // Regular key
+            char c;
+            if (shift_pressed) {
+                c = us_keyboard_map_shifted[scancode];
+            } else {
+                c = us_keyboard_map[scancode];
+            }
+            
+            // If it's a valid character, add to buffer
+            if (c) {
+                // Process control characters
+                if (ctrl_pressed && c >= 'a' && c <= 'z') {
+                    c = c - 'a' + 1; // Control codes: Ctrl+A = 1, etc.
+                }
+                keyboard_buffer_enqueue(c);
+            }
+        }
+    }
+}
+
 /**
  * Add a character to the keyboard buffer
  */
@@ -49,7 +106,7 @@ static void keyboard_buffer_enqueue(char c) {
 }
 
 /**
- * Initialize the keyboard driver - polling based approach with no interrupts
+ * Initialize the keyboard driver - now interrupt based
  */
 void keyboard_initialize(void) {
     // Clear keyboard buffer
@@ -59,15 +116,12 @@ void keyboard_initialize(void) {
     ctrl_pressed = 0;
     alt_pressed = 0;
     
-    // Flush any pending keyboard data
-    while (inb(0x64) & 1) {
-        inb(0x60);
-    }
+    // Register our IRQ1 handler. IRQ1 is interrupt 33.
+    register_interrupt_handler(33, keyboard_irq_handler);
     
     // Mark as initialized
     keyboard_initialized = 1;
-    
- }
+}
 
 /**
  * Get a character from the keyboard buffer if available
@@ -98,50 +152,6 @@ int keyboard_data_available(void) {
  * This function translates these scancodes to ASCII based on the US keyboard layout.
  */
 void keyboard_update(void) {
-    // Check if there's data in the keyboard controller (bit 0 of status port 0x64)
-    if (inb(0x64) & 1) {
-        // Read the scancode from data port 0x60
-        uint8_t scancode = inb(0x60);
-        
-        // Process key press/release
-        if (scancode & 0x80) {
-            // Key release (bit 7 set)
-            scancode &= 0x7F; // Remove the highest bit to get the actual scancode
-            
-            // Handle modifier key releases
-            if (scancode == 0x2A || scancode == 0x36) { // Left or right shift
-                shift_pressed = 0;
-            } else if (scancode == 0x1D) { // Left control
-                ctrl_pressed = 0;
-            } else if (scancode == 0x38) { // Left alt
-                alt_pressed = 0;
-            }
-        } else {
-            // Key press
-            if (scancode == 0x2A || scancode == 0x36) { // Left or right shift
-                shift_pressed = 1;
-            } else if (scancode == 0x1D) { // Left control
-                ctrl_pressed = 1;
-            } else if (scancode == 0x38) { // Left alt
-                alt_pressed = 1;
-            } else if (scancode < 128) {
-                // Regular key
-                char c;
-                if (shift_pressed) {
-                    c = us_keyboard_map_shifted[scancode];
-                } else {
-                    c = us_keyboard_map[scancode];
-                }
-                
-                // If it's a valid character, add to buffer
-                if (c) {
-                    // Process control characters
-                    if (ctrl_pressed && c >= 'a' && c <= 'z') {
-                        c = c - 'a' + 1; // Control codes: Ctrl+A = 1, etc.
-                    }
-                    keyboard_buffer_enqueue(c);
-                }
-            }
-        }
-    }
+    // This function is now obsolete because we are using interrupts.
+    // It can be left empty or removed entirely.
 }

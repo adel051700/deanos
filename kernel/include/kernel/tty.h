@@ -1,5 +1,7 @@
 #ifndef _KERNEL_TTY_H
 #define _KERNEL_TTY_H
+// Cursor blink every 500ms at 100Hz PIT
+#define CURSOR_BLINK_INTERVAL_TICKS 50
 
 #include <stddef.h>
 #include <stdint.h>
@@ -11,7 +13,7 @@ void terminal_writestring(const char* data);
 void terminal_setcolor(uint32_t color);
 void terminal_setbackground(uint32_t color);
 void terminal_setscale(uint32_t scale);
-void terminal_update_cursor(void);
 void terminal_enable_cursor(void);
-
+void terminal_cursor_blink_tick(void);
+uint32_t terminal_get_color(void);
 #endif

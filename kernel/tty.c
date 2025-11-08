@@ -30,10 +30,11 @@ static int term_cursor_x, term_cursor_y;
 static uint32_t term_color;
 static uint32_t term_bg;
 static uint32_t current_scale;
+static int cursor_enabled = 0;
 static int cursor_visible = 1;
 static uint32_t cursor_blink_counter = 0;
 static int terminal_ready = 0;
-static int cursor_enabled = 0;  // New flag to control when cursor should be shown
+#define CURSOR_BLINK_INTERVAL_TICKS 50   // 100Hz PIT → 500ms
 
 /**
  * Recalculates the vertical position of each line based on character scales
@@ -98,34 +99,30 @@ static void clear_cursor(void) {
 }
 
 /**
- * Update cursor blinking (called from timer interrupt)
+ * Blink tick (called from PIT IRQ)
  */
-void terminal_update_cursor(void) {
+void terminal_cursor_blink_tick(void) {
     if (!terminal_ready || !cursor_enabled) return;
-    
     cursor_blink_counter++;
-    
-    // Toggle cursor every ~500ms (assuming 100Hz timer, toggle every 50 ticks)
-    if (cursor_blink_counter >= 50) {
+    if (cursor_blink_counter >= CURSOR_BLINK_INTERVAL_TICKS) {
         cursor_blink_counter = 0;
-        
         if (cursor_visible) {
             clear_cursor();
             cursor_visible = 0;
         } else {
-            draw_cursor();
             cursor_visible = 1;
+            draw_cursor();
         }
     }
 }
 
 /**
- * Enable cursor display (called by shell when ready for input)
+ * Enables cursor display (called by shell when ready for input)
  */
 void terminal_enable_cursor(void) {
     cursor_enabled = 1;
     cursor_visible = 1;
-    cursor_blink_counter = 0;
+    cursor_blink_counter = 0;  // Reset counter only here
     draw_cursor();
 }
 
@@ -184,8 +181,7 @@ void terminal_initialize(void) {
     term_bg = 0xFFB7E5;
     current_scale = 1;
     cursor_visible = 1;
-    cursor_blink_counter = 0;
-    cursor_enabled = 0;  // Don't enable cursor yet
+    cursor_enabled = 0;
     terminal_ready = 0;
     
     for (uint32_t y = 0; y < TERM_ROWS; y++) {
@@ -208,7 +204,7 @@ void terminal_putchar(char c) {
     if (!terminal_ready) return;
     
     // Clear cursor before moving/writing (only if cursor is enabled)
-    if (cursor_enabled) {
+    if (cursor_enabled && cursor_visible) {
         clear_cursor();
     }
     
@@ -263,10 +259,8 @@ void terminal_putchar(char c) {
         term_cursor_y = TERM_ROWS - 1;
     }
     
-    // Only reset blink and draw cursor if cursor is enabled
-    if (cursor_enabled) {
-        cursor_blink_counter = 0;
-        cursor_visible = 1;
+    // ONLY redraw cursor if it's visible - don't force it visible or reset counter
+    if (cursor_enabled && cursor_visible) {
         draw_cursor();
     }
 }
@@ -305,4 +299,8 @@ void terminal_setbackground(uint32_t color) {
  */
 void terminal_setscale(uint32_t scale) {
     current_scale = scale;
+}
+
+uint32_t terminal_get_color(void) {
+    return term_color;
 }

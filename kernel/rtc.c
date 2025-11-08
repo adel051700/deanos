@@ -1,7 +1,6 @@
 #include "include/kernel/rtc.h"
 #include "include/kernel/io.h"
 #include "include/kernel/tty.h"
-#include "include/kernel/interrupt.h"
 #include <stdint.h>
 
 #define CMOS_ADDRESS 0x70
@@ -17,15 +16,14 @@
 #define RTC_STATUS_A 0x0A
 #define RTC_STATUS_B 0x0B
 
-// PIT (Programmable Interval Timer) ports
-#define PIT_CHANNEL0 0x40
-#define PIT_COMMAND  0x43
-
 static int century_register = 0x00;
 
 // Store boot time
 static rtc_time_t boot_time;
 static int boot_time_initialized = 0;
+
+// Add timezone offset (CET = UTC+1, CEST = UTC+2)
+#define TIMEZONE_OFFSET_HOURS 1
 
 /**
  * Read a value from a CMOS register
@@ -49,10 +47,6 @@ static int rtc_update_in_progress(void) {
 static uint8_t bcd_to_binary(uint8_t bcd) {
     return ((bcd / 16) * 10) + (bcd & 0x0F);
 }
-
-// Add timezone offset (CET = UTC+1, CEST = UTC+2)
-// For simplicity, using CET (+1 hour). You can make this configurable later.
-#define TIMEZONE_OFFSET_HOURS 1
 
 /**
  * Read current time from RTC
@@ -126,7 +120,7 @@ void rtc_read_time(rtc_time_t* time) {
     if (century_register != 0) {
         time->year += century * 100;
     } else {
-        time->year += 2000; // Assume 21st century
+        time->year += 2000;
     }
     
     // Apply timezone offset
@@ -134,43 +128,7 @@ void rtc_read_time(rtc_time_t* time) {
     if (time->hour >= 24) {
         time->hour -= 24;
         time->day += 1;
-        // Note: This is a simple adjustment and doesn't handle month/year rollover
-        // For a production system, you'd need proper date arithmetic
     }
-}
-
-/**
- * Timer interrupt handler
- */
-static void timer_handler(struct registers* regs) {
-    (void)regs; // Unused
-    timer_tick();
-}
-
-/**
- * Initialize the PIT timer
- */
-void timer_initialize(uint32_t frequency) {
-    // Calculate divisor for desired frequency
-    uint32_t divisor = 1193180 / frequency;
-    
-    // Send command byte: channel 0, rate generator mode
-    outb(PIT_COMMAND, 0x36);
-    
-    // Send frequency divisor
-    outb(PIT_CHANNEL0, divisor & 0xFF);
-    outb(PIT_CHANNEL0, (divisor >> 8) & 0xFF);
-    
-    // Register the timer interrupt handler
-    register_interrupt_handler(32, timer_handler);
-}
-
-/**
- * Timer tick handler - called on each timer interrupt
- */
-void timer_tick(void) {
-    // Update cursor blinking
-    terminal_update_cursor();
 }
 
 /**
@@ -195,14 +153,14 @@ void get_uptime(uptime_t* uptime) {
     total_seconds += (current_time.minute - boot_time.minute) * 60;
     total_seconds += (current_time.hour - boot_time.hour) * 3600;
     
-    // Handle day overflow (simplified - doesn't account for month/year changes)
+    // Handle day overflow
     int32_t day_diff = current_time.day - boot_time.day;
     if (day_diff < 0) {
-        day_diff += 30; // Rough approximation
+        day_diff += 30;
     }
     total_seconds += day_diff * 86400;
     
-    // Handle negative seconds (clock adjustment)
+    // Handle negative seconds
     if (total_seconds < 0) {
         total_seconds = 0;
     }

@@ -16,12 +16,13 @@ LIBS?=
 # Compiler/Assembler/Linker
 CC = i686-elf-gcc
 AS = i686-elf-as
+LD = i686-elf-ld
 
 # Includes
 CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra
 CPPFLAGS:=$(CPPFLAGS) -Ikernel/include -Ilibc/include
-LDFLAGS:=$(LDFLAGS)
-LIBS:=$(LIBS) -nostdlib -lgcc
+LDFLAGS:=$(LDFLAGS) -n -nostdlib
+LIBS:=$(LIBS) -lgcc
 
 # Kernel Files (source paths)
 KERNEL_SRCS = \
@@ -36,7 +37,8 @@ kernel/io.c \
 kernel/interrupt.c \
 kernel/keyboard.c \
 kernel/shell.c \
-kernel/rtc.c
+kernel/rtc.c \
+kernel/pit.c
 
 ARCH_C_SRCS = \
 arch/i386/boot/crti.c
@@ -64,8 +66,8 @@ LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(filter libc/%.c,$(LIBC_S
 ARCH_C_OBJS = $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(ARCH_C_SRCS))
 ARCH_ASM_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(ARCH_ASM_SRCS))
 
-# All object files
-ALL_OBJS = $(ARCH_ASM_OBJS) $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LIBC_OBJS)
+# All object files - BOOT.S MUST BE FIRST for multiboot header!
+ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LIBC_OBJS)
 
 .PHONY: all clean install directories iso run
 .SUFFIXES: .o .c .s
@@ -74,6 +76,14 @@ all: deanos.bin
 
 deanos.bin: directories $(ALL_OBJS) arch/i386/boot/linker.ld
 	$(CC) -T arch/i386/boot/linker.ld -o $@ $(CFLAGS) $(ALL_OBJS) $(LDFLAGS) $(LIBS)
+	@echo "Checking multiboot header..."
+	@if grub-file --is-x86-multiboot2 deanos.bin; then \
+		echo "✓ Multiboot2 header found!"; \
+	else \
+		echo "✗ WARNING: No multiboot header found!"; \
+		echo "First 64 bytes of binary:"; \
+		hexdump -C deanos.bin | head -4; \
+	fi
 
 # Create build directories
 directories:
@@ -98,6 +108,7 @@ $(ARCH_BUILD_DIR)/%.o: arch/i386/%.c | directories
 $(ARCH_BUILD_DIR)/%.o: arch/i386/%.s | directories
 	$(AS) $< -o $@
 
+
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f deanos.bin
@@ -114,7 +125,7 @@ iso: install
 
 run: iso
 	make clean
-	make
+	make 
 	make install
 	make iso
 	qemu-system-i386 -cdrom deanos.iso

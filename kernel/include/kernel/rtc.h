@@ -21,8 +21,6 @@ typedef struct {
 
 void rtc_initialize(void);
 void rtc_read_time(rtc_time_t* time);
-void timer_initialize(uint32_t frequency);
-void timer_tick(void);
 void get_uptime(uptime_t* uptime);
 
 #endif
