@@ -23,4 +23,5 @@ uint32_t  pmm_total_frames(void);
 uint32_t  pmm_free_frames(void);
 int pmm_self_test(uint32_t frames_to_test);
 
+uintptr_t pmm_reserved_region_end(void);
 #endif

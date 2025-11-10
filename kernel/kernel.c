@@ -9,6 +9,8 @@
 #include "include/kernel/rtc.h"
 #include "include/kernel/pit.h"
 #include "include/kernel/pmm.h"
+#include "include/kernel/paging.h"
+#include "include/kernel/kheap.h"
 #include "../libc/include/stdio.h"   // for itoa
 
 void kernel_main(void) {
@@ -21,13 +23,12 @@ void kernel_main(void) {
 
 
     shell_initialize();
-    
+
     while (1) {
         if (keyboard_data_available()) {
             char c = keyboard_getchar();
             shell_process_char(c);
         }
-        
         __asm__ __volatile__("hlt; nop");
     }
 }

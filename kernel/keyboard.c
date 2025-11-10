@@ -1,7 +1,7 @@
 #include "include/kernel/keyboard.h"
 #include "include/kernel/io.h"
 #include "include/kernel/tty.h"
-#include "include/kernel/interrupt.h"
+#include "include/kernel/irq.h"
 #include <stdint.h>
 
 // dk-latin1 keyboard mapping (Set 1 scancodes)
@@ -140,15 +140,10 @@ static void keyboard_buffer_enqueue_str(const char* s) {
  * Initialize the keyboard driver - now interrupt based
  */
 void keyboard_initialize(void) {
-    // Clear keyboard buffer
-    kb_buffer_start = 0;
-    kb_buffer_end = 0;
-    shift_pressed = 0;
-    ctrl_pressed = 0;
-    alt_pressed = 0;
+    kb_buffer_start = kb_buffer_end = 0;
+    shift_pressed = ctrl_pressed = alt_pressed = 0;
     
-    // Register our IRQ1 handler. IRQ1 is interrupt 33.
-    register_interrupt_handler(33, keyboard_irq_handler);
+    irq_install_handler(1, keyboard_irq_handler);
     
     // Mark as initialized
     keyboard_initialized = 1;

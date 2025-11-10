@@ -1,6 +1,7 @@
 #include "include/kernel/idt.h"
 #include "include/kernel/io.h"
 #include "include/kernel/tty.h"
+#include "include/kernel/pic.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -59,7 +60,7 @@ void idt_initialize(void) {
 
     memset(&idt_entries, 0, sizeof(struct idt_entry) * IDT_ENTRIES);
 
-    pic_initialize();
+    pic_init();
     
     // Set up ISRs
     idt_set_gate(0, (uint32_t)isr0, 0x08, 0x8E);

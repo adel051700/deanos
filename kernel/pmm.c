@@ -92,6 +92,7 @@ uint32_t pmm_free_frames(void)  { return g_free_frames; }
 /* Early bump allocator: place bitmap right after kernel.
    We only need it during init to carve the bitmap. */
 static uintptr_t boot_alloc_ptr = 0;
+static uintptr_t g_reserved_end = 0;  // <- add
 
 static void boot_alloc_init(void) {
     uintptr_t after_kernel = (uintptr_t)&_kernel_end;
@@ -147,6 +148,7 @@ void pmm_initialize(struct multiboot_tag_mmap* mmap_tag) {
     g_free_frames = 0;
 
     uintptr_t reserved_end = boot_alloc_ptr;
+    g_reserved_end = reserved_end;     // <- remember end of boot-reserved region
 
     // Pass 2 free usable
     cur = (uint8_t*)mmap_tag + sizeof(*mmap_tag);
@@ -234,4 +236,8 @@ int pmm_self_test(uint32_t frames_to_test) {
 
     if (pmm_free_frames() != before) return -4;
     return 0;
+}
+
+uintptr_t pmm_reserved_region_end(void) {
+    return g_reserved_end;
 }

@@ -11,6 +11,8 @@
 #include "include/kernel/tty.h"
 #include "include/kernel/multiboot.h"
 #include "include/kernel/pmm.h"
+#include "include/kernel/paging.h"    // <- add
+#include "include/kernel/kheap.h"     // <- add
 #include "../libc/include/stdio.h"   // for itoa
 
 /**
@@ -76,4 +78,10 @@ void kernel_init() {
 
     // Initialize PMM now that we have the memory map
     pmm_initialize(mmap_tag);
+
+    // Enable paging (identity map kernel + framebuffer, map heap)
+    paging_initialize(fb);
+
+    // Initialize kernel heap on the mapped heap region
+    kheap_initialize();
 }

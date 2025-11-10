@@ -19,7 +19,7 @@ AS = i686-elf-as
 LD = i686-elf-ld
 
 # Includes
-CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra
+CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra -fno-pie -fno-stack-protector
 CPPFLAGS:=$(CPPFLAGS) -Ikernel/include -Ilibc/include
 LDFLAGS:=$(LDFLAGS) -n -nostdlib
 LIBS:=$(LIBS) -lgcc
@@ -39,7 +39,12 @@ kernel/keyboard.c \
 kernel/shell.c \
 kernel/rtc.c \
 kernel/pit.c \
-kernel/pmm.c
+kernel/pmm.c \
+kernel/paging.c \
+kernel/kheap.c \
+kernel/pic.c \
+kernel/irq.c \
+kernel/log.c
 
 ARCH_C_SRCS = \
 arch/i386/boot/crti.c

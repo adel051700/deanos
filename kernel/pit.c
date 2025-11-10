@@ -1,8 +1,9 @@
 #include "include/kernel/pit.h"
 #include "include/kernel/io.h"
-#include "include/kernel/interrupt.h"
+#include "include/kernel/irq.h"
 #include "include/kernel/tty.h"
 #include <stdio.h>
+
 
 // PIT I/O ports
 #define PIT_CHANNEL0    0x40
@@ -36,7 +37,7 @@ static void pit_irq_handler(struct registers* regs) {
  */
 void pit_initialize(uint32_t frequency) {
     pit_frequency_hz = frequency;
-    register_interrupt_handler(32, pit_irq_handler);
+    irq_install_handler(0, pit_irq_handler);
     
     uint32_t divisor = PIT_FREQUENCY / frequency;
     if (divisor < 1) divisor = 1;

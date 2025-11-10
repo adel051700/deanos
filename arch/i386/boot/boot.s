@@ -5,7 +5,7 @@
 .set MULTIBOOT2_CHECKSUM,           -(MULTIBOOT2_MAGIC + MULTIBOOT2_ARCHITECTURE + MULTIBOOT2_HEADER_LENGTH)
 
 // Multiboot2 header - must be in first 32KB of kernel
-.section .multiboot
+.section .multiboot,"a"        # ensure ALLOC so GRUB loads/scans it
 .align 8
 multiboot_header:
     .long MULTIBOOT2_MAGIC
