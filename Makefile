@@ -38,7 +38,8 @@ kernel/interrupt.c \
 kernel/keyboard.c \
 kernel/shell.c \
 kernel/rtc.c \
-kernel/pit.c
+kernel/pit.c \
+kernel/pmm.c
 
 ARCH_C_SRCS = \
 arch/i386/boot/crti.c

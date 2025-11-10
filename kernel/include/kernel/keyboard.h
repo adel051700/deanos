@@ -4,13 +4,8 @@
 // Initialize keyboard driver
 void keyboard_initialize(void);
 
-// Check if keyboard data is available
-int keyboard_data_available(void);
-
-// Get a character from keyboard buffer
+// Polling helpers used by kernel.c
+int  keyboard_data_available(void);
 char keyboard_getchar(void);
-
-// Update keyboard state (check for new key presses)
-void keyboard_update(void);
 
 #endif

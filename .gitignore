@@ -7,3 +7,7 @@
 /dataSources/
 /dataSources.local.xml
 /.idea/*
+*.o
+*.d
+*.iso
+*.bin

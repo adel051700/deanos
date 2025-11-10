@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include "include/kernel/tty.h"
 #include "include/kernel/multiboot.h"
+#include "include/kernel/pmm.h"
+#include "../libc/include/stdio.h"   // for itoa
 
 /**
  * Global variables holding multiboot information passed by bootloader
@@ -40,47 +42,38 @@ void hardware_init() {
  */
 __attribute__((constructor))
 void kernel_init() {
-    // Verify we were booted by a multiboot2-compliant bootloader
     if (multiboot_magic != MULTIBOOT2_MAGIC) {
-        // If magic value doesn't match, halt the CPU indefinitely
         while (1) { __asm__ __volatile__("hlt"); }
     }
-    
-    // Multiboot2 info starts with 8-byte header
+
     uintptr_t addr = multiboot_info_addr + 8;
     struct multiboot_tag *tag = (struct multiboot_tag *)addr;
     struct multiboot_tag_framebuffer *fb = NULL;
-    
-    // Iterate through all multiboot tags to find the framebuffer information
-    while (tag->type != 0) {  // Type 0 marks the end of the tags
+    struct multiboot_tag_mmap* mmap_tag = NULL;
+
+    while (tag->type != MULTIBOOT2_TAG_TYPE_END) {
         if (tag->type == MULTIBOOT2_TAG_TYPE_FRAMEBUFFER) {
-            // Found the framebuffer tag, cast it to the appropriate structure type
             fb = (struct multiboot_tag_framebuffer *)tag;
-            // Initialize the framebuffer subsystem with the provided info
             framebuffer_initialize(fb);
-            break;
+        } else if (tag->type == MULTIBOOT2_TAG_TYPE_MMAP) {
+            mmap_tag = (struct multiboot_tag_mmap*)tag;
         }
-        // Move to the next tag (align to 8-byte boundary)
-        addr += (tag->size + 7) & ~7;  // Round up to multiple of 8
+        addr += (tag->size + 7) & ~7;
         tag = (struct multiboot_tag *)addr;
     }
-    
-    // Initialize the terminal subsystem which depends on the framebuffer
+
     terminal_initialize();
-    
-    // Set larger text scale for the welcome banner
+
     terminal_setscale(2);
-    
-    // Display the DeanOS ASCII art welcome banner
     terminal_writestring("Welcome to: \n");
     terminal_writestring(" _____                    ____   _____ \n");
     terminal_writestring("|  __ \\                  / __ \\ / ____|\n");
     terminal_writestring("| |  | | ___  __ _ _ __ | |  | | (___  \n");
     terminal_writestring("| |  | |/ _ \\/ _` | '_ \\| |  | |\\___ \\\n");
     terminal_writestring("| |__| |  __/ (_| | | | | |__| |____) |\n");
-    terminal_writestring("|_____/ \\___|\\__,_|_| |_|\\____/|_____/\n");
-    terminal_writestring("\n");
-    
-    // Restore original terminal scale for normal operation
+    terminal_writestring("|_____/ \\___|\\__,_|_| |_|\\____/|_____/\n\n");
     terminal_setscale(1);
+
+    // Initialize PMM now that we have the memory map
+    pmm_initialize(mmap_tag);
 }

@@ -8,24 +8,25 @@
 
 #define SHELL_PROMPT "DeanOS $ "
 #define MAX_COMMAND_LENGTH 256
+#define SHELL_HISTORY_SIZE 32
 
 static char command_buffer[MAX_COMMAND_LENGTH];
 static size_t command_length = 0;
 
-// Add this declaration near the top of shell.c to fix the cmd_cls function
-extern void framebuffer_clear(uint32_t color);
+static char history[SHELL_HISTORY_SIZE][MAX_COMMAND_LENGTH];
+static size_t history_len = 0;     // number of stored entries
+static size_t history_pos = 0;     // browsing index: 0..history_len (history_len = current line)
+static char edit_backup[MAX_COMMAND_LENGTH]; // current line backup when entering history
 
-// Command handler function type
-typedef void (*command_handler_t)(const char* args);
+typedef enum { ESC_IDLE=0, ESC_GOT_ESC, ESC_GOT_BRACKET } esc_state_t;
+static esc_state_t esc_state = ESC_IDLE;
 
-// Command structure
-typedef struct {
-    const char* name;
-    command_handler_t handler;
-    const char* description;
-} command_t;
+// Forward decls for history helpers
+static void history_add(const char* cmd);
+static void shell_set_line(const char* s);
+static void shell_execute_command(const char* command);
 
-// Forward declarations of command handlers
+// Command handler prototypes
 static void cmd_help(const char* args);
 static void cmd_echo(const char* args);
 static void cmd_color(const char* args);
@@ -36,25 +37,39 @@ static void cmd_time(const char* args);
 static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 
-// Command table
-static const command_t commands[] = {
-    {"help", cmd_help, "Display this help message"},
-    {"echo", cmd_echo, "Echo the arguments back to the console"},
-    {"color", cmd_color, "Change text color (usage: color [red|green|blue|white])"},
-    {"cls", cmd_cls, "Clear the screen"},
-    {"about", cmd_about, "Show information about DeanOS"},
-    {"dean", cmd_dean, "It's a surprise:)"},
-    {"time", cmd_time, "Display current time and date"},
-    {"uptime", cmd_uptime, "Display system uptime"},
-    {"ticks", cmd_ticks, "Show timer ticks and uptime"},
-    {NULL, NULL, NULL} // End of table marker
+// Command descriptor
+struct shell_command {
+    const char* name;
+    void (*handler)(const char* args);
+    const char* description;
 };
+
+// Command table
+static const struct shell_command commands[] = {
+    {"help",   cmd_help,   "List available commands"},
+    {"echo",   cmd_echo,   "Echo text"},
+    {"color",  cmd_color,  "Change text color"},
+    {"cls",    cmd_cls,    "Clear screen"},
+    {"about",  cmd_about,  "About DeanOS"},
+    {"dean",   cmd_dean,   "Show DeanOS banner"},
+    {"time",   cmd_time,   "Show current time/date"},
+    {"uptime", cmd_uptime, "Show system uptime"},
+    {"ticks",  cmd_ticks,  "Show PIT tick count"},
+    {NULL, NULL, NULL}
+};
+
+// Remove the old non-static forward line:
+// - void cmd_cls(const char* args);
+// ...existing code...
 
 /**
  * Initialize the shell
  */
 void shell_initialize(void) {
     command_length = 0;
+    history_len = 0;
+    history_pos = 0;
+    esc_state = ESC_IDLE;
     terminal_writestring(SHELL_PROMPT);
     terminal_enable_cursor();  // Enable cursor now that we're ready for input
 }
@@ -63,24 +78,54 @@ void shell_initialize(void) {
  * Process a character input to the shell
  */
 void shell_process_char(char c) {
+    // Handle escape sequences for arrows
+    if (esc_state == ESC_IDLE) {
+        if ((unsigned char)c == 0x1B) { esc_state = ESC_GOT_ESC; return; }
+    } else if (esc_state == ESC_GOT_ESC) {
+        if (c == '[') { esc_state = ESC_GOT_BRACKET; return; }
+        esc_state = ESC_IDLE; // unknown, fall through
+    } else if (esc_state == ESC_GOT_BRACKET) {
+        // Arrow dispatch
+        if (c == 'A') { // Up
+            if (history_len > 0) {
+                if (history_pos == history_len) {
+                    strncpy(edit_backup, command_buffer, MAX_COMMAND_LENGTH-1);
+                    edit_backup[MAX_COMMAND_LENGTH-1] = '\0';
+                }
+                if (history_pos > 0) history_pos--;
+                shell_set_line(history[history_pos]);
+            }
+        } else if (c == 'B') { // Down
+            if (history_len > 0) {
+                if (history_pos < history_len) history_pos++;
+                if (history_pos == history_len) {
+                    shell_set_line(edit_backup);
+                } else {
+                    shell_set_line(history[history_pos]);
+                }
+            }
+        }
+        esc_state = ESC_IDLE;
+        return;
+    }
+
     if (c == '\n' || c == '\r') {
-        // Process the command when Enter is pressed
         terminal_putchar('\n');
         command_buffer[command_length] = '\0';
+        if (command_length > 0) history_add(command_buffer);
+        history_pos = history_len; // reset browse point
         shell_execute_command(command_buffer);
         command_length = 0;
+        command_buffer[0] = '\0';
         terminal_writestring(SHELL_PROMPT);
     } else if (c == '\b') {
-        // Handle backspace
         if (command_length > 0) {
             command_length--;
             terminal_putchar('\b');
-            terminal_putchar(' ');
-            terminal_putchar('\b');
         }
-    } else if (c >= ' ' && c <= '~' && command_length < MAX_COMMAND_LENGTH - 1) {
-        // Handle printable characters
+    } else if (c >= ' ' && command_length < MAX_COMMAND_LENGTH - 1) {
         command_buffer[command_length++] = c;
+        command_buffer[command_length] = '\0';
         terminal_putchar(c);
     }
 }
@@ -88,7 +133,7 @@ void shell_process_char(char c) {
 /**
  * Execute a shell command
  */
-void shell_execute_command(const char* command) {
+static void shell_execute_command(const char* command) {
     // Skip leading whitespace
     while (*command == ' ') {
         command++;
@@ -334,4 +379,46 @@ static void cmd_ticks(const char* args) {
     itoa((int)uptime_ms, buffer, 10);
     terminal_writestring(buffer);
     terminal_writestring(" ms\n");
+}
+
+static void history_add(const char* cmd) {
+    if (!cmd || !*cmd) { history_pos = history_len; return; }
+    if (history_len > 0 && strcmp(history[history_len-1], cmd) == 0) {
+        history_pos = history_len;
+        return;
+    }
+    if (history_len < SHELL_HISTORY_SIZE) {
+        strncpy(history[history_len], cmd, MAX_COMMAND_LENGTH-1);
+        history[history_len][MAX_COMMAND_LENGTH-1] = '\0';
+        history_len++;
+    } else {
+        for (size_t i = 1; i < SHELL_HISTORY_SIZE; i++) {
+            strncpy(history[i-1], history[i], MAX_COMMAND_LENGTH);
+        }
+        strncpy(history[SHELL_HISTORY_SIZE-1], cmd, MAX_COMMAND_LENGTH-1);
+        history[SHELL_HISTORY_SIZE-1][MAX_COMMAND_LENGTH-1] = '\0';
+    }
+    history_pos = history_len;
+}
+
+static void shell_set_line(const char* s) {
+    // erase current line (only the editable part, not prompt)
+    while (command_length > 0) {
+        terminal_putchar('\b'); // your terminal erases on backspace
+        command_length--;
+    }
+    // write new content
+    if (s && *s) {
+        size_t i = 0;
+        while (s[i] && i < MAX_COMMAND_LENGTH-1) {
+            command_buffer[i] = s[i];
+            terminal_putchar(s[i]);
+            i++;
+        }
+        command_buffer[i] = '\0';
+        command_length = i;
+    } else {
+        command_buffer[0] = '\0';
+        command_length = 0;
+    }
 }

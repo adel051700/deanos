@@ -9,6 +9,9 @@ SECTIONS
     /* Begin putting sections at 1 MiB. */
     . = 1M;
 
+    /* Mark kernel start as soon as we have a fixed location */
+    _kernel_start = .;
+
     /* Multiboot header MUST be first and within the first 32KB */
     .multiboot ALIGN(4K) : AT(ADDR(.multiboot))
     {
@@ -49,4 +52,8 @@ SECTIONS
         *(COMMON)
         *(.bss)
     }
+
+    /* Mark kernel end after the last section */
+    _kernel_end = .;
+    PROVIDE(end = .);
 }

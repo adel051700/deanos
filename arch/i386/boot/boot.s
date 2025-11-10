@@ -12,7 +12,16 @@ multiboot_header:
     .long MULTIBOOT2_ARCHITECTURE
     .long MULTIBOOT2_HEADER_LENGTH
     .long MULTIBOOT2_CHECKSUM
-    
+
+    // Information request (ask for memory map)
+    .align 8
+info_req_tag_start:
+    .short 1                        // Type: information request
+    .short 0                        // Flags
+    .long info_req_tag_end - info_req_tag_start
+    .long 6                         // Request tag type 6: memory map
+info_req_tag_end:
+
     // Framebuffer tag - request specific video mode
     .align 8
 framebuffer_tag_start:
@@ -23,7 +32,7 @@ framebuffer_tag_start:
     .long 768                       // Height
     .long 32                        // Depth (bits per pixel)
 framebuffer_tag_end:
-    
+
     // End tag - required
     .align 8
     .short 0                        // Type: end

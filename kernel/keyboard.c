@@ -4,25 +4,38 @@
 #include "include/kernel/interrupt.h"
 #include <stdint.h>
 
-// US keyboard layout mapping scancode -> ASCII
-static const unsigned char us_keyboard_map[128] = {
-    0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
-    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    '-', 0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+// dk-latin1 keyboard mapping (Set 1 scancodes)
+// Notes:
+//  - CP437 codes present in your font: å=134 (0x86), Å=143 (0x8F), æ=145 (0x91), Æ=146 (0x92)
+//  - ø/Ø are not present in CP437 font → fallback to 'o'/'O'.
+//  - ISO 102nd key (< > |) is scancode 86 (0x56). Dead keys not implemented.
+static const unsigned char dk_map[128] = {
+    /* 00-0F */ 0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '+', '\b',
+    /* 10-1F */ '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 0x86, '^', '\n',
+               0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 0x91, 'o', '`',
+    /* 20-2F */ 0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0,
+    /* 30-3F */ '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
-// Shift-modified keyboard layout
-static const unsigned char us_keyboard_map_shifted[128] = {
-    0, 27, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
-    '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
-    0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
-    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    '-', 0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+static const unsigned char dk_shift_map[128] = {
+    /* 00-0F */ 0, 27, '!', '"', '#', 0xA4, '%', '&', '/', '(', ')', '=', '_', '?', '\b',
+    /* 10-1F */ '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 0x8F, 0xF9, '\n',
+               0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 0x92, 'O', '~',
+    /* 20-2F */ 0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0,
+    /* 30-3F */ '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
+
+// AltGr (Right-Alt, E0 38) mapping for common dk-latin1 combos
+static const unsigned char dk_altgr_map[128] = {
+    /* 00-0F */ 0, 0, 0, '@', 0x9C, '$', 0, 0, '{', '[', ']', '}', '\\', 0, 0,
+    /* 10-1F */ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,      0,
+               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,              0,
+    /* 20-2F */ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,             0,
+    /* 30-3F */ '*', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,           0, 0, 0
+};
+
+// ISO 102nd key (< > |) at scancode 86
+// We'll map it explicitly when translating scancodes.
 
 #define KEYBOARD_BUFFER_SIZE 256
 
@@ -31,62 +44,80 @@ static unsigned int kb_buffer_start = 0;
 static unsigned int kb_buffer_end = 0;
 static unsigned int shift_pressed = 0;
 static unsigned int ctrl_pressed = 0;
-static unsigned int alt_pressed = 0;
+static unsigned int alt_pressed = 0;     // Left Alt
+static unsigned int altgr_pressed = 0;   // Right Alt (AltGr)
+static unsigned int e0_prefix = 0;       // Set when previous byte was 0xE0
 static int keyboard_initialized = 0;
 
 // Forward declaration for the buffer enqueue function
 static void keyboard_buffer_enqueue(char c);
+static void keyboard_buffer_enqueue_str(const char* s);
 
 /**
  * Keyboard interrupt handler (IRQ1)
  */
 static void keyboard_irq_handler(struct registers* regs) {
-    (void)regs; // Unused for now
-
-    // When IRQ1 fires, there is ALWAYS data available.
-    // Reading from 0x60 is safe and expected.
-    // DO NOT read from 0x64 (status port) inside the interrupt handler!
+    (void)regs;
     uint8_t scancode = inb(0x60);
-    
-    // Process key press/release
-    if (scancode & 0x80) {
-        // Key release (bit 7 set)
-        scancode &= 0x7F; // Remove the highest bit to get the actual scancode
-        
-        // Handle modifier key releases
-        if (scancode == 0x2A || scancode == 0x36) { // Left or right shift
-            shift_pressed = 0;
-        } else if (scancode == 0x1D) { // Left control
-            ctrl_pressed = 0;
-        } else if (scancode == 0x38) { // Left alt
-            alt_pressed = 0;
-        }
+
+    if (scancode == 0xE0) {
+        e0_prefix = 1;
+        return;
+    }
+
+    int release = scancode & 0x80;
+    uint8_t code = scancode & 0x7F;
+
+    // Handle modifier state (including E0 Right-Alt)
+    if (release) {
+        if (e0_prefix && code == 0x38) { altgr_pressed = 0; e0_prefix = 0; return; }
+        if (code == 0x2A || code == 0x36) shift_pressed = 0;
+        else if (code == 0x1D)            ctrl_pressed  = 0;
+        else if (code == 0x38)            alt_pressed   = 0;
+        e0_prefix = 0;
+        return;
     } else {
-        // Key press
-        if (scancode == 0x2A || scancode == 0x36) { // Left or right shift
-            shift_pressed = 1;
-        } else if (scancode == 0x1D) { // Left control
-            ctrl_pressed = 1;
-        } else if (scancode == 0x38) { // Left alt
-            alt_pressed = 1;
-        } else if (scancode < 128) {
-            // Regular key
-            char c;
-            if (shift_pressed) {
-                c = us_keyboard_map_shifted[scancode];
-            } else {
-                c = us_keyboard_map[scancode];
-            }
-            
-            // If it's a valid character, add to buffer
-            if (c) {
-                // Process control characters
-                if (ctrl_pressed && c >= 'a' && c <= 'z') {
-                    c = c - 'a' + 1; // Control codes: Ctrl+A = 1, etc.
-                }
-                keyboard_buffer_enqueue(c);
-            }
+        if (e0_prefix && code == 0x38) { altgr_pressed = 1; e0_prefix = 0; return; }
+        if (code == 0x2A || code == 0x36) { shift_pressed = 1; e0_prefix = 0; return; }
+        if (code == 0x1D) { ctrl_pressed = 1; e0_prefix = 0; return; }
+        if (code == 0x38) { alt_pressed  = 1; e0_prefix = 0; return; }
+    }
+
+    // Handle E0-extended non-modifiers (arrows, etc.)
+    if (e0_prefix) {
+        switch (code) {
+            case 0x48: keyboard_buffer_enqueue_str("\x1B[A"); break; // Up
+            case 0x50: keyboard_buffer_enqueue_str("\x1B[B"); break; // Down
+            case 0x4D: keyboard_buffer_enqueue_str("\x1B[C"); break; // Right
+            case 0x4B: keyboard_buffer_enqueue_str("\x1B[D"); break; // Left
+            // (optional) Home/End/Delete:
+            // case 0x47: keyboard_buffer_enqueue_str("\x1B[H"); break; // Home
+            // case 0x4F: keyboard_buffer_enqueue_str("\x1B[F"); break; // End
+            // case 0x53: keyboard_buffer_enqueue_str("\x1B[3~"); break; // Delete
+            default: break;
         }
+        e0_prefix = 0;
+        return;
+    }
+
+    // Non-modifier keys (non-E0)
+    e0_prefix = 0;
+    if (code >= 128) return;
+
+    char c = 0;
+    if (code == 86) {
+        if (altgr_pressed)      c = '|';
+        else if (shift_pressed) c = '>';
+        else                    c = '<';
+    } else {
+        if (altgr_pressed && dk_altgr_map[code]) c = dk_altgr_map[code];
+        else if (shift_pressed)                  c = dk_shift_map[code];
+        else                                     c = dk_map[code];
+    }
+
+    if (c) {
+        if (ctrl_pressed && c >= 'a' && c <= 'z') c = c - 'a' + 1;
+        keyboard_buffer_enqueue(c);
     }
 }
 
@@ -95,14 +126,14 @@ static void keyboard_irq_handler(struct registers* regs) {
  */
 static void keyboard_buffer_enqueue(char c) {
     unsigned int next_end = (kb_buffer_end + 1) % KEYBOARD_BUFFER_SIZE;
-    
-    // If buffer is full, discard the character
-    if (next_end == kb_buffer_start) {
-        return;
-    }
-    
+    if (next_end == kb_buffer_start) return;
     keyboard_buffer[kb_buffer_end] = c;
     kb_buffer_end = next_end;
+}
+
+// Add this helper to enqueue strings (for ESC sequences)
+static void keyboard_buffer_enqueue_str(const char* s) {
+    while (*s) keyboard_buffer_enqueue(*s++);
 }
 
 /**
@@ -144,14 +175,3 @@ int keyboard_data_available(void) {
     return kb_buffer_start != kb_buffer_end;
 }
 
-/**
- * Check if keyboard has pending data and process it
- * 
- * This polling-based approach reads scancodes directly from the PS/2 controller.
- * PS/2 keyboards send make codes (key press) and break codes (key release, with bit 7 set).
- * This function translates these scancodes to ASCII based on the US keyboard layout.
- */
-void keyboard_update(void) {
-    // This function is now obsolete because we are using interrupts.
-    // It can be left empty or removed entirely.
-}

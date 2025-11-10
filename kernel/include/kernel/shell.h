@@ -7,10 +7,7 @@ void shell_initialize(void);
 // Process incoming keypress
 void shell_process_char(char c);
 
-// Execute a command string
-void shell_execute_command(const char* command);
-
-// Update shell state - check for and process input
+// Optional polling helper (if used)
 void shell_update(void);
 
 #endif
