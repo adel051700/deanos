@@ -14,7 +14,7 @@
 3. User Space: Set up user mode and privilege separation from kernel
 
 # System Services
-1. System Clock: Set up the PIT (Programmable Interval Timer) for timing
+1. ~~System Clock: Set up the PIT (Programmable Interval Timer) for timing~~
 2. ~~Interrupt Handling: Improve your IDT (Interrupt Descriptor Table) setup~~
 3. System Calls: Create an interface for user programs to request kernel services
 

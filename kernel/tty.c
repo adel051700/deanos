@@ -302,5 +302,5 @@ void terminal_setscale(uint32_t scale) {
 }
 
 uint32_t terminal_get_color(void) {
-    return term_color;
+    	return term_color;
 }
