@@ -44,7 +44,8 @@ kernel/paging.c \
 kernel/kheap.c \
 kernel/pic.c \
 kernel/irq.c \
-kernel/log.c
+kernel/log.c \
+kernel/syscall.c
 
 ARCH_C_SRCS = \
 arch/i386/boot/crti.c

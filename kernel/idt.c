@@ -20,6 +20,7 @@ extern void isr20(); extern void isr21(); extern void isr22(); extern void isr23
 extern void isr24(); extern void isr25(); extern void isr26(); extern void isr27();
 extern void isr28(); extern void isr29(); extern void isr30(); extern void isr31();
 extern void isr128();
+extern void isr129();  // <-- add
 
 extern void irq0(); extern void irq1(); extern void irq2(); extern void irq3();
 extern void irq4(); extern void irq5(); extern void irq6(); extern void irq7();
@@ -114,7 +115,9 @@ void idt_initialize(void) {
     idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E);
     idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E);
     
+    // Syscalls (ring 3 accessible interrupt gates)
     idt_set_gate(128, (uint32_t)isr128, 0x08, 0xEE);
+    idt_set_gate(129, (uint32_t)isr129, 0x08, 0xEE); // <-- add
 
     __asm__ volatile("lidt %0" : : "m"(idtp));
 }

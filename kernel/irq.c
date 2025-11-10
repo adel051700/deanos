@@ -8,7 +8,6 @@ void irq_install_handler(uint8_t irq, irq_handler_t handler) {
     if (irq < 16) {
         irq_handlers[irq] = handler;
         pic_unmask_irq(irq);
-        klog("irq: installed handler");
     }
 }
 

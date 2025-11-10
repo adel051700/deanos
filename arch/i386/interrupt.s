@@ -7,16 +7,14 @@
 .macro ISR_NOERRCODE num
 .global isr\num
 isr\num:
-    cli
-    pushl $0              // err_code (dummy)
-    pushl $\num           // int_no
+    pushl $0            // err_code
+    pushl $\num         // int_no
     jmp isr_common_stub
 .endm
 
 .macro ISR_ERRCODE num
 .global isr\num
 isr\num:
-    cli
     pushl $\num           // int_no
     jmp isr_common_stub   // CPU already pushed err_code
 .endm
@@ -24,9 +22,8 @@ isr\num:
 .macro IRQ num, vec
 .global irq\num
 irq\num:
-    cli
-    pushl $0              // err_code (dummy)
-    pushl $\vec           // int_no (remapped PIC vector 32..47)
+    pushl $0            // err_code
+    pushl $\vec         // int_no
     jmp isr_common_stub
 .endm
 
@@ -67,9 +64,15 @@ ISR_NOERRCODE 31
 // Syscall (optional)
 .global isr128
 isr128:
-    cli
     pushl $0
     pushl $128
+    jmp isr_common_stub
+
+// Add a second syscall gate (int 0x81)
+.global isr129
+isr129:
+    pushl $0
+    pushl $129
     jmp isr_common_stub
 
 // IRQs (PIC remapped to 32–47)
@@ -121,9 +124,10 @@ isr_common_stub:
     mov %ax, %fs
     mov %ax, %gs
 
-    popa
-    add $8, %esp            // discard [int_no][err_code] we pushed/present
+    // (Removed scheduler stack switch)
 
+    popa
+    add $8, %esp          // discard int_no, err_code
     sti
     iret
 

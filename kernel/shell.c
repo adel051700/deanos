@@ -3,6 +3,7 @@
 #include "include/kernel/keyboard.h"
 #include "include/kernel/rtc.h"
 #include "include/kernel/pit.h"
+#include "include/kernel/syscall.h"   // SYS_write, SYS_time, SYS_exit
 #include <string.h>
 #include <stdio.h>
 
@@ -25,6 +26,12 @@ static esc_state_t esc_state = ESC_IDLE;
 static void history_add(const char* cmd);
 static void shell_set_line(const char* s);
 static void shell_execute_command(const char* command);
+
+// New forward decls (syscall test commands)
+static void cmd_sys_write(const char* args);
+static void cmd_sys_time(const char* args);
+static void cmd_sys81_time(const char* args);
+static void cmd_sys_exit(const char* args);
 
 // Command handler prototypes
 static void cmd_help(const char* args);
@@ -55,6 +62,13 @@ static const struct shell_command commands[] = {
     {"time",   cmd_time,   "Show current time/date"},
     {"uptime", cmd_uptime, "Show system uptime"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
+
+    // New syscall test commands
+    {"sys.write",   cmd_sys_write,   "Syscall write via int 0x80: sys.write <text>"},
+    {"sys.time",    cmd_sys_time,    "Syscall time via int 0x80"},
+    {"sys81.time",  cmd_sys81_time,  "Syscall time via int 0x81"},
+    {"sys.exit",    cmd_sys_exit,    "Syscall exit (halts) via int 0x80: sys.exit <code>"},
+
     {NULL, NULL, NULL}
 };
 
@@ -421,4 +435,61 @@ static void shell_set_line(const char* s) {
         command_buffer[0] = '\0';
         command_length = 0;
     }
+}
+
+// Small helpers for syscalls and parsing
+static long ksyscall3_vec(uint8_t vec, uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3) {
+    register uint32_t eax asm("eax") = num;
+    register uint32_t ebx asm("ebx") = a1;
+    register uint32_t ecx asm("ecx") = a2;
+    register uint32_t edx asm("edx") = a3;
+    if (vec == 0x80) {
+        __asm__ __volatile__("int $0x80" : "+a"(eax) : "b"(ebx), "c"(ecx), "d"(edx) : "memory", "cc");
+    } else {
+        __asm__ __volatile__("int $0x81" : "+a"(eax) : "b"(ebx), "c"(ecx), "d"(edx) : "memory", "cc");
+    }
+    return (long)eax;
+}
+
+static uint32_t parse_uint(const char* s) {
+    while (*s == ' ') s++;
+    uint32_t v = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10u + (uint32_t)(*s - '0'); s++; }
+    return v;
+}
+
+// Implementations
+
+static void cmd_sys_write(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: sys.write <text>\n");
+        return;
+    }
+    size_t len = strlen(args);
+    long ret = ksyscall3_vec(0x80, SYS_write, 1, (uint32_t)args, (uint32_t)len);
+    terminal_writestring("\n[sys.write returned ");
+    char buf[16]; itoa((int)ret, buf, 10); terminal_writestring(buf); terminal_writestring("]\n");
+}
+
+static void cmd_sys_time(const char* args) {
+    (void)args;
+    long sec = ksyscall3_vec(0x80, SYS_time, 0, 0, 0);
+    terminal_writestring("time (int 0x80): ");
+    char buf[16]; itoa((int)sec, buf, 10); terminal_writestring(buf); terminal_writestring(" s\n");
+}
+
+static void cmd_sys81_time(const char* args) {
+    (void)args;
+    long sec = ksyscall3_vec(0x81, SYS_time, 0, 0, 0);
+    terminal_writestring("time (int 0x81): ");
+    char buf[16]; itoa((int)sec, buf, 10); terminal_writestring(buf); terminal_writestring(" s\n");
+}
+
+static void cmd_sys_exit(const char* args) {
+    uint32_t code = parse_uint(args ? args : "");
+    terminal_writestring("calling exit(");
+    char buf[16]; itoa((int)code, buf, 10); terminal_writestring(buf); terminal_writestring(")...\n");
+    (void)ksyscall3_vec(0x80, SYS_exit, code, 0, 0);
+    // Not reached: sys_exit halts.
+    terminal_writestring("sys.exit should have halted.\n");
 }

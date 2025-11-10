@@ -27,8 +27,6 @@ static uint32_t pit_frequency_hz = 0;
 static void pit_irq_handler(struct registers* regs) {
     (void)regs;
     pit_ticks++;
-
-    // Call every tick; tty handles its own interval
     terminal_cursor_blink_tick();
 }
 
