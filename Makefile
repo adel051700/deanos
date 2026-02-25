@@ -45,7 +45,9 @@ kernel/kheap.c \
 kernel/pic.c \
 kernel/irq.c \
 kernel/log.c \
-kernel/syscall.c
+kernel/syscall.c \
+kernel/task.c \
+kernel/context_switch.s
 
 ARCH_C_SRCS = \
 arch/i386/boot/crti.c
@@ -54,6 +56,7 @@ ARCH_ASM_SRCS = \
 arch/i386/boot/boot.s \
 arch/i386/interrupt.s \
 arch/i386/gdt.s
+
 
 # LibC Files (source paths)
 LIBC_SRCS = \
@@ -69,6 +72,7 @@ libc/string/strpbrk.c
 
 # Convert source paths to object paths in build directory
 KERNEL_OBJS = $(patsubst kernel/%.c,$(KERNEL_BUILD_DIR)/%.o,$(filter kernel/%.c,$(KERNEL_SRCS)))
+KERNEL_OBJS += build/kernel/context_switch.o
 LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(filter libc/%.c,$(LIBC_SRCS)))
 ARCH_C_OBJS = $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(ARCH_C_SRCS))
 ARCH_ASM_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(ARCH_ASM_SRCS))
@@ -101,6 +105,9 @@ directories:
 
 # Compile C files from kernel directory
 $(KERNEL_BUILD_DIR)/%.o: kernel/%.c | directories
+	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
+
+$(KERNEL_BUILD_DIR)/%.o: kernel/%.s | directories
 	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
 
 # Compile C files from libc directory

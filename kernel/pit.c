@@ -2,6 +2,10 @@
 #include "include/kernel/io.h"
 #include "include/kernel/irq.h"
 #include "include/kernel/tty.h"
+#include "include/kernel/task.h"
+#include "include/kernel/log.h"
+#include "include/kernel/pic.h"
+
 #include <stdio.h>
 
 
@@ -20,6 +24,7 @@
 // Global tick counter - volatile because it's modified by interrupt handler
 static volatile uint64_t pit_ticks = 0;
 static uint32_t pit_frequency_hz = 0;
+static void pit_isr(struct registers* r);
 
 /**
  * PIT interrupt handler - called on each timer tick
@@ -28,6 +33,12 @@ static void pit_irq_handler(struct registers* regs) {
     (void)regs;
     pit_ticks++;
     terminal_cursor_blink_tick();
+
+    // Call scheduler tick
+    scheduler_tick();
+
+    pic_eoi(0);
+
 }
 
 /**
@@ -48,6 +59,7 @@ void pit_initialize(uint32_t frequency) {
     io_wait();
     outb(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
     io_wait();
+    register_interrupt_handler(32, pit_isr);
 }
 
 uint64_t pit_get_ticks(void) {
@@ -68,4 +80,8 @@ void pit_sleep(uint32_t milliseconds) {
     while ((pit_ticks - start_ticks) < ticks_to_wait) {
         __asm__ __volatile__("hlt");
     }
+}
+
+static void pit_isr(struct registers* r) {
+    (void)r;
 }
