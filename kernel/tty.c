@@ -107,14 +107,16 @@
 
         for (uint32_t y = 0; y < TERM_ROWS; y++) {
             uint32_t y_pos = line_positions[y];
+            uint32_t x_pos = 0;
 
             for (uint32_t x = 0; x < TERM_COLS; x++) {
                 char c = term_buffer[y][x];
                 uint8_t scale = term_scale[y][x];
 
                 if (c != ' ') {
-                    framebuffer_drawchar(x * 8u * scale, y_pos, c, term_color, term_bg, scale);
+                    framebuffer_drawchar(x_pos, y_pos, c, term_color, term_bg, scale);
                 }
+                x_pos += 8u * scale;
             }
         }
 
@@ -144,6 +146,13 @@
         while (term_cursor_y >= (int)TERM_ROWS) {
             terminal_scroll();
             term_cursor_y = (int)TERM_ROWS - 1;
+        }
+        // Scroll when the cursor row would extend beyond the physical screen
+        uint32_t fb_h = framebuffer_height();
+        while (term_cursor_y > 0 &&
+               (line_positions[term_cursor_y] + 16u * current_scale) > fb_h) {
+            terminal_scroll();
+            term_cursor_y--;
         }
         if (term_cursor_y < 0) term_cursor_y = 0;
         if (term_cursor_x < 0) term_cursor_x = 0;
