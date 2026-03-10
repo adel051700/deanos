@@ -153,8 +153,8 @@
     void terminal_initialize(void) {
         term_cursor_x = 1;
         term_cursor_y = 0;
-        term_color = 0xFF0000;
-        term_bg = 0xFFB7E5;
+        term_color = 0x00FF00;
+        term_bg = 0x000000;
         current_scale = 1;
         cursor_visible = 1;
         cursor_enabled = 0;
