@@ -46,8 +46,8 @@ static uint32_t* ensure_pt(uint32_t dir_idx) {
     }
     uint32_t* pt = alloc_page_table();
     if (!pt) return NULL;
-    // Identity mapped: physical == virtual for these static arrays
-    page_directory[dir_idx] = ((uint32_t)pt & ~0xFFFu) | (PTE_P | PTE_W);
+    /* PDE gets P|W|U so user-mode PTEs beneath it can work. */
+    page_directory[dir_idx] = ((uint32_t)pt & ~0xFFFu) | (PTE_P | PTE_W | PTE_U);
     pde_virt_tables[dir_idx] = pt;
     return pt;
 }
@@ -109,8 +109,10 @@ void paging_initialize(struct multiboot_tag_framebuffer* fb_tag) {
     uintptr_t reserved_end = pmm_reserved_region_end();
     if (reserved_end < 0x1000) reserved_end = 0x1000;
 
-    // Identity map kernel + boot reserved region (bitmap, etc.)
-    identity_map_range(0x1000, reserved_end - 0x1000, PTE_P | PTE_W);
+    // Identity map kernel + boot reserved region
+    // PTE_U is set so ring-3 test tasks can execute kernel-linked user code.
+    // A real OS would map user code into separate address space.
+    identity_map_range(0x1000, reserved_end - 0x1000, PTE_P | PTE_W | PTE_U);
 
     // Identity map linear framebuffer if present
     if (fb_tag) {
@@ -119,8 +121,8 @@ void paging_initialize(struct multiboot_tag_framebuffer* fb_tag) {
         identity_map_range(fb_addr, fb_size, PTE_P | PTE_W);
     }
 
-    // Map a kernel heap region at KHEAP_BASE
-    map_region_new_frames(KHEAP_BASE, KHEAP_SIZE, PTE_P | PTE_W);
+    // Map a kernel heap region at KHEAP_BASE (user-accessible for user stacks)
+    map_region_new_frames(KHEAP_BASE, KHEAP_SIZE, PTE_P | PTE_W | PTE_U);
     register_interrupt_handler(14, page_fault_handler);
     load_cr3((uint32_t)page_directory);
     enable_paging();

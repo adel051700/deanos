@@ -42,8 +42,10 @@ static void context_switch_test_task_b(void) {
 }
 
 void task_tests_initialize(void) {
-    if (task_create(context_switch_test_task_a, 0) < 0)
+    /* Task A gets 3 ticks (30ms), Task B gets 7 ticks (70ms).
+       Both run 5 iterations — you can observe B keeps the CPU longer. */
+    if (task_create_named(context_switch_test_task_a, 0, 3, "test_A") < 0)
         klog("task test A creation failed");
-    if (task_create(context_switch_test_task_b, 0) < 0)
+    if (task_create_named(context_switch_test_task_b, 0, 7, "test_B") < 0)
         klog("task test B creation failed");
 }

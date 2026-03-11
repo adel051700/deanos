@@ -9,9 +9,9 @@
 3. Memory Map: Parse the multiboot memory map to know available RAM regions
 
 # Process Management
-1. Basic Task Switching: Implement context switching between simple tasks
-2. Simple Scheduler: Create a round-robin scheduler to run multiple processes
-3. User Space: Set up user mode and privilege separation from kernel
+~~1. Basic Task Switching: Implement context switching between simple tasks~~
+~~2. Simple Scheduler: Create a round-robin scheduler to run multiple processes~~
+~~3. User Space: Set up user mode and privilege separation from kernel~~
 
 # System Services
 1. ~~System Clock: Set up the PIT (Programmable Interval Timer) for timing~~
@@ -29,8 +29,8 @@
 3. ~~Kernel heap: simple malloc/free (e.g. dlmalloc or a slab/free‑list) atop frame allocator.~~
 4. ~~Better interrupt/IRQ layering: separate PIC + ISR dispatch, add simple logging.~~
 5. ~~System call interface: syscall gate (int 0x80 / 0x81) + minimal API (write, time, exit)~~.
-6. Task switching: struct task (regs, stacks), round‑robin scheduler driven by PIT.
-7. User mode transition: create ring3 code/data segments, switch via iret, run a test user task.
+6. ~~Task switching: struct task (regs, stacks), round‑robin scheduler driven by PIT.~~
+7. ~~User mode transition: create ring3 code/data segments, switch via iret, run a test user task.~~
 8. Basic VFS abstraction: in‑memory ramfs with open/read/write/stat; later real disk driver.
 9. ELF loader: load a user program into its address space, set up stack, start in user mode.
 10. Simple libc expansion: printf, malloc (once heap ready), basic file I/O wrappers.

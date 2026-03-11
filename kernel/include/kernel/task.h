@@ -7,6 +7,13 @@
 extern "C" {
 #endif
 
+/* ---- Configuration ----------------------------------------------------- */
+#define TASK_MAX          32
+#define TASK_NAME_LEN     16
+#define TASK_DEFAULT_QUANTUM  5   /* PIT ticks per time-slice (50 ms at 100 Hz) */
+
+/* ---- Types ------------------------------------------------------------- */
+
 typedef enum {
     TASK_READY = 0,
     TASK_RUNNING,
@@ -14,9 +21,7 @@ typedef enum {
     TASK_DEAD
 } task_state_t;
 
-/* Saved context for a kernel thread (ring0).
-   Only ESP is stored here; callee-saved regs (edi, esi, ebx, ebp)
-   are pushed/popped on the task's own stack by context_switch.s. */
+/* Only ESP is stored here; callee-saved regs live on the task's own stack. */
 typedef struct task_context {
     uint32_t esp;
 } task_context_t;
@@ -24,21 +29,42 @@ typedef struct task_context {
 typedef struct task {
     uint32_t        id;
     task_state_t    state;
+    char            name[TASK_NAME_LEN];
 
     task_context_t  ctx;
 
-    /* Kernel stack (for freeing later). */
+    /* Round-robin scheduling */
+    uint32_t        quantum;        /* ticks allowed per slice           */
+    uint32_t        ticks_left;     /* ticks remaining in current slice  */
+
+    /* Kernel stack */
     uintptr_t       kstack_base;
     uint32_t        kstack_size;
 } task_t;
 
+/* ---- Public API -------------------------------------------------------- */
+
 void tasking_initialize(void);
+
+/* Create a task.  quantum=0 → use TASK_DEFAULT_QUANTUM.  name may be NULL. */
+int  task_create_named(void (*entry)(void), uint32_t stack_size,
+                       uint32_t quantum, const char* name);
+
+/* Convenience: default quantum, auto-generated name. */
 int  task_create(void (*entry)(void), uint32_t stack_size);
+
 void task_yield(void);
 void task_exit(void);
+/* Block until the task with the given ID is TASK_DEAD (or not found). */
+void task_wait(int id);
 
 /* Called from PIT IRQ 0 (timer tick). */
 void scheduler_tick(void);
+
+/* Query helpers (for shell / diagnostics). */
+uint32_t task_count(void);
+const task_t* task_get(uint32_t index);
+int task_current_id(void);
 
 #ifdef __cplusplus
 }

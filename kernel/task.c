@@ -1,72 +1,131 @@
+/*
+ * task.c — Round-robin preemptive scheduler
+ *
+ * Each task gets a configurable time-slice (quantum) measured in PIT ticks.
+ * On every PIT tick the running task's `ticks_left` is decremented.
+ * A context switch happens only when:
+ *   1. The quantum expires (ticks_left reaches 0), OR
+ *   2. The task voluntarily yields (task_yield / task_exit).
+ *
+ * The idle task (index 0) is only chosen when nothing else is READY.
+ */
+
 #include "include/kernel/task.h"
-#include "include/kernel/pmm.h"
 #include "include/kernel/kheap.h"
+#include "include/kernel/tss.h"
 #include "include/kernel/log.h"
+#include "../libc/include/string.h"
 #include <stddef.h>
 #include <stdint.h>
 
-#define MAX_TASKS  32
 #define DEFAULT_STACK_SIZE (16u * 1024u)
 
 extern void context_switch(task_context_t* old, task_context_t* next);
 extern void task_trampoline(void);   /* in context_switch.s */
 
-static task_t g_tasks[MAX_TASKS];
+static task_t  g_tasks[TASK_MAX];
 static uint32_t g_task_count = 0;
-static int g_current = -1;
-static uint32_t g_next_id = 1;
+static int      g_current    = -1;
+static uint32_t g_next_id    = 1;
 
-/* Simple "idle" thread — just halts until next interrupt. */
+/* ---- internal helpers -------------------------------------------------- */
+
 static void idle_thread(void) {
     for (;;)
         __asm__ __volatile__("hlt");
 }
 
+/*
+ * pick_next_ready — Round-robin selection.
+ * Scans from (g_current+1) wrapping around.  Skips the idle task (index 0)
+ * unless it is the only READY task.
+ */
 static int pick_next_ready(void) {
     if (g_task_count == 0) return -1;
+
     int start = (g_current < 0) ? 0 : g_current;
+    int best  = -1;
+
     for (uint32_t n = 0; n < g_task_count; ++n) {
         int i = (start + 1 + (int)n) % (int)g_task_count;
-        if (g_tasks[i].state == TASK_READY) return i;
+        if (g_tasks[i].state != TASK_READY) continue;
+
+        /* Prefer non-idle tasks; fall back to idle only if nothing else. */
+        if (i == 0) {
+            if (best < 0) best = 0;       /* remember idle as fallback */
+        } else {
+            return i;                      /* first non-idle READY task */
+        }
     }
-    return -1;
+    return best;  /* either idle (0) or -1 if nothing ready */
 }
 
 static void* alloc_kstack(uint32_t size) {
     if (size == 0) size = DEFAULT_STACK_SIZE;
-    void* p = kmalloc(size);
-    return p;
+    return kmalloc(size);
+}
+
+static void do_switch(int prev, int next) {
+    if (prev >= 0 && g_tasks[prev].state == TASK_RUNNING)
+        g_tasks[prev].state = TASK_READY;
+
+    g_tasks[next].state      = TASK_RUNNING;
+    g_tasks[next].ticks_left = g_tasks[next].quantum;
+
+    /* Update TSS so ring-3 → ring-0 transitions use this task's kernel stack. */
+    uint32_t kstack_top = g_tasks[next].kstack_base + g_tasks[next].kstack_size;
+    tss_set_kernel_stack(kstack_top);
+
+    g_current = next;
+
+    context_switch(&g_tasks[prev].ctx, &g_tasks[next].ctx);
 }
 
 /* ---- public API -------------------------------------------------------- */
 
 void tasking_initialize(void) {
     g_task_count = 0;
-    g_current = -1;
-    g_next_id = 1;
+    g_current    = -1;
+    g_next_id    = 1;
 
-    (void)task_create(idle_thread, DEFAULT_STACK_SIZE);
+    /* Task 0 is the idle thread — always present, lowest priority. */
+    task_create_named(idle_thread, DEFAULT_STACK_SIZE, 1, "idle");
 
     g_current = 0;
-    g_tasks[g_current].state = TASK_RUNNING;
+    g_tasks[0].state = TASK_RUNNING;
 }
 
-void task_exit(void) {
-    /* Mark the current task as dead so the scheduler never picks it again. */
-    if (g_current >= 0)
-        g_tasks[g_current].state = TASK_DEAD;
-    task_yield();
-    /* Should never reach here, but just in case: */
-    for (;;) __asm__ __volatile__("hlt");
-}
-
-int task_create(void (*entry)(void), uint32_t stack_size) {
+int task_create_named(void (*entry)(void), uint32_t stack_size,
+                      uint32_t quantum, const char* name)
+{
     if (!entry) return -1;
-    if (g_task_count >= MAX_TASKS) return -2;
+    if (g_task_count >= TASK_MAX) return -2;
 
     task_t* t = &g_tasks[g_task_count];
-    t->id = g_next_id++;
-    t->state = TASK_READY;
+    t->id      = g_next_id++;
+    t->state   = TASK_READY;
+    t->quantum = (quantum > 0) ? quantum : TASK_DEFAULT_QUANTUM;
+    t->ticks_left = t->quantum;
+
+    /* Copy name (or generate one). */
+    if (name) {
+        uint32_t i = 0;
+        for (; i < TASK_NAME_LEN - 1 && name[i]; ++i)
+            t->name[i] = name[i];
+        t->name[i] = '\0';
+    } else {
+        /* "task_<id>" */
+        t->name[0] = 't'; t->name[1] = '_';
+        /* simple decimal id */
+        uint32_t id = t->id;
+        char tmp[12];
+        int len = 0;
+        do { tmp[len++] = '0' + (id % 10); id /= 10; } while (id);
+        uint32_t p = 2;
+        for (int j = len - 1; j >= 0 && p < TASK_NAME_LEN - 1; --j)
+            t->name[p++] = tmp[j];
+        t->name[p] = '\0';
+    }
 
     if (stack_size == 0) stack_size = DEFAULT_STACK_SIZE;
     void* stack = alloc_kstack(stack_size);
@@ -75,37 +134,90 @@ int task_create(void (*entry)(void), uint32_t stack_size) {
     t->kstack_base = (uintptr_t)stack;
     t->kstack_size = stack_size;
 
+    /* Build initial stack frame for context_switch's pop/pop/pop/pop/ret */
     uintptr_t top = (uintptr_t)stack + stack_size;
     top &= ~0xFu;
 
     uint32_t* sp = (uint32_t*)top;
-    *(--sp) = (uint32_t)task_trampoline;
-    *(--sp) = 0;                              /* ebp */
-    *(--sp) = (uint32_t)entry;               /* ebx = entry point */
-    *(--sp) = 0;                              /* esi */
-    *(--sp) = 0;                              /* edi */
-
+    *(--sp) = (uint32_t)task_trampoline;   /* return address         */
+    *(--sp) = 0;                            /* ebp                    */
+    *(--sp) = (uint32_t)entry;             /* ebx = entry point      */
+    *(--sp) = 0;                            /* esi                    */
+    *(--sp) = 0;                            /* edi                    */
     t->ctx.esp = (uint32_t)sp;
 
     g_task_count++;
     return (int)t->id;
 }
 
+int task_create(void (*entry)(void), uint32_t stack_size) {
+    return task_create_named(entry, stack_size, TASK_DEFAULT_QUANTUM, NULL);
+}
+
+void task_exit(void) {
+    if (g_current >= 0)
+        g_tasks[g_current].state = TASK_DEAD;
+    task_yield();
+    for (;;) __asm__ __volatile__("hlt");
+}
+
+void task_wait(int id) {
+    /* Yield until the task with `id` is TASK_DEAD (or gone). */
+    for (;;) {
+        int found = 0;
+        for (uint32_t i = 0; i < g_task_count; ++i) {
+            if ((int)g_tasks[i].id == id) {
+                found = 1;
+                if (g_tasks[i].state == TASK_DEAD)
+                    return;
+                break;
+            }
+        }
+        if (!found) return;   /* task doesn't exist (any more) */
+        task_yield();
+    }
+}
+
 void task_yield(void) {
     __asm__ __volatile__("int $0x20");
 }
 
+/*
+ * scheduler_tick — called from PIT IRQ 0.
+ *
+ * Round-robin logic:
+ *   • Decrement the running task's ticks_left.
+ *   • If ticks_left > 0 AND the task is still RUNNING → keep running.
+ *   • Otherwise pick the next READY task and switch.
+ *   • If no other task is ready, let the current one keep going
+ *     (or switch to idle if the current one died / blocked).
+ */
 void scheduler_tick(void) {
+    /* Decrement remaining slice of current task. */
+    if (g_current >= 0 && g_tasks[g_current].state == TASK_RUNNING) {
+        if (g_tasks[g_current].ticks_left > 0)
+            g_tasks[g_current].ticks_left--;
+
+        /* Still has time left → no switch. */
+        if (g_tasks[g_current].ticks_left > 0)
+            return;
+    }
+
+    /* Quantum expired or task is no longer RUNNING → find next. */
     int next = pick_next_ready();
-    if (next < 0 || next == g_current) return;
+    if (next < 0) return;                    /* nothing to run at all     */
+    if (next == g_current) {
+        /* Same task — just refill its quantum. */
+        g_tasks[g_current].ticks_left = g_tasks[g_current].quantum;
+        return;
+    }
 
     int prev = g_current;
-    if (prev >= 0 && g_tasks[prev].state == TASK_RUNNING)
-        g_tasks[prev].state = TASK_READY;
-
-    g_tasks[next].state = TASK_RUNNING;
-    g_current = next;
-
-
-    context_switch(&g_tasks[prev].ctx, &g_tasks[next].ctx);
+    do_switch(prev, next);
 }
+
+/* ---- Query helpers ----------------------------------------------------- */
+
+uint32_t task_count(void)              { return g_task_count; }
+const task_t* task_get(uint32_t idx)   { return (idx < g_task_count) ? &g_tasks[idx] : NULL; }
+int task_current_id(void)              { return (g_current >= 0) ? (int)g_tasks[g_current].id : -1; }

@@ -2,24 +2,9 @@
 #include <string.h>
 #include "include/kernel/gdt.h"
 
-// GDT entry structure
-struct gdt_entry {
-    uint16_t limit_low;           // The lower 16 bits of the limit
-    uint16_t base_low;            // The lower 16 bits of the base
-    uint8_t  base_middle;         // The next 8 bits of the base
-    uint8_t  access;              // Access flags, determine ring level
-    uint8_t  granularity;         // Granularity flags, part of limit
-    uint8_t  base_high;           // The last 8 bits of the base
-} __attribute__((packed));
 
-// GDT pointer structure
-struct gdt_ptr {
-    uint16_t limit;               // Size of GDT minus one
-    uint32_t base;                // Address of the GDT
-} __attribute__((packed));
-
-// Define 5 GDT entries for our system
-struct gdt_entry gdt[5];
+// Define 6 GDT entries: null, kcode, kdata, ucode, udata, TSS
+struct gdt_entry gdt[6];
 struct gdt_ptr   gp;
 
 // External assembly function to load the GDT
@@ -45,29 +30,28 @@ static void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access,
 
 // Initialize the GDT
 void gdt_initialize() {
-    // Setup the GDT pointer
-    gp.limit = (sizeof(struct gdt_entry) * 5) - 1;
+    // Setup the GDT pointer (6 entries; slot 5 = TSS, written by tss_initialize)
+    gp.limit = (sizeof(struct gdt_entry) * 6) - 1;
     gp.base = (uint32_t)&gdt;
     
     // NULL descriptor
     gdt_set_gate(0, 0, 0, 0, 0);
     
-    // Kernel code segment
-    // base=0, limit=4GB, gran=4KB blocks, 32-bit, code segment, executable, ring 0
+    // Index 1: Kernel code segment (selector 0x08)
     gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);
     
-    // Kernel data segment
-    // base=0, limit=4GB, gran=4KB blocks, 32-bit, data segment, writable, ring 0
+    // Index 2: Kernel data segment (selector 0x10)
     gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);
     
-    // User code segment
-    // base=0, limit=4GB, gran=4KB blocks, 32-bit, code segment, executable, ring 3
+    // Index 3: User code segment (selector 0x18, RPL 3 → 0x1B)
     gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);
     
-    // User data segment
-    // base=0, limit=4GB, gran=4KB blocks, 32-bit, data segment, writable, ring 3
+    // Index 4: User data segment (selector 0x20, RPL 3 → 0x23)
     gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);
     
+    // Index 5: TSS — zeroed now, filled by tss_initialize()
+    gdt_set_gate(5, 0, 0, 0, 0);
+
     // Flush the GDT by calling assembly function
     gdt_flush((uint32_t)&gp);
 }

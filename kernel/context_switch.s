@@ -62,3 +62,43 @@ task_trampoline:
     jmp .Lhalt
 
     .size task_trampoline, .-task_trampoline
+
+/* ---- enter_usermode ---------------------------------------------------- */
+/*
+ * void enter_usermode(uint32_t entry, uint32_t user_esp);
+ *
+ * Drops to ring 3 via iret.
+ * Sets up the stack frame that iret expects for a privilege-level change:
+ *   [SS] [ESP] [EFLAGS] [CS] [EIP]
+ *
+ * GDT selectors (with RPL 3):
+ *   User code  = 0x18 | 3 = 0x1B
+ *   User data  = 0x20 | 3 = 0x23
+ */
+    .global enter_usermode
+    .type enter_usermode, @function
+
+enter_usermode:
+    movl 4(%esp), %ecx          /* ecx = entry point (EIP)    */
+    movl 8(%esp), %edx          /* edx = user stack (ESP)     */
+
+    cli                          /* disable interrupts during setup */
+
+    /* Load user data segment into DS, ES, FS, GS */
+    movl $0x23, %eax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+
+    /* Build iret frame on kernel stack */
+    pushl $0x23                  /* SS  = user data (RPL 3)    */
+    pushl %edx                   /* ESP = user stack pointer   */
+    pushfl                       /* EFLAGS                     */
+    orl $0x200, (%esp)           /* ensure IF=1 in user mode   */
+    pushl $0x1B                  /* CS  = user code (RPL 3)    */
+    pushl %ecx                   /* EIP = entry point          */
+    iret
+
+    .size enter_usermode, .-enter_usermode
+

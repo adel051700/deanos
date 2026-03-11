@@ -2,6 +2,7 @@
 #include "include/kernel/interrupt.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/pit.h"
+#include "include/kernel/task.h"
 #include "include/kernel/log.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -24,9 +25,7 @@ static long sys_time(uint32_t* out) {
 
 static long sys_exit(uint32_t status) {
     (void)status;
-    // No process model yet; halt the CPU as a placeholder.
-    // In the future: mark current task exited and schedule.
-    while (1) { __asm__ __volatile__("cli; hlt"); }
+    task_exit();       /* marks task DEAD and yields — never returns */
     return 0;
 }
 

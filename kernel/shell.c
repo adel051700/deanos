@@ -3,6 +3,8 @@
 #include "include/kernel/keyboard.h"
 #include "include/kernel/rtc.h"
 #include "include/kernel/pit.h"
+#include "include/kernel/task.h"
+#include "include/kernel/usermode.h"
 #include "include/kernel/syscall.h"   // SYS_write, SYS_time, SYS_exit
 #include <string.h>
 #include <stdio.h>
@@ -43,6 +45,8 @@ static void cmd_dean(const char* args);
 static void cmd_time(const char* args);
 static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
+static void cmd_tasks(const char* args);
+static void cmd_usertest(const char* args);
 
 // Command descriptor
 struct shell_command {
@@ -62,6 +66,8 @@ static const struct shell_command commands[] = {
     {"time",   cmd_time,   "Show current time/date"},
     {"uptime", cmd_uptime, "Show system uptime"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
+    {"tasks",  cmd_tasks,  "List all tasks and their state"},
+    {"usertest", cmd_usertest, "Run a test program in ring 3 (user mode)"},
 
     // New syscall test commands
     {"sys.write",   cmd_sys_write,   "Syscall write via int 0x80: sys.write <text>"},
@@ -487,9 +493,67 @@ static void cmd_sys81_time(const char* args) {
 
 static void cmd_sys_exit(const char* args) {
     uint32_t code = parse_uint(args ? args : "");
-    terminal_writestring("calling exit(");
+    terminal_writestring("calling exit(\n");
     char buf[16]; itoa((int)code, buf, 10); terminal_writestring(buf); terminal_writestring(")...\n");
     (void)ksyscall3_vec(0x80, SYS_exit, code, 0, 0);
     // Not reached: sys_exit halts.
-    terminal_writestring("sys.exit should have halted.\n");
+}
+
+static void cmd_tasks(const char* args) {
+    (void)args;
+    static const char* state_names[] = {"READY","RUN  ","BLOCK","DEAD "};
+    char buf[16];
+
+    terminal_writestring("ID  STATE  QUANTUM  NAME\n");
+    terminal_writestring("--  -----  -------  ----\n");
+
+    uint32_t count = task_count();
+    int cur = task_current_id();
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const task_t* t = task_get(i);
+        if (!t) continue;
+
+        /* ID (with * for current) */
+        itoa(t->id, buf, 10);
+        if ((int)t->id == cur) {
+            terminal_writestring("*");
+        } else {
+            terminal_writestring(" ");
+        }
+        terminal_writestring(buf);
+        terminal_writestring("  ");
+
+        /* State */
+        if (t->state <= TASK_DEAD)
+            terminal_writestring(state_names[t->state]);
+        else
+            terminal_writestring("???? ");
+        terminal_writestring("  ");
+
+        /* Quantum */
+        itoa(t->quantum, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("        ");
+
+        /* Name */
+        terminal_writestring(t->name);
+        terminal_writestring("\n");
+    }
+}
+
+static void cmd_usertest(const char* args) {
+    (void)args;
+    terminal_writestring("Spawning ring-3 test task...\n");
+    int id = user_task_create(user_test_program, "utest");
+    if (id < 0) {
+        terminal_writestring("Failed to create user task!\n");
+    } else {
+        char buf[12];
+        terminal_writestring("Created user task ID ");
+        itoa(id, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+        task_wait(id);
+    }
 }

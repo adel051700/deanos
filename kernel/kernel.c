@@ -15,6 +15,8 @@
 #include "include/kernel/paging.h"
 #include "include/kernel/kheap.h"
 #include "include/kernel/syscall.h"
+#include "include/kernel/tss.h"
+#include "include/kernel/usermode.h"
 #include "../libc/include/stdio.h"   // for itoa
 
 static void shell_task(void) {
@@ -30,14 +32,14 @@ static void shell_task(void) {
 
 void kernel_main(void) {
     gdt_initialize();
+    tss_initialize(0x10, 0);    /* kernel SS=0x10, ESP0 updated per-task */
     idt_initialize();
     syscall_initialize();
     pit_initialize(100);
     keyboard_initialize();
     shell_initialize();
     tasking_initialize();
-    task_tests_initialize();
-    if (task_create(shell_task, 0) < 0) {
+    if (task_create_named(shell_task, 0, TASK_DEFAULT_QUANTUM, "shell") < 0) {
         klog("shell task creation failed");
     }
 
