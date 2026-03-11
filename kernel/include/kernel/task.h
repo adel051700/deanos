@@ -14,10 +14,11 @@ typedef enum {
     TASK_DEAD
 } task_state_t;
 
-/* Saved context for a kernel thread (ring0). */
+/* Saved context for a kernel thread (ring0).
+   Only ESP is stored here; callee-saved regs (edi, esi, ebx, ebp)
+   are pushed/popped on the task's own stack by context_switch.s. */
 typedef struct task_context {
-    uint32_t edi, esi, ebp, ebx;
-    uint32_t eip;
+    uint32_t esp;
 } task_context_t;
 
 typedef struct task {
@@ -34,6 +35,7 @@ typedef struct task {
 void tasking_initialize(void);
 int  task_create(void (*entry)(void), uint32_t stack_size);
 void task_yield(void);
+void task_exit(void);
 
 /* Called from PIT IRQ 0 (timer tick). */
 void scheduler_tick(void);

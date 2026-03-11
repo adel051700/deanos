@@ -8,37 +8,57 @@
 */
 
     .section .text
+
+/* ---- context_switch ---------------------------------------------------- */
     .global context_switch
     .type context_switch, @function
 
 context_switch:
-    /* stack: retaddr, old, new */
-    movl 4(%esp), %eax      /* eax = old */
-    movl 8(%esp), %edx      /* edx = new */
+    movl 4(%esp), %eax          /* eax = old ctx */
+    movl 8(%esp), %edx          /* edx = new ctx */
 
-    /* save callee-saved regs into *old */
-    movl %ebx, 0(%eax)
-    movl %esi, 4(%eax)
-    movl %edi, 8(%eax)
-    movl %ebp, 12(%eax)
+    /* Save callee-saved regs on the CURRENT stack */
+    pushl %ebp
+    pushl %ebx
+    pushl %esi
+    pushl %edi
 
-    /* save esp as it will be after we return (skip retaddr, old, new) */
-    leal 12(%esp), %ecx
-    movl %ecx, 16(%eax)
+    /* Save current ESP into old->esp  (offset 0) */
+    movl %esp, (%eax)
 
-    /* save eip (the return address) */
-    movl (%esp), %ecx
-    movl %ecx, 20(%eax)
+    /* Load new ESP from new->esp  (offset 0) */
+    movl (%edx), %esp
 
-    /* restore callee-saved regs from *new */
-    movl 0(%edx), %ebx
-    movl 4(%edx), %esi
-    movl 8(%edx), %edi
-    movl 12(%edx), %ebp
-    movl 16(%edx), %esp
+    /* Restore callee-saved regs from the NEW stack */
+    popl %edi
+    popl %esi
+    popl %ebx
+    popl %ebp
 
-    /* jump to new->eip */
-    movl 20(%edx), %ecx
-    jmp *%ecx
+    ret                           /* pops return address and jumps there */
 
     .size context_switch, .-context_switch
+
+/* ---- task_trampoline --------------------------------------------------- */
+/*
+ * First-time entry point for every new task.
+ * context_switch's "ret" lands here.
+ * ebx = real task entry function (set up by task_create).
+ */
+    .global task_trampoline
+    .type task_trampoline, @function
+
+task_trampoline:
+    sti                           /* re-enable interrupts */
+    call *%ebx                    /* call the real task entry */
+
+    /* Task function returned — mark it dead and yield. */
+    call task_exit
+
+    /* Should never reach here, but just in case: */
+    cli
+.Lhalt:
+    hlt
+    jmp .Lhalt
+
+    .size task_trampoline, .-task_trampoline

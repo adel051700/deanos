@@ -14,9 +14,9 @@ LDFLAGS?=
 LIBS?=
 
 # Compiler/Assembler/Linker
-CC = i686-elf-gcc
-AS = i686-elf-as
-LD = i686-elf-ld
+CC = /home/adel/opt/cross/bin/i686-elf-gcc
+AS = /home/adel/opt/cross/bin/i686-elf-as
+LD = /home/adel/opt/cross/bin/i686-elf-ld
 
 # Includes
 CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra -fno-pie -fno-stack-protector
@@ -47,6 +47,7 @@ kernel/irq.c \
 kernel/log.c \
 kernel/syscall.c \
 kernel/task.c \
+kernel/task_tests.c \
 kernel/context_switch.s
 
 ARCH_C_SRCS = \

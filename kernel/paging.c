@@ -1,7 +1,9 @@
 #include "include/kernel/paging.h"
 #include "include/kernel/pmm.h"
 #include "../libc/include/string.h"
-#include "include/kernel/interrupt.h"   // removed tty/stdio includes
+#include "include/kernel/interrupt.h"
+#include "include/kernel/tty.h"
+#include "../libc/include/stdio.h"
 
 #define PAGE_SIZE 4096
 
@@ -82,8 +84,16 @@ static void map_region_new_frames(uintptr_t vbase, uintptr_t size, uint32_t flag
 }
 
 static void page_fault_handler(struct registers* r) {
-    (void)r;
-    // Silent halt on fault
+    uint32_t fault_addr;
+    __asm__ __volatile__("mov %%cr2, %0" : "=r"(fault_addr));
+    char buf[16];
+    terminal_writestring("\nPAGE FAULT at 0x");
+    itoa(fault_addr, buf, 16);
+    terminal_writestring(buf);
+    terminal_writestring("  EIP=0x");
+    itoa(r->eip, buf, 16);
+    terminal_writestring(buf);
+    terminal_writestring("\nSystem halted.\n");
     while (1) { __asm__ __volatile__("hlt"); }
 }
 

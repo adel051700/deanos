@@ -34,11 +34,11 @@ static void pit_irq_handler(struct registers* regs) {
     pit_ticks++;
     terminal_cursor_blink_tick();
 
-    // Call scheduler tick
-    scheduler_tick();
-
+    /* Send EOI BEFORE scheduler_tick — context_switch may not return
+       to this function, so the PIC must be acknowledged first. */
     pic_eoi(0);
 
+    scheduler_tick();
 }
 
 /**
