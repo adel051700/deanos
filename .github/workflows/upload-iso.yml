@@ -109,12 +109,13 @@ jobs:
 
             const fileBuffer = fs.readFileSync(latest.fullPath);
 
+            const storagePath = `iso/${latest.file}`;
+
             const { error } = await supabase.storage
               .from(BUCKET)
-              .upload(latest.file, fileBuffer, {
-                contentType: "application/octet-stream",
-                upsert: true,
-              });
+              .upload(storagePath, fileBuffer, {
+              upsert: true,
+            });
 
             if (error) {
               throw error;
