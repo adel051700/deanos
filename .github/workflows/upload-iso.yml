@@ -114,6 +114,7 @@ jobs:
             const { error } = await supabase.storage
               .from(BUCKET)
               .upload(storagePath, fileBuffer, {
+              contentType: "application/octet-stream",
               upsert: true,
             });
 
