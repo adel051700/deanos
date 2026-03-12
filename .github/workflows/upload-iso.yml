@@ -49,7 +49,7 @@ jobs:
           const BUCKET = "deanos-releases";
 
           // deanos-DD-MM-YYYY-X_Y_Z.iso
-          const ISO_REGEX = /^deanos-(\d{2})-(\d{2})-(\d{4})-(\d+)_(\d+)_(\d+)\.iso$/;
+          const ISO_REGEX = /^deanos-(\d{2})-(\d{2})-(\d{4})-(\d+)_(\d+)\.iso$/;
 
           function compareVersion(a, b) {
             for (let i = 0; i < 3; i++) {
