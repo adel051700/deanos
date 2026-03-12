@@ -9,6 +9,6 @@
 /.idea/*
 *.o
 *.d
-*.iso
 *.bin
+/*.iso
 /isodir/*
