@@ -1,7 +1,8 @@
 # I/O Systems
 1. ~~Keyboard Driver: Implement PS/2 keyboard interrupt handling and input buffer~~
 2. ~~Basic Shell: Create a command-line interface to interact with your OS~~
-3. File System: Implement a basic in-memory filesystem or read from disk
+3. ~~File System: Implement a basic in-memory filesystem or read from disk~~
+4. Optional: make rm spawn a task that overwrites the file with random data before deleting it
 
 # Memory Management
 1. Paging Setup: Implement proper memory paging to enable virtual memory
@@ -31,7 +32,7 @@
 5. ~~System call interface: syscall gate (int 0x80 / 0x81) + minimal API (write, time, exit)~~.
 6. ~~Task switching: struct task (regs, stacks), round‑robin scheduler driven by PIT.~~
 7. ~~User mode transition: create ring3 code/data segments, switch via iret, run a test user task.~~
-8. Basic VFS abstraction: in‑memory ramfs with open/read/write/stat; later real disk driver.
+8. ~~Basic VFS abstraction: in‑memory ramfs with open/read/write/stat; later real disk driver.~~
 9. ELF loader: load a user program into its address space, set up stack, start in user mode.
 10. Simple libc expansion: printf, malloc (once heap ready), basic file I/O wrappers.
 11. Timer improvements: expose sleep/yield;ds convert busy waits to scheduler blocks.
