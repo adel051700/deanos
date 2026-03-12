@@ -9,8 +9,7 @@ DESTDIR = isodir
 DATE = $(shell date +%d-%m-%Y)
 MAJOR = 0
 MINOR = 1
-PATCH = 0
-VERSION = $(MAJOR)_$(MINOR)_$(PATCH)
+VERSION = $(MAJOR)_$(MINOR)
 # Cross-compiler settings
 CFLAGS?=-O2 -g
 CPPFLAGS?=
@@ -137,7 +136,7 @@ clean:
 	rm -f deanos.bin
 	rm -f deanos-$(DATE)-$(VERSION).iso
 	rm -rf $(DESTDIR)
-	rm -rf isos/
+	rm -rf isos/deanos-$(DATE)-$(VERSION).iso
 
 install: deanos.bin
 	mkdir -p $(DESTDIR)/boot/grub
