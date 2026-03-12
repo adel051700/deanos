@@ -6,12 +6,14 @@
 #include "include/kernel/task.h"
 #include "include/kernel/usermode.h"
 #include "include/kernel/syscall.h"   // SYS_write, SYS_time, SYS_exit
+#include "include/kernel/vfs.h"
 #include <string.h>
 #include <stdio.h>
 
-#define SHELL_PROMPT "DeanOS $ "
 #define MAX_COMMAND_LENGTH 256
 #define SHELL_HISTORY_SIZE 32
+
+static char cwd[VFS_PATH_MAX] = "/";   /* current working directory */
 
 static char command_buffer[MAX_COMMAND_LENGTH];
 static size_t command_length = 0;
@@ -48,6 +50,20 @@ static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
 static void cmd_usertest(const char* args);
 
+// Filesystem commands
+static void cmd_ls(const char* args);
+static void cmd_cat(const char* args);
+static void cmd_touch(const char* args);
+static void cmd_writef(const char* args);
+static void cmd_mkdir(const char* args);
+static void cmd_rm(const char* args);
+static void cmd_stat(const char* args);
+static void cmd_cd(const char* args);
+static void cmd_pwd(const char* args);
+
+/* Print the shell prompt: "DeanOS /path $ " */
+static void shell_print_prompt(void);
+
 // Command descriptor
 struct shell_command {
     const char* name;
@@ -69,6 +85,17 @@ static const struct shell_command commands[] = {
     {"tasks",  cmd_tasks,  "List all tasks and their state"},
     {"usertest", cmd_usertest, "Run a test program in ring 3 (user mode)"},
 
+    // Filesystem commands
+    {"ls",      cmd_ls,      "List directory contents: ls [path]"},
+    {"cat",     cmd_cat,     "Display file contents: cat <path>"},
+    {"touch",   cmd_touch,   "Create an empty file: touch <path>"},
+    {"write",   cmd_writef,  "Write text to file: write <path> <text>"},
+    {"mkdir",   cmd_mkdir,   "Create a directory: mkdir <path>"},
+    {"rm",      cmd_rm,      "Remove a file or empty directory: rm <path>"},
+    {"stat",    cmd_stat,    "Show file/directory info: stat <path>"},
+    {"cd",      cmd_cd,      "Change directory: cd <path>"},
+    {"pwd",     cmd_pwd,     "Print working directory"},
+
     // New syscall test commands
     {"sys.write",   cmd_sys_write,   "Syscall write via int 0x80: sys.write <text>"},
     {"sys.time",    cmd_sys_time,    "Syscall time via int 0x80"},
@@ -83,6 +110,15 @@ static const struct shell_command commands[] = {
 // ...existing code...
 
 /**
+ * Print the shell prompt: "DeanOS /path $ "
+ */
+static void shell_print_prompt(void) {
+    terminal_writestring("DeanOS ");
+    terminal_writestring(cwd);
+    terminal_writestring(" $ ");
+}
+
+/**
  * Initialize the shell
  */
 void shell_initialize(void) {
@@ -90,7 +126,9 @@ void shell_initialize(void) {
     history_len = 0;
     history_pos = 0;
     esc_state = ESC_IDLE;
-    terminal_writestring(SHELL_PROMPT);
+    cwd[0] = '/';
+    cwd[1] = '\0';
+    shell_print_prompt();
     terminal_enable_cursor();  // Enable cursor now that we're ready for input
 }
 
@@ -137,7 +175,7 @@ void shell_process_char(char c) {
         shell_execute_command(command_buffer);
         command_length = 0;
         command_buffer[0] = '\0';
-        terminal_writestring(SHELL_PROMPT);
+        shell_print_prompt();
     } else if (c == '\b') {
         if (command_length > 0) {
             command_length--;
@@ -274,7 +312,7 @@ static void cmd_about(const char* args) {
     
     terminal_writestring("DeanOS - A minimal operating system\n");
     terminal_writestring("Created as a learning project\n");
-    terminal_writestring("Version 0.1\n");
+    terminal_writestring("Version 0.1.0\n");
 }
 
 static void cmd_dean(const char* args) {
@@ -556,4 +594,475 @@ static void cmd_usertest(const char* args) {
         terminal_writestring("\n");
         task_wait(id);
     }
+}
+
+/* ---- Filesystem commands ----------------------------------------------- */
+
+/*
+ * Resolve a path for shell commands.
+ * Absolute paths ("/foo/bar") are used as-is.
+ * Relative paths are joined with the current working directory.
+ */
+static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz) {
+    if (!arg || *arg == '\0') return cwd;
+    if (arg[0] == '/') return arg;           /* absolute – use as-is */
+
+    /* Build cwd + "/" + arg into buf */
+    size_t cwdlen = strlen(cwd);
+    if (cwdlen + 1 + strlen(arg) + 1 > bufsz) return cwd; /* too long */
+
+    strcpy(buf, cwd);
+    /* append '/' separator unless cwd already ends with '/' */
+    if (cwdlen > 0 && cwd[cwdlen - 1] != '/') {
+        buf[cwdlen] = '/';
+        buf[cwdlen + 1] = '\0';
+    }
+    strncat(buf, arg, bufsz - strlen(buf) - 1);
+    buf[bufsz - 1] = '\0';
+    return buf;
+}
+
+/* Helper: count children of a directory node */
+static uint32_t count_children(vfs_node_t* dir) {
+    vfs_dirent_t tmp;
+    uint32_t n = 0;
+    while (vfs_readdir(dir, n, &tmp) == 0) n++;
+    return n;
+}
+
+/* Helper: print a single file entry with size */
+static void ls_print_file_info(vfs_node_t* dir, const char* name) {
+    terminal_writestring("[FILE] ");
+    terminal_writestring(name);
+    vfs_node_t* child = vfs_finddir(dir, name);
+    if (child) {
+        char buf[16];
+        terminal_writestring("  (");
+        itoa((int)child->size, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" bytes)");
+    }
+    terminal_writestring("\n");
+}
+
+#define LS_MAX_DEPTH 3
+
+/* Print the tree prefix for a given depth level */
+static void ls_print_prefix(int depth, int is_last) {
+    for (int i = 0; i < depth; i++) {
+        if (i == 0) {
+            terminal_writestring("  ");
+        }
+        else{
+            terminal_writestring("     ");
+        }
+    }
+    if (depth > 0) {
+        if (is_last) {
+            terminal_writestring("|_ ");
+        } else {
+            terminal_writestring("|  ");
+        }
+    }
+}
+
+/* Recursively list directory contents up to LS_MAX_DEPTH levels */
+static void ls_recursive(vfs_node_t* dir, int depth) {
+    if (depth > LS_MAX_DEPTH) return;
+
+    uint32_t total = count_children(dir);
+    if (total == 0) {
+        if (depth == 0) terminal_writestring("  (empty)\n");
+        return;
+    }
+
+    vfs_dirent_t ent;
+    uint32_t idx = 0;
+    while (vfs_readdir(dir, idx, &ent) == 0) {
+        int is_last = (idx == total - 1);
+        int is_dir  = (ent.type & VFS_DIRECTORY);
+
+        ls_print_prefix(depth, is_last);
+
+        if (is_dir) {
+            terminal_writestring("[DIR] ");
+            terminal_writestring(ent.name);
+            terminal_writestring("\n");
+
+            vfs_node_t* sub = vfs_finddir(dir, ent.name);
+            if (sub && (sub->type & VFS_DIRECTORY)) {
+                ls_recursive(sub, depth + 1);
+            }
+        } else {
+            ls_print_file_info(dir, ent.name);
+        }
+        idx++;
+    }
+}
+
+static void cmd_ls(const char* args) {
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
+
+    vfs_node_t* dir = vfs_namei(path);
+    if (!dir) {
+        terminal_writestring("ls: no such directory: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+    if (!(dir->type & VFS_DIRECTORY)) {
+        terminal_writestring("ls: not a directory: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    ls_recursive(dir, 0);
+}
+
+static void cmd_cat(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: cat <path>\n");
+        return;
+    }
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
+
+    vfs_node_t* node = vfs_namei(path);
+    if (!node) {
+        terminal_writestring("cat: no such file: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+    if (!(node->type & VFS_FILE)) {
+        terminal_writestring("cat: not a file: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (node->size == 0) {
+        terminal_writestring("(empty file)\n");
+        return;
+    }
+
+    /* Read in chunks */
+    uint8_t buf[257];
+    uint32_t offset = 0;
+    while (offset < node->size) {
+        uint32_t chunk = node->size - offset;
+        if (chunk > 256) chunk = 256;
+        int32_t n = vfs_read(node, offset, chunk, buf);
+        if (n <= 0) break;
+        buf[n] = '\0';
+        terminal_writestring((const char*)buf);
+        offset += (uint32_t)n;
+    }
+    terminal_writestring("\n");
+}
+
+static void cmd_touch(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: touch <path>\n");
+        return;
+    }
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
+
+    /* Check if it already exists */
+    if (vfs_namei(path)) {
+        terminal_writestring("touch: already exists: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    /* Split into parent + name */
+    /* Find last '/' */
+    size_t plen = strlen(path);
+    int last_slash = -1;
+    for (size_t i = 0; i < plen; i++) {
+        if (path[i] == '/') last_slash = (int)i;
+    }
+
+    char parent_path[VFS_PATH_MAX];
+    char fname[VFS_NAME_MAX];
+    if (last_slash <= 0) {
+        parent_path[0] = '/'; parent_path[1] = '\0';
+        strncpy(fname, path + (last_slash < 0 ? 0 : 1), VFS_NAME_MAX - 1);
+    } else {
+        memcpy(parent_path, path, (size_t)last_slash);
+        parent_path[last_slash] = '\0';
+        strncpy(fname, path + last_slash + 1, VFS_NAME_MAX - 1);
+    }
+    fname[VFS_NAME_MAX - 1] = '\0';
+
+    vfs_node_t* parent = vfs_namei(parent_path);
+    if (!parent) {
+        terminal_writestring("touch: parent not found: ");
+        terminal_writestring(parent_path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (vfs_create(parent, fname, VFS_FILE) < 0) {
+        terminal_writestring("touch: failed to create file\n");
+    }
+}
+
+static void cmd_writef(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: write <path> <text>\n");
+        return;
+    }
+
+    /* Split: first token is path, rest is text */
+    char path_arg[VFS_PATH_MAX];
+    size_t i = 0;
+    while (args[i] && args[i] != ' ' && i < VFS_PATH_MAX - 1) {
+        path_arg[i] = args[i];
+        i++;
+    }
+    path_arg[i] = '\0';
+
+    const char* text = "";
+    if (args[i] == ' ') {
+        text = args + i + 1;
+        while (*text == ' ') text++;
+    }
+
+    if (*text == '\0') {
+        terminal_writestring("usage: write <path> <text>\n");
+        return;
+    }
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
+
+    /* Open with create + truncate */
+    int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_CREATE | VFS_O_TRUNC);
+    if (fd < 0) {
+        terminal_writestring("write: cannot open: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    size_t tlen = strlen(text);
+    int32_t written = vfs_fd_write(fd, (const uint8_t*)text, (uint32_t)tlen);
+    vfs_fd_close(fd);
+
+    char buf[16];
+    terminal_writestring("Wrote ");
+    itoa((int)written, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" bytes to ");
+    terminal_writestring(path);
+    terminal_writestring("\n");
+}
+
+static void cmd_mkdir(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: mkdir <path>\n");
+        return;
+    }
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
+
+    if (vfs_namei(path)) {
+        terminal_writestring("mkdir: already exists: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    /* Split parent + dirname */
+    size_t plen = strlen(path);
+    int last_slash = -1;
+    for (size_t i = 0; i < plen; i++) {
+        if (path[i] == '/') last_slash = (int)i;
+    }
+
+    char parent_path[VFS_PATH_MAX];
+    char dname[VFS_NAME_MAX];
+    if (last_slash <= 0) {
+        parent_path[0] = '/'; parent_path[1] = '\0';
+        strncpy(dname, path + (last_slash < 0 ? 0 : 1), VFS_NAME_MAX - 1);
+    } else {
+        memcpy(parent_path, path, (size_t)last_slash);
+        parent_path[last_slash] = '\0';
+        strncpy(dname, path + last_slash + 1, VFS_NAME_MAX - 1);
+    }
+    dname[VFS_NAME_MAX - 1] = '\0';
+
+    vfs_node_t* parent = vfs_namei(parent_path);
+    if (!parent) {
+        terminal_writestring("mkdir: parent not found: ");
+        terminal_writestring(parent_path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (vfs_create(parent, dname, VFS_DIRECTORY) < 0) {
+        terminal_writestring("mkdir: failed to create directory\n");
+    }
+}
+
+static void cmd_rm(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: rm <path>\n");
+        return;
+    }
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
+
+    vfs_node_t* node = vfs_namei(path);
+    if (!node) {
+        terminal_writestring("rm: no such file: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    vfs_node_t* parent = node->parent;
+    if (!parent) {
+        terminal_writestring("rm: cannot remove root\n");
+        return;
+    }
+
+    if (vfs_unlink(parent, node->name) < 0) {
+        terminal_writestring("rm: failed (directory not empty?)\n");
+    }
+}
+
+static void cmd_stat(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: stat <path>\n");
+        return;
+    }
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
+
+    vfs_node_t* node = vfs_namei(path);
+    if (!node) {
+        terminal_writestring("stat: not found: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    vfs_stat_t st;
+    vfs_stat(node, &st);
+
+    char buf[16];
+    terminal_writestring("  path:  ");
+    terminal_writestring(path);
+    terminal_writestring("\n  inode: ");
+    itoa((int)st.inode, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\n  type:  ");
+    terminal_writestring((st.type & VFS_DIRECTORY) ? "directory" : "file");
+    terminal_writestring("\n  size:  ");
+    itoa((int)st.size, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" bytes\n");
+}
+
+/*
+ * Canonicalize a path in-place: collapse "//", resolve "." and "..".
+ * The result always starts with "/" and never has a trailing slash
+ * (except for the root directory "/").
+ */
+static void canonicalize_path(char* path) {
+    /* We build the result in a local buffer, then copy back. */
+    char tmp[VFS_PATH_MAX];
+    size_t tp = 0;  /* write position in tmp */
+
+    const char* p = path;
+    while (*p) {
+        /* skip duplicate slashes */
+        if (*p == '/') {
+            p++;
+            continue;
+        }
+
+        /* find the next component */
+        const char* start = p;
+        while (*p && *p != '/') p++;
+        size_t len = (size_t)(p - start);
+
+        if (len == 1 && start[0] == '.') {
+            /* "." — skip */
+            continue;
+        }
+        if (len == 2 && start[0] == '.' && start[1] == '.') {
+            /* ".." — go up: remove last component from tmp */
+            while (tp > 0 && tmp[tp - 1] != '/') tp--;
+            if (tp > 0) tp--;   /* remove the slash itself */
+            continue;
+        }
+
+        /* normal component: append "/component" */
+        if (tp + 1 + len >= VFS_PATH_MAX - 1) break;  /* overflow guard */
+        tmp[tp++] = '/';
+        memcpy(tmp + tp, start, len);
+        tp += len;
+    }
+
+    if (tp == 0) {
+        path[0] = '/';
+        path[1] = '\0';
+    } else {
+        tmp[tp] = '\0';
+        strcpy(path, tmp);
+    }
+}
+
+static void cmd_cd(const char* args) {
+    char pathbuf[VFS_PATH_MAX];
+
+    /* "cd" with no args -> go to root */
+    if (!args || *args == '\0') {
+        cwd[0] = '/';
+        cwd[1] = '\0';
+        return;
+    }
+
+    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
+
+    /* Copy into a mutable buffer so we can canonicalize */
+    char resolved[VFS_PATH_MAX];
+    strncpy(resolved, path, VFS_PATH_MAX - 1);
+    resolved[VFS_PATH_MAX - 1] = '\0';
+    canonicalize_path(resolved);
+
+    /* Check the path actually exists and is a directory */
+    vfs_node_t* node = vfs_namei(resolved);
+    if (!node) {
+        terminal_writestring("cd: no such directory: ");
+        terminal_writestring(resolved);
+        terminal_writestring("\n");
+        return;
+    }
+    if (!(node->type & VFS_DIRECTORY)) {
+        terminal_writestring("cd: not a directory: ");
+        terminal_writestring(resolved);
+        terminal_writestring("\n");
+        return;
+    }
+
+    strcpy(cwd, resolved);
+}
+
+static void cmd_pwd(const char* args) {
+    (void)args;
+    terminal_writestring(cwd);
+    terminal_writestring("\n");
 }

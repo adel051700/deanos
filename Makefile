@@ -6,7 +6,11 @@ KERNEL_BUILD_DIR = $(BUILD_DIR)/kernel
 LIBC_BUILD_DIR = $(BUILD_DIR)/libc
 ARCH_BUILD_DIR = $(BUILD_DIR)/arch/i386
 DESTDIR = isodir
-
+DATE = $(shell date +%d-%m-%Y)
+MAJOR = 0
+MINOR = 1
+PATCH = 0
+VERSION = $(MAJOR)_$(MINOR)_$(PATCH)
 # Cross-compiler settings
 CFLAGS?=-O2 -g
 CPPFLAGS?=
@@ -50,6 +54,8 @@ kernel/task.c \
 kernel/task_tests.c \
 kernel/tss.c \
 kernel/usermode.c \
+kernel/vfs.c \
+kernel/ramfs.c \
 kernel/context_switch.s
 
 ARCH_C_SRCS = \
@@ -129,8 +135,9 @@ $(ARCH_BUILD_DIR)/%.o: arch/i386/%.s | directories
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f deanos.bin
-	rm -f deanos.iso
+	rm -f deanos-$(DATE)-$(VERSION).iso
 	rm -rf $(DESTDIR)
+	rm -rf isos/
 
 install: deanos.bin
 	mkdir -p $(DESTDIR)/boot/grub
@@ -138,14 +145,16 @@ install: deanos.bin
 	cp grub.cfg $(DESTDIR)/boot/grub/
 
 iso: install
-	grub-mkrescue -o deanos.iso $(DESTDIR)
+	mkdir -p isos
+	grub-mkrescue -o deanos-$(DATE)-$(VERSION).iso $(DESTDIR)
+	cp deanos-$(DATE)-$(VERSION).iso isos/
 
 run: iso
 	make clean
 	make 
 	make install
 	make iso
-	qemu-system-i386 -cdrom deanos.iso
+	qemu-system-i386 -cdrom deanos-$(DATE)-$(VERSION).iso
 
 # Include dependency files
 -include $(ALL_OBJS:.o=.d)

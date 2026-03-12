@@ -17,6 +17,8 @@
 #include "include/kernel/syscall.h"
 #include "include/kernel/tss.h"
 #include "include/kernel/usermode.h"
+#include "include/kernel/vfs.h"
+#include "include/kernel/ramfs.h"
 #include "../libc/include/stdio.h"   // for itoa
 
 static void shell_task(void) {
@@ -37,6 +39,11 @@ void kernel_main(void) {
     syscall_initialize();
     pit_initialize(100);
     keyboard_initialize();
+
+    /* Filesystem: must come after kheap (initialized in constructor) */
+    vfs_initialize();
+    ramfs_initialize();
+
     shell_initialize();
     tasking_initialize();
     if (task_create_named(shell_task, 0, TASK_DEFAULT_QUANTUM, "shell") < 0) {
