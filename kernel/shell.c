@@ -49,7 +49,6 @@ static void cmd_time(const char* args);
 static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
-static void cmd_usertest(const char* args);
 
 // Filesystem commands
 static void cmd_ls(const char* args);
@@ -584,21 +583,6 @@ static void cmd_tasks(const char* args) {
     }
 }
 
-static void cmd_usertest(const char* args) {
-    (void)args;
-    terminal_writestring("Spawning ring-3 test task...\n");
-    int id = user_task_create(user_test_program, "utest");
-    if (id < 0) {
-        terminal_writestring("Failed to create user task!\n");
-    } else {
-        char buf[12];
-        terminal_writestring("Created user task ID ");
-        itoa(id, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring("\n");
-        task_wait(id);
-    }
-}
 
 /* ---- Filesystem commands ----------------------------------------------- */
 

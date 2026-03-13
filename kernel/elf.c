@@ -5,11 +5,8 @@
 #include "include/kernel/vfs.h"
 #include "include/kernel/kheap.h"
 #include "include/kernel/paging.h"
-#include "include/kernel/pmm.h"
 #include "include/kernel/task.h"
 #include "include/kernel/usermode.h"
-#include "include/kernel/log.h"
-#include "include/kernel/tty.h"
 #include <string.h>
 #include <stdio.h>
 #define ELF_USER_STACK_SIZE  (8u * 1024u)

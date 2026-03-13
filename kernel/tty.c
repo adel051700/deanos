@@ -2,8 +2,6 @@
     #include <stddef.h>
     #include <string.h>
     #include "include/kernel/tty.h"
-    #include "include/kernel/font.h"
-    #include "include/kernel/multiboot.h"
 
     #define TERM_COLS 128
     #define TERM_ROWS 48

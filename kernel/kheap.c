@@ -2,8 +2,6 @@
 #include "include/kernel/paging.h"
 #include "include/kernel/idt.h"
 #include "../libc/include/string.h"   // memset, memcpy
-#include "include/kernel/tty.h"
-#include "../libc/include/stdio.h"    // itoa
 
 // Basic boundary-tag allocator with a singly free list.
 // Each block: [Header][payload...][Footer]

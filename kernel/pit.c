@@ -3,7 +3,6 @@
 #include "include/kernel/irq.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/task.h"
-#include "include/kernel/log.h"
 #include "include/kernel/pic.h"
 
 #include <stdio.h>

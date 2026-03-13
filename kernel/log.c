@@ -1,6 +1,5 @@
 #include "include/kernel/log.h"
 #include "include/kernel/tty.h"
-#include "../libc/include/string.h"
 
 #define KLOG_BUF_SZ 4096
 static char buf[KLOG_BUF_SZ];
