@@ -175,7 +175,8 @@ int vfs_stat(vfs_node_t* node, vfs_stat_t* st) {
 /* ---- File-descriptor API ----------------------------------------------- */
 
 static int fd_alloc(void) {
-    for (int i = 0; i < VFS_MAX_FDS; ++i) {
+    /* Reserve 0,1,2 for stdin/stdout/stderr used by syscall layer. */
+    for (int i = 3; i < VFS_MAX_FDS; ++i) {
         if (!fd_table[i].in_use) return i;
     }
     return -1;  /* no free fds */

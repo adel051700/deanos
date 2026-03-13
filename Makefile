@@ -9,7 +9,7 @@ USER_BUILD_DIR = $(BUILD_DIR)/user
 DESTDIR = isodir
 DATE = $(shell date +%d-%m-%Y)
 MAJOR = 0
-MINOR = 2
+MINOR = 3
 VERSION = $(MAJOR)_$(MINOR)
 # Cross-compiler settings
 CFLAGS?=-O2 -g
@@ -71,6 +71,9 @@ arch/i386/gdt.s
 # LibC Files (source paths)
 LIBC_SRCS = \
 libc/stdio/itoa.c \
+libc/stdio/printf.c \
+libc/stdlib/malloc.c \
+libc/unistd/syscalls.c \
 libc/string/memset.c \
 libc/string/memcmp.c \
 libc/string/strlen.c \
@@ -112,6 +115,8 @@ deanos.bin: directories $(ALL_OBJS) arch/i386/boot/linker.ld
 directories:
 	@mkdir -p $(KERNEL_BUILD_DIR)
 	@mkdir -p $(LIBC_BUILD_DIR)/stdio
+	@mkdir -p $(LIBC_BUILD_DIR)/stdlib
+	@mkdir -p $(LIBC_BUILD_DIR)/unistd
 	@mkdir -p $(LIBC_BUILD_DIR)/string
 	@mkdir -p $(ARCH_BUILD_DIR)/boot
 	@mkdir -p $(USER_BUILD_DIR)

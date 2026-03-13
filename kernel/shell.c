@@ -8,8 +8,12 @@
 #include "include/kernel/syscall.h"   // SYS_write, SYS_time, SYS_exit
 #include "include/kernel/vfs.h"
 #include "include/kernel/elf.h"
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #define MAX_COMMAND_LENGTH 256
 #define SHELL_HISTORY_SIZE 32
@@ -49,6 +53,7 @@ static void cmd_time(const char* args);
 static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
+static void cmd_libctest(const char* args);
 
 // Filesystem commands
 static void cmd_ls(const char* args);
@@ -85,6 +90,7 @@ static const struct shell_command commands[] = {
     {"uptime", cmd_uptime, "Show system uptime"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
     {"tasks",  cmd_tasks,  "List all tasks and their state"},
+    {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
     // Filesystem commands
     {"ls",      cmd_ls,      "List directory contents: ls [path]"},
@@ -582,6 +588,109 @@ static void cmd_tasks(const char* args) {
 
         /* Name */
         terminal_writestring(t->name);
+        terminal_writestring("\n");
+    }
+}
+
+static void cmd_libctest(const char* args) {
+    (void)args;
+
+    int failures = 0;
+    printf("[libctest] begin\n");
+
+    /* printf smoke */
+    int printed = printf("[libctest] printf: %s %d 0x%x %u %c %p %%\n",
+                         "ok", -42, 0x2a, 42u, 'Z', (void*)cwd);
+    if (printed < 0) {
+        terminal_writestring("[libctest] FAIL printf\n");
+        failures++;
+    } else {
+        terminal_writestring("[libctest] PASS printf\n");
+    }
+
+    /* allocator smoke */
+    char* a = (char*)malloc(16);
+    char* z = (char*)calloc(8, 1);
+    char* a2 = NULL;
+    if (!a || !z) {
+        terminal_writestring("[libctest] FAIL alloc: malloc/calloc returned NULL\n");
+        failures++;
+    } else {
+        strcpy(a, "hello");
+        a2 = (char*)realloc(a, 32);
+        if (!a2 || strcmp(a2, "hello") != 0) {
+            terminal_writestring("[libctest] FAIL alloc: realloc/contents\n");
+            failures++;
+        } else {
+            int zeros_ok = 1;
+            for (size_t i = 0; i < 8; i++) {
+                if (z[i] != 0) {
+                    zeros_ok = 0;
+                    break;
+                }
+            }
+            if (!zeros_ok) {
+                terminal_writestring("[libctest] FAIL alloc: calloc not zeroed\n");
+                failures++;
+            } else {
+                terminal_writestring("[libctest] PASS alloc\n");
+            }
+        }
+        if (a2) {
+            free(a2);
+        } else if (a) {
+            free(a);
+        }
+        free(z);
+    }
+
+    /* file I/O wrapper smoke */
+    const char* path = "/libctest.tmp";
+    const char* text = "libc-io-ok";
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC);
+    if (fd < 0) {
+        terminal_writestring("[libctest] FAIL io: open(write)\n");
+        failures++;
+    } else {
+        ssize_t nwr = write(fd, text, strlen(text));
+        struct stat st;
+        int sret = fstat(fd, &st);
+        int cret = close(fd);
+        if (nwr != (ssize_t)strlen(text) || sret < 0 || cret < 0 || st.size != (uint32_t)strlen(text)) {
+            terminal_writestring("[libctest] FAIL io: write/fstat/close\n");
+            failures++;
+        } else {
+            char buf[32];
+            int fd2 = open(path, O_RDONLY);
+            if (fd2 < 0) {
+                terminal_writestring("[libctest] FAIL io: open(read)\n");
+                failures++;
+            } else {
+                ssize_t nrd = read(fd2, buf, sizeof(buf) - 1);
+                int cret2 = close(fd2);
+                if (nrd < 0 || cret2 < 0) {
+                    terminal_writestring("[libctest] FAIL io: read/close\n");
+                    failures++;
+                } else {
+                    buf[nrd] = '\0';
+                    if (strcmp(buf, text) != 0) {
+                        terminal_writestring("[libctest] FAIL io: content mismatch\n");
+                        failures++;
+                    } else {
+                        terminal_writestring("[libctest] PASS io\n");
+                    }
+                }
+            }
+        }
+    }
+
+    if (failures == 0) {
+        terminal_writestring("[libctest] ALL PASS\n");
+    } else {
+        terminal_writestring("[libctest] FAILURES: ");
+        char num[16];
+        itoa(failures, num, 10);
+        terminal_writestring(num);
         terminal_writestring("\n");
     }
 }
