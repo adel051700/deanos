@@ -1,9 +1,7 @@
 #include "include/kernel/idt.h"
 #include "include/kernel/io.h"
-#include "include/kernel/tty.h"
 #include "include/kernel/pic.h"
 #include <string.h>
-#include <stdio.h>
 
 #define IDT_ENTRIES 256
 

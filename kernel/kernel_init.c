@@ -13,7 +13,6 @@
 #include "include/kernel/pmm.h"
 #include "include/kernel/paging.h"    // <- add
 #include "include/kernel/kheap.h"     // <- add
-#include "../libc/include/stdio.h"   // for itoa
 
 /**
  * Global variables holding multiboot information passed by bootloader

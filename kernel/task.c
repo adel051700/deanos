@@ -13,8 +13,6 @@
 #include "include/kernel/task.h"
 #include "include/kernel/kheap.h"
 #include "include/kernel/tss.h"
-#include "include/kernel/log.h"
-#include "../libc/include/string.h"
 #include <stddef.h>
 #include <stdint.h>
 

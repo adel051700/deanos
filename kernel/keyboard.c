@@ -1,6 +1,5 @@
 #include "include/kernel/keyboard.h"
 #include "include/kernel/io.h"
-#include "include/kernel/tty.h"
 #include "include/kernel/irq.h"
 #include <stdint.h>
 

@@ -4,7 +4,6 @@
 #include "include/kernel/usermode.h"
 #include "include/kernel/task.h"
 #include "include/kernel/kheap.h"
-#include "include/kernel/log.h"
 #include <stdint.h>
 /* ---- User-space syscall helpers ---------------------------------------- */
 static inline long user_syscall3(uint32_t num, uint32_t a1,

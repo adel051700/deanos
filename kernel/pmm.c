@@ -1,7 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "include/kernel/pmm.h"
-#include "../libc/include/stdio.h"   // itoa
 #include "../libc/include/string.h"  // memset
 
 /* Symbols from linker */

@@ -3,7 +3,6 @@
 #include "include/kernel/tty.h"
 #include "include/kernel/pit.h"
 #include "include/kernel/task.h"
-#include "include/kernel/log.h"
 #include "include/kernel/vfs.h"
 #include <stddef.h>
 #include <stdint.h>

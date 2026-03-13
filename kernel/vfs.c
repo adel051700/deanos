@@ -7,7 +7,6 @@
  */
 
 #include "include/kernel/vfs.h"
-#include "include/kernel/log.h"
 #include <string.h>
 #include <stddef.h>
 
