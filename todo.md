@@ -34,7 +34,7 @@
 7. ~~User mode transition: create ring3 code/data segments, switch via iret, run a test user task.~~
 8. ~~Basic VFS abstraction: in‑memory ramfs with open/read/write/stat; later real disk driver.~~
 9. ~~ELF loader: load a user program into its address space, set up stack, start in user mode.~~
-10. Simple libc expansion: printf, malloc (once heap ready), basic file I/O wrappers.
+10. ~~Simple libc expansion: printf, malloc (once heap ready), basic file I/O wrappers.~~
 11. Timer improvements: expose sleep/yield;ds convert busy waits to scheduler blocks.
 12. Logging & debug: kernel log buffer, serial port driver (COM1) for debug output.
 13. Driver work: PS/2 mouse, ATA/ATAPI (PIO first), then a block device layer.
