@@ -1081,58 +1081,13 @@ static void cmd_exec(const char* args) {
 static void cmd_anim(const char* args) {
     (void)args;
 
-    const int bar_width = 36;
-    const int marker_width = 4;   /* "<==>" */
-    const int travel = bar_width - marker_width;
-    const char spinner[] = {'|', '/', '-', '\\'};
-    char line[96];
-    int frame = 0;
-
-    terminal_writestring("anim: press Enter to stop\n");
-
-    while (1) {
-        /* Stop animation when user presses Enter. */
-        while (keyboard_data_available()) {
-            char key = keyboard_getchar();
-            if (key == '\n' || key == '\r') {
-                terminal_writestring("\r[####################################] [*] done, back to shell.\n");
-                return;
-            }
-        }
-
-        int p = frame % (2 * travel);
-        if (p >= travel) p = (2 * travel) - p;
-
-        int i = 0;
-        line[i++] = '\r';
-        line[i++] = '[';
-        for (int j = 0; j < bar_width; j++) line[i++] = '.';
-        line[i++] = ']';
-        line[i++] = ' ';
-        line[i++] = '[';
-        line[i++] = spinner[frame & 3];
-        line[i++] = ']';
-        line[i++] = ' ';
-
-        const char* msg = "DeanOS big anim";
-        while (*msg) line[i++] = *msg++;
-        line[i++] = ' ';
-        line[i++] = ' ';
-        line[i++] = ' ';
-        line[i] = '\0';
-
-        line[2 + p] = '<';
-        line[2 + p + 1] = '=';
-        line[2 + p + 2] = '=';
-        line[2 + p + 3] = '>';
-
-        terminal_writestring(line);
-
-        for (volatile uint32_t delay = 0; delay < 1200000u; delay++) {
-            __asm__ __volatile__("" ::: "memory");
-        }
-
-        frame++;
+    int ret = elf_exec("/bin/anim", 1);
+    if (ret < 0) {
+        terminal_writestring("anim: failed to launch /bin/anim (error ");
+        char buf[16];
+        itoa(ret, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(")\n");
     }
 }
 
