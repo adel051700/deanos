@@ -1,5 +1,6 @@
 #include "include/kernel/syscall.h"
 #include "include/kernel/interrupt.h"
+#include "include/kernel/keyboard.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/pit.h"
 #include "include/kernel/task.h"
@@ -22,6 +23,13 @@ static long sys_write(uint32_t fd, const char* buf, size_t len) {
 
 static long sys_read(uint32_t fd, char* buf, size_t len) {
     if (!buf || len == 0) return 0;
+    if (fd == 0) {
+        size_t nread = 0;
+        while (nread < len && keyboard_data_available()) {
+            buf[nread++] = keyboard_getchar();
+        }
+        return (long)nread;
+    }
     int32_t ret = vfs_fd_read((int)fd, (uint8_t*)buf, (uint32_t)len);
     return (long)ret;
 }

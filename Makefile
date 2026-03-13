@@ -5,6 +5,7 @@ BUILD_DIR = build
 KERNEL_BUILD_DIR = $(BUILD_DIR)/kernel
 LIBC_BUILD_DIR = $(BUILD_DIR)/libc
 ARCH_BUILD_DIR = $(BUILD_DIR)/arch/i386
+USER_BUILD_DIR = $(BUILD_DIR)/user
 DESTDIR = isodir
 DATE = $(shell date +%d-%m-%Y)
 MAJOR = 0
@@ -85,9 +86,11 @@ KERNEL_OBJS += build/kernel/context_switch.o
 LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(filter libc/%.c,$(LIBC_SRCS)))
 ARCH_C_OBJS = $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(ARCH_C_SRCS))
 ARCH_ASM_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(ARCH_ASM_SRCS))
+USER_ELFS = $(USER_BUILD_DIR)/anim.elf
+USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o
 
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
-ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LIBC_OBJS)
+ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
 
 .PHONY: all clean install directories iso run
 .SUFFIXES: .o .c .s
@@ -111,6 +114,7 @@ directories:
 	@mkdir -p $(LIBC_BUILD_DIR)/stdio
 	@mkdir -p $(LIBC_BUILD_DIR)/string
 	@mkdir -p $(ARCH_BUILD_DIR)/boot
+	@mkdir -p $(USER_BUILD_DIR)
 
 # Compile C files from kernel directory
 $(KERNEL_BUILD_DIR)/%.o: kernel/%.c | directories
@@ -130,6 +134,15 @@ $(ARCH_BUILD_DIR)/%.o: arch/i386/%.c | directories
 # Assemble assembly files from arch directory
 $(ARCH_BUILD_DIR)/%.o: arch/i386/%.s | directories
 	$(AS) $< -o $@
+
+$(USER_BUILD_DIR)/anim.o: user/anim.s | directories
+	$(AS) $< -o $@
+
+$(USER_BUILD_DIR)/anim.elf: $(USER_BUILD_DIR)/anim.o user/linker.ld | directories
+	$(CC) -T user/linker.ld -o $@ $(USER_BUILD_DIR)/anim.o -ffreestanding -fno-pie -nostdlib -nostartfiles -Wl,-n
+
+$(USER_BUILD_DIR)/anim_blob.o: $(USER_BUILD_DIR)/anim.elf | directories
+	$(LD) -r -m elf_i386 -b binary $< -o $@
 
 
 clean:
