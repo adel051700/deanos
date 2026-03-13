@@ -514,6 +514,66 @@ static uint32_t parse_uint(const char* s) {
     return v;
 }
 
+static int is_leap_year_u32(uint32_t year) {
+    return ((year % 4u) == 0u && (year % 100u) != 0u) || ((year % 400u) == 0u);
+}
+
+static uint32_t days_in_month_u32(uint32_t year, uint32_t month) {
+    static const uint8_t mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    if (month == 2u && is_leap_year_u32(year)) return 29u;
+    if (month >= 1u && month <= 12u) return mdays[month - 1u];
+    return 30u;
+}
+
+static void term_write_u32(uint32_t v) {
+    char buf[16];
+    itoa((int)v, buf, 10);
+    terminal_writestring(buf);
+}
+
+static void term_write_2d(uint32_t v) {
+    if (v < 10u) terminal_writestring("0");
+    term_write_u32(v);
+}
+
+static void term_write_wallclock_from_epoch(uint32_t epoch_seconds) {
+    uint32_t days = epoch_seconds / 86400u;
+    uint32_t rem = epoch_seconds % 86400u;
+    uint32_t hour = rem / 3600u;
+    rem %= 3600u;
+    uint32_t minute = rem / 60u;
+    uint32_t second = rem % 60u;
+
+    uint32_t year = 1970u;
+    while (1) {
+        uint32_t ydays = is_leap_year_u32(year) ? 366u : 365u;
+        if (days < ydays) break;
+        days -= ydays;
+        year++;
+    }
+
+    uint32_t month = 1u;
+    while (1) {
+        uint32_t mdays = days_in_month_u32(year, month);
+        if (days < mdays) break;
+        days -= mdays;
+        month++;
+    }
+    uint32_t day = days + 1u;
+
+    term_write_u32(year);
+    terminal_writestring("-");
+    term_write_2d(month);
+    terminal_writestring("-");
+    term_write_2d(day);
+    terminal_writestring(" ");
+    term_write_2d(hour);
+    terminal_writestring(":");
+    term_write_2d(minute);
+    terminal_writestring(":");
+    term_write_2d(second);
+}
+
 // Implementations
 
 static void cmd_sys_write(const char* args) {
@@ -529,16 +589,18 @@ static void cmd_sys_write(const char* args) {
 
 static void cmd_sys_time(const char* args) {
     (void)args;
-    long sec = ksyscall3_vec(0x80, SYS_time, 0, 0, 0);
+    uint32_t sec = (uint32_t)ksyscall3_vec(0x80, SYS_time, 0, 0, 0);
     terminal_writestring("time (int 0x80): ");
-    char buf[16]; itoa((int)sec, buf, 10); terminal_writestring(buf); terminal_writestring(" s\n");
+    term_write_wallclock_from_epoch(sec);
+    terminal_writestring("\n");
 }
 
 static void cmd_sys81_time(const char* args) {
     (void)args;
-    long sec = ksyscall3_vec(0x81, SYS_time, 0, 0, 0);
+    uint32_t sec = (uint32_t)ksyscall3_vec(0x81, SYS_time, 0, 0, 0);
     terminal_writestring("time (int 0x81): ");
-    char buf[16]; itoa((int)sec, buf, 10); terminal_writestring(buf); terminal_writestring(" s\n");
+    term_write_wallclock_from_epoch(sec);
+    terminal_writestring("\n");
 }
 
 static void cmd_sys_exit(const char* args) {

@@ -183,3 +183,39 @@ void rtc_initialize(void) {
     rtc_read_time(&boot_time);
     boot_time_initialized = 1;
 }
+
+static int is_leap_year(uint32_t year) {
+    return ((year % 4u) == 0u && (year % 100u) != 0u) || ((year % 400u) == 0u);
+}
+
+uint32_t rtc_get_wallclock_seconds(void) {
+    static const uint16_t days_before_month[12] = {
+        0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+    };
+
+    rtc_time_t t;
+    rtc_read_time(&t);
+
+    if (t.year < 1970 || t.month < 1 || t.month > 12 || t.day < 1 || t.day > 31 ||
+        t.hour > 23 || t.minute > 59 || t.second > 59) {
+        return 0;
+    }
+
+    uint32_t days = 0;
+
+    for (uint32_t y = 1970; y < t.year; ++y) {
+        days += is_leap_year(y) ? 366u : 365u;
+    }
+
+    days += days_before_month[t.month - 1];
+    if (t.month > 2 && is_leap_year(t.year)) {
+        days += 1;
+    }
+
+    days += (uint32_t)(t.day - 1);
+
+    return days * 86400u +
+           (uint32_t)t.hour * 3600u +
+           (uint32_t)t.minute * 60u +
+           (uint32_t)t.second;
+}
