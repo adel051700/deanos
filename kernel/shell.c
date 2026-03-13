@@ -66,7 +66,7 @@ static void cmd_anim(const char* args);
 /* Print the shell prompt: "DeanOS /path $ " */
 static void shell_print_prompt(void);
 
-// Command descriptor
+/* Command descriptor */
 struct shell_command {
     const char* name;
     void (*handler)(const char* args);
@@ -184,10 +184,13 @@ void shell_process_char(char c) {
             command_length--;
             terminal_putchar('\b');
         }
-    } else if (c >= ' ' && command_length < MAX_COMMAND_LENGTH - 1) {
-        command_buffer[command_length++] = c;
-        command_buffer[command_length] = '\0';
-        terminal_putchar(c);
+    } else {
+        unsigned char uc = (unsigned char)c;
+        if (uc >= ' ' && uc != 0x7F && command_length < MAX_COMMAND_LENGTH - 1) {
+            command_buffer[command_length++] = c;
+            command_buffer[command_length] = '\0';
+            terminal_putchar(c);
+        }
     }
 }
 
