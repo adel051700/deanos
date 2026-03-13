@@ -8,7 +8,7 @@ ARCH_BUILD_DIR = $(BUILD_DIR)/arch/i386
 DESTDIR = isodir
 DATE = $(shell date +%d-%m-%Y)
 MAJOR = 0
-MINOR = 1
+MINOR = 2
 VERSION = $(MAJOR)_$(MINOR)
 # Cross-compiler settings
 CFLAGS?=-O2 -g
@@ -55,6 +55,7 @@ kernel/tss.c \
 kernel/usermode.c \
 kernel/vfs.c \
 kernel/ramfs.c \
+kernel/elf.c \
 kernel/context_switch.s
 
 ARCH_C_SRCS = \

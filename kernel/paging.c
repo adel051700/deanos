@@ -101,6 +101,27 @@ static void page_fault_handler(struct registers* r) {
 uintptr_t paging_heap_base(void) { return (uintptr_t)KHEAP_BASE; }
 uintptr_t paging_heap_size(void) { return (uintptr_t)KHEAP_SIZE; }
 
+int paging_map_user(uintptr_t vaddr) {
+    uint32_t pd_idx = (vaddr >> 22) & 0x3FF;
+    uint32_t pt_idx = (vaddr >> 12) & 0x3FF;
+
+    uint32_t* pt = ensure_pt(pd_idx);
+    if (!pt) return -1;
+
+    /* Already mapped → nothing to do. */
+    if (pt[pt_idx] & PTE_P) return 0;
+
+    uintptr_t pa = phys_alloc_frame();
+    if (!pa) return -2;
+
+    pt[pt_idx] = (pa & ~0xFFFu) | (PTE_P | PTE_W | PTE_U);
+    invlpg((void*)(vaddr & ~0xFFFu));
+
+    /* Zero the freshly mapped page. */
+    memset((void*)(vaddr & ~0xFFFu), 0, PAGE_SIZE);
+    return 0;
+}
+
 void paging_initialize(struct multiboot_tag_framebuffer* fb_tag) {
     memset(page_directory, 0, sizeof(page_directory));
     memset(pde_virt_tables, 0, sizeof(pde_virt_tables));
