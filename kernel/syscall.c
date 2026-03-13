@@ -1,8 +1,8 @@
 #include "include/kernel/syscall.h"
 #include "include/kernel/interrupt.h"
 #include "include/kernel/keyboard.h"
+#include "include/kernel/rtc.h"
 #include "include/kernel/tty.h"
-#include "include/kernel/pit.h"
 #include "include/kernel/task.h"
 #include "include/kernel/vfs.h"
 #include <stddef.h>
@@ -35,8 +35,8 @@ static long sys_read(uint32_t fd, char* buf, size_t len) {
 }
 
 static long sys_time(uint32_t* out) {
-    uint64_t seconds = pit_get_uptime_ms() / 1000;
-    if (out) *out = (uint32_t)seconds;
+    uint32_t seconds = rtc_get_wallclock_seconds();
+    if (out) *out = seconds;
     return (long)seconds;
 }
 
