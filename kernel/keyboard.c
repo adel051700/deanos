@@ -5,13 +5,12 @@
 
 // dk-latin1 keyboard mapping (Set 1 scancodes)
 // Notes:
-//  - CP437 codes present in your font: å=134 (0x86), Å=143 (0x8F), æ=145 (0x91), Æ=146 (0x92)
-//  - ø/Ø are not present in CP437 font → fallback to 'o'/'O'.
+    //  - Extended codes used by this font mapping: å=0x86, Å=0x8F, æ=0x91, Æ=0x92, ø=0x9B, Ø=0x9D.
 //  - ISO 102nd key (< > |) is scancode 86 (0x56). Dead keys not implemented.
 static const unsigned char dk_map[128] = {
     /* 00-0F */ 0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '+', '\b',
     /* 10-1F */ '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 0x86, '^', '\n',
-               0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 0x91, 'o', '`',
+               0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 0x91, 0x9B, '`',
     /* 20-2F */ 0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-', 0,
     /* 30-3F */ '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
@@ -19,7 +18,7 @@ static const unsigned char dk_map[128] = {
 static const unsigned char dk_shift_map[128] = {
     /* 00-0F */ 0, 27, '!', '"', '#', 0xA4, '%', '&', '/', '(', ')', '=', '_', '?', '\b',
     /* 10-1F */ '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 0x8F, 0xF9, '\n',
-               0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 0x92, 'O', '~',
+               0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 0x92, 0x9D, '~',
     /* 20-2F */ 0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', ';', ':', '_', 0,
     /* 30-3F */ '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
@@ -168,4 +167,3 @@ char keyboard_getchar(void) {
 int keyboard_data_available(void) {
     return kb_buffer_start != kb_buffer_end;
 }
-
