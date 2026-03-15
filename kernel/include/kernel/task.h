@@ -37,6 +37,10 @@ typedef struct task {
     uint32_t        quantum;        /* ticks allowed per slice           */
     uint32_t        ticks_left;     /* ticks remaining in current slice  */
 
+    /* Blocking state */
+    uint64_t        wake_tick;      /* scheduler tick to wake on (0 = none) */
+    int             wait_task_id;   /* task id waited on by task_wait (0 = none) */
+
     /* Kernel stack */
     uintptr_t       kstack_base;
     uint32_t        kstack_size;
@@ -57,6 +61,10 @@ void task_yield(void);
 void task_exit(void);
 /* Block until the task with the given ID is TASK_DEAD (or not found). */
 void task_wait(int id);
+/* Block current task for N scheduler ticks (N=0 => yield). */
+void task_sleep_ticks(uint64_t ticks);
+/* Convenience wrapper around scheduler ticks at 100 Hz PIT default. */
+void task_sleep_ms(uint32_t milliseconds);
 
 /* Called from PIT IRQ 0 (timer tick). */
 void scheduler_tick(void);

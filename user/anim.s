@@ -4,8 +4,9 @@
 .equ SYS_write, 1
 .equ SYS_exit,  3
 .equ SYS_read,  5
+.equ SYS_sleep_ms, 10
 .equ FRAME_COUNT, 28
-.equ FRAME_DELAY, 12000000
+.equ FRAME_DELAY_MS, 90
 
 _start:
     sub $16, %esp
@@ -25,10 +26,9 @@ frame_loop:
     mov $1, %ebx
     int $0x80
 
-    mov $FRAME_DELAY, %edi
-spin_delay:
-    dec %edi
-    jnz spin_delay
+    mov $SYS_sleep_ms, %eax
+    mov $FRAME_DELAY_MS, %ebx
+    int $0x80
 
     mov $SYS_read, %eax
     mov $0, %ebx

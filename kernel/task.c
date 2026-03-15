@@ -25,6 +25,7 @@ static task_t  g_tasks[TASK_MAX];
 static uint32_t g_task_count = 0;
 static int      g_current    = -1;
 static uint32_t g_next_id    = 1;
+static uint64_t g_sched_ticks = 0;
 
 /* ---- internal helpers -------------------------------------------------- */
 
@@ -63,6 +64,32 @@ static void* alloc_kstack(uint32_t size) {
     return kmalloc(size);
 }
 
+static int is_task_dead_or_missing(int id) {
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        if ((int)g_tasks[i].id == id)
+            return (g_tasks[i].state == TASK_DEAD);
+    }
+    return 1;
+}
+
+static void wake_blocked_tasks(void) {
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        task_t* t = &g_tasks[i];
+        if (t->state != TASK_BLOCKED) continue;
+
+        if (t->wait_task_id > 0 && is_task_dead_or_missing(t->wait_task_id)) {
+            t->wait_task_id = 0;
+            t->state = TASK_READY;
+            continue;
+        }
+
+        if (t->wake_tick != 0 && g_sched_ticks >= t->wake_tick) {
+            t->wake_tick = 0;
+            t->state = TASK_READY;
+        }
+    }
+}
+
 static void do_switch(int prev, int next) {
     if (prev >= 0 && g_tasks[prev].state == TASK_RUNNING)
         g_tasks[prev].state = TASK_READY;
@@ -85,6 +112,7 @@ void tasking_initialize(void) {
     g_task_count = 0;
     g_current    = -1;
     g_next_id    = 1;
+    g_sched_ticks = 0;
 
     /* Task 0 is the idle thread — always present, lowest priority. */
     task_create_named(idle_thread, DEFAULT_STACK_SIZE, 1, "idle");
@@ -104,6 +132,8 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->state   = TASK_READY;
     t->quantum = (quantum > 0) ? quantum : TASK_DEFAULT_QUANTUM;
     t->ticks_left = t->quantum;
+    t->wake_tick = 0;
+    t->wait_task_id = 0;
 
     /* Copy name (or generate one). */
     if (name) {
@@ -160,20 +190,33 @@ void task_exit(void) {
 }
 
 void task_wait(int id) {
-    /* Yield until the task with `id` is TASK_DEAD (or gone). */
-    for (;;) {
-        int found = 0;
-        for (uint32_t i = 0; i < g_task_count; ++i) {
-            if ((int)g_tasks[i].id == id) {
-                found = 1;
-                if (g_tasks[i].state == TASK_DEAD)
-                    return;
-                break;
-            }
-        }
-        if (!found) return;   /* task doesn't exist (any more) */
+    if (g_current < 0 || id <= 0) return;
+    if (is_task_dead_or_missing(id)) return;
+
+    g_tasks[g_current].wait_task_id = id;
+    g_tasks[g_current].wake_tick = 0;
+    g_tasks[g_current].state = TASK_BLOCKED;
+    task_yield();
+}
+
+void task_sleep_ticks(uint64_t ticks) {
+    if (ticks == 0) {
         task_yield();
+        return;
     }
+    if (g_current <= 0) return; /* never block idle/non-running context */
+
+    g_tasks[g_current].wake_tick = g_sched_ticks + ticks;
+    g_tasks[g_current].wait_task_id = 0;
+    g_tasks[g_current].state = TASK_BLOCKED;
+    task_yield();
+}
+
+void task_sleep_ms(uint32_t milliseconds) {
+    /* Scheduler is PIT-driven at 100 Hz (10 ms per tick). */
+    uint64_t ticks = ((uint64_t)milliseconds + 9u) / 10u;
+    if (ticks == 0) ticks = 1;
+    task_sleep_ticks(ticks);
 }
 
 void task_yield(void) {
@@ -191,6 +234,9 @@ void task_yield(void) {
  *     (or switch to idle if the current one died / blocked).
  */
 void scheduler_tick(void) {
+    g_sched_ticks++;
+    wake_blocked_tasks();
+
     /* Decrement remaining slice of current task. */
     if (g_current >= 0 && g_tasks[g_current].state == TASK_RUNNING) {
         if (g_tasks[g_current].ticks_left > 0)

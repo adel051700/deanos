@@ -72,13 +72,19 @@ uint64_t pit_get_uptime_ms(void) {
 
 void pit_sleep(uint32_t milliseconds) {
     if (pit_frequency_hz == 0) return;
-    
-    uint64_t ticks_to_wait = (uint64_t)milliseconds * pit_frequency_hz / 1000;
-    uint64_t start_ticks = pit_ticks;
-    
-    while ((pit_ticks - start_ticks) < ticks_to_wait) {
-        __asm__ __volatile__("hlt");
+
+    uint64_t ticks_to_wait = ((uint64_t)milliseconds * pit_frequency_hz + 999u) / 1000u;
+    if (ticks_to_wait == 0) ticks_to_wait = 1;
+
+    if (task_current_id() > 0) {
+        task_sleep_ticks(ticks_to_wait);
+        return;
     }
+
+    /* Early boot / non-task contexts still need a polling fallback. */
+    uint64_t start_ticks = pit_ticks;
+    while ((pit_ticks - start_ticks) < ticks_to_wait)
+        __asm__ __volatile__("hlt");
 }
 
 static void pit_isr(struct registers* r) {
