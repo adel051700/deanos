@@ -1,6 +1,7 @@
 #include "include/kernel/syscall.h"
 #include "include/kernel/interrupt.h"
 #include "include/kernel/keyboard.h"
+#include "include/kernel/pit.h"
 #include "include/kernel/rtc.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/task.h"
@@ -43,6 +44,16 @@ static long sys_time(uint32_t* out) {
 static long sys_exit(uint32_t status) {
     (void)status;
     task_exit();       /* marks task DEAD and yields — never returns */
+    return 0;
+}
+
+static long sys_yield(void) {
+    task_yield();
+    return 0;
+}
+
+static long sys_sleep_ms(uint32_t milliseconds) {
+    pit_sleep(milliseconds);
     return 0;
 }
 
@@ -110,6 +121,8 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_close: return sys_close(a1);
         case SYS_fstat: return sys_fstat(a1, (vfs_stat_t*)a2);
         case SYS_mkdir: return sys_mkdir((const char*)a1);
+        case SYS_yield: return sys_yield();
+        case SYS_sleep_ms: return sys_sleep_ms(a1);
         default:        return -38; /* ENOSYS */
     }
 }

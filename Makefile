@@ -51,7 +51,6 @@ kernel/irq.c \
 kernel/log.c \
 kernel/syscall.c \
 kernel/task.c \
-kernel/task_tests.c \
 kernel/tss.c \
 kernel/usermode.c \
 kernel/vfs.c \

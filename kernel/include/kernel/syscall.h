@@ -13,6 +13,8 @@ enum {
     SYS_close  = 6,
     SYS_fstat  = 7,
     SYS_mkdir  = 8,
+    SYS_yield  = 9,
+    SYS_sleep_ms = 10,
 };
 
 /* Install syscall handlers on vectors 0x80 and 0x81 */

@@ -46,6 +46,19 @@ int mkdir(const char* path) {
     return (int)syscall1(SYS_mkdir, (unsigned)path);
 }
 
+int sched_yield(void) {
+    return (int)syscall1(SYS_yield, 0);
+}
+
+int sleep_ms(unsigned milliseconds) {
+    return (int)syscall1(SYS_sleep_ms, milliseconds);
+}
+
+unsigned sleep(unsigned seconds) {
+    (void)syscall1(SYS_sleep_ms, seconds * 1000u);
+    return 0;
+}
+
 void _exit(int status) {
     (void)syscall1(SYS_exit, (unsigned)status);
     for (;;) {
