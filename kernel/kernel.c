@@ -6,6 +6,7 @@
 #include "include/kernel/task.h"
 #include "include/kernel/log.h"
 #include "include/kernel/pit.h"
+#include "include/kernel/serial.h"
 #include "include/kernel/syscall.h"
 #include "include/kernel/tss.h"
 #include "include/kernel/vfs.h"
@@ -24,6 +25,10 @@ static void shell_task(void) {
 
 
 void kernel_main(void) {
+    serial_initialize();
+    klog_init();
+    serial_write_buf("Serial initialized.\n", 20);
+
     gdt_initialize();
     tss_initialize(0x10, 0);    /* kernel SS=0x10, ESP0 updated per-task */
     idt_initialize();
