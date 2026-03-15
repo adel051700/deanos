@@ -8,6 +8,7 @@
 #include "include/kernel/syscall.h"   // SYS_write, SYS_time, SYS_exit
 #include "include/kernel/vfs.h"
 #include "include/kernel/elf.h"
+#include "include/kernel/log.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -54,6 +55,7 @@ static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
 static void cmd_libctest(const char* args);
+static void cmd_dmesg(const char* args);
 
 // Filesystem commands
 static void cmd_ls(const char* args);
@@ -90,6 +92,7 @@ static const struct shell_command commands[] = {
     {"uptime", cmd_uptime, "Show system uptime"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
     {"tasks",  cmd_tasks,  "List all tasks and their state"},
+    {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
     // Filesystem commands
@@ -652,6 +655,23 @@ static void cmd_tasks(const char* args) {
         terminal_writestring(t->name);
         terminal_writestring("\n");
     }
+}
+
+static void cmd_dmesg(const char* args) {
+    if (args && (strcmp(args, "clear") == 0 || strcmp(args, "-c") == 0)) {
+        klog_clear();
+        terminal_writestring("dmesg: log buffer cleared\n");
+        return;
+    }
+
+    if (args && *args) {
+        terminal_writestring("usage: dmesg [clear|-c]\n");
+        return;
+    }
+
+    terminal_writestring("--- kernel log (latest) ---\n");
+    klog_dump();
+    terminal_writestring("\n--- end kernel log ---\n");
 }
 
 static void cmd_libctest(const char* args) {

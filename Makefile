@@ -49,6 +49,7 @@ kernel/kheap.c \
 kernel/pic.c \
 kernel/irq.c \
 kernel/log.c \
+kernel/serial.c \
 kernel/syscall.c \
 kernel/task.c \
 kernel/tss.c \
