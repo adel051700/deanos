@@ -1,6 +1,7 @@
 #include "include/kernel/shell.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/keyboard.h"
+#include "include/kernel/mouse.h"
 #include "include/kernel/rtc.h"
 #include "include/kernel/pit.h"
 #include "include/kernel/task.h"
@@ -9,6 +10,9 @@
 #include "include/kernel/vfs.h"
 #include "include/kernel/elf.h"
 #include "include/kernel/log.h"
+#include "include/kernel/blockdev.h"
+#include "include/kernel/mbr.h"
+#include "include/kernel/minfs.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -23,6 +27,7 @@ static char cwd[VFS_PATH_MAX] = "/";   /* current working directory */
 
 static char command_buffer[MAX_COMMAND_LENGTH];
 static size_t command_length = 0;
+static size_t cursor_pos = 0;   /* position of terminal cursor within command_buffer */
 
 static char history[SHELL_HISTORY_SIZE][MAX_COMMAND_LENGTH];
 static size_t history_len = 0;     // number of stored entries
@@ -36,6 +41,8 @@ static esc_state_t esc_state = ESC_IDLE;
 static void history_add(const char* cmd);
 static void shell_set_line(const char* s);
 static void shell_execute_command(const char* command);
+static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz);
+static void shell_autocomplete(void);
 
 // New forward decls (syscall test commands)
 static void cmd_sys_write(const char* args);
@@ -55,7 +62,12 @@ static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
 static void cmd_libctest(const char* args);
+static void cmd_mouse(const char* args);
 static void cmd_dmesg(const char* args);
+static void cmd_blk(const char* args);
+static void cmd_disk(const char* args);
+static void cmd_fsfill(const char* args);
+static void cmd_fsverify(const char* args);
 
 // Filesystem commands
 static void cmd_ls(const char* args);
@@ -92,6 +104,11 @@ static const struct shell_command commands[] = {
     {"uptime", cmd_uptime, "Show system uptime"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
     {"tasks",  cmd_tasks,  "List all tasks and their state"},
+    {"mouse",  cmd_mouse,  "Show PS/2 mouse state (mouse clear resets totals)"},
+    {"blk",    cmd_blk,    "Block devices: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed>"},
+    {"disk",   cmd_disk,   "Disk tools: disk parts | init | mkfs | mount | setup"},
+    {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
+    {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
@@ -135,6 +152,7 @@ static void shell_print_prompt(void) {
  */
 void shell_initialize(void) {
     command_length = 0;
+    cursor_pos = 0;
     history_len = 0;
     history_pos = 0;
     esc_state = ESC_IDLE;
@@ -174,31 +192,72 @@ void shell_process_char(char c) {
                     shell_set_line(history[history_pos]);
                 }
             }
+        } else if (c == 'D') { // Left
+            if (cursor_pos > 0) {
+                cursor_pos--;
+                terminal_move_cursor_left();
+            }
+        } else if (c == 'C') { // Right
+            if (cursor_pos < command_length) {
+                cursor_pos++;
+                terminal_move_cursor_right();
+            }
         }
         esc_state = ESC_IDLE;
         return;
     }
 
     if (c == '\n' || c == '\r') {
+        /* Move terminal cursor to end of input before printing newline */
+        while (cursor_pos < command_length) {
+            terminal_move_cursor_right();
+            cursor_pos++;
+        }
         terminal_putchar('\n');
         command_buffer[command_length] = '\0';
         if (command_length > 0) history_add(command_buffer);
         history_pos = history_len; // reset browse point
         shell_execute_command(command_buffer);
         command_length = 0;
+        cursor_pos = 0;
         command_buffer[0] = '\0';
         shell_print_prompt();
     } else if (c == '\b') {
-        if (command_length > 0) {
+        if (cursor_pos > 0) {
+            size_t chars_after = command_length - cursor_pos;
+            terminal_move_cursor_left();
+            memmove(&command_buffer[cursor_pos - 1], &command_buffer[cursor_pos], chars_after);
+            cursor_pos--;
             command_length--;
-            terminal_putchar('\b');
+            command_buffer[command_length] = '\0';
+            /* Redraw tail and overwrite old last char with space */
+            for (size_t i = cursor_pos; i < command_length; i++)
+                terminal_putchar(command_buffer[i]);
+            terminal_putchar(' ');
+            /* Move cursor back to cursor_pos */
+            for (size_t i = 0; i <= chars_after; i++)
+                terminal_move_cursor_left();
         }
+    } else if (c == '\t') {
+        shell_autocomplete();
+        cursor_pos = command_length; // autocomplete always appends to end
     } else {
         unsigned char uc = (unsigned char)c;
         if (uc >= ' ' && uc != 0x7F && command_length < MAX_COMMAND_LENGTH - 1) {
-            command_buffer[command_length++] = c;
+            /* Insert at cursor_pos */
+            memmove(&command_buffer[cursor_pos + 1], &command_buffer[cursor_pos],
+                    command_length - cursor_pos);
+            command_buffer[cursor_pos] = c;
+            command_length++;
             command_buffer[command_length] = '\0';
-            terminal_putchar(c);
+            /* Redraw from cursor_pos to end */
+            for (size_t i = cursor_pos; i < command_length; i++)
+                terminal_putchar(command_buffer[i]);
+            /* Move terminal cursor back to cursor_pos + 1 */
+            size_t move_back = command_length - cursor_pos - 1;
+            for (size_t i = 0; i < move_back; i++)
+                terminal_move_cursor_left();
+            cursor_pos++;
         }
     }
 }
@@ -327,7 +386,7 @@ static void cmd_about(const char* args) {
     
     terminal_writestring("DeanOS - A minimal operating system\n");
     terminal_writestring("Created as a learning project\n");
-    terminal_writestring("Version 0.2.0\n");
+    terminal_writestring("Version 0.4\n");
 }
 
 static void cmd_dean(const char* args) {
@@ -474,13 +533,113 @@ static void history_add(const char* cmd) {
     history_pos = history_len;
 }
 
+/**
+ * Tab-autocomplete: complete the current token against command names (first
+ * word) or VFS paths (subsequent words).  Completes to the first match found.
+ */
+static void shell_autocomplete(void) {
+    command_buffer[command_length] = '\0';
+
+    /* Find the start of the current (last) word */
+    const char* word_start = command_buffer;
+    for (size_t i = 0; i < command_length; i++) {
+        if (command_buffer[i] == ' ') {
+            word_start = &command_buffer[i + 1];
+        }
+    }
+    size_t word_len = (size_t)(command_buffer + command_length - word_start);
+
+    if (word_start == command_buffer) {
+        /* ---- Command name completion ---- */
+        for (size_t i = 0; commands[i].name != NULL; i++) {
+            if (strncmp(commands[i].name, word_start, word_len) == 0) {
+                const char* rest = commands[i].name + word_len;
+                while (*rest && command_length < MAX_COMMAND_LENGTH - 1) {
+                    command_buffer[command_length++] = *rest;
+                    terminal_putchar(*rest);
+                    rest++;
+                }
+                command_buffer[command_length] = '\0';
+                return;
+            }
+        }
+    } else {
+        /* ---- Path completion ---- */
+        char partial[VFS_PATH_MAX];
+        if (word_len >= VFS_PATH_MAX) return;
+        strncpy(partial, word_start, word_len);
+        partial[word_len] = '\0';
+
+        /* Split partial path into directory part and name prefix */
+        char dir_part[VFS_PATH_MAX];
+        char name_prefix[VFS_NAME_MAX];
+
+        const char* last_slash = NULL;
+        for (size_t i = 0; i < word_len; i++) {
+            if (partial[i] == '/') last_slash = &partial[i];
+        }
+
+        vfs_node_t* dir = NULL;
+        size_t prefix_len;
+
+        if (last_slash) {
+            size_t dir_len = (size_t)(last_slash - partial) + 1; /* include slash */
+            strncpy(dir_part, partial, dir_len);
+            dir_part[dir_len] = '\0';
+            strncpy(name_prefix, last_slash + 1, VFS_NAME_MAX - 1);
+            name_prefix[VFS_NAME_MAX - 1] = '\0';
+            prefix_len = strlen(name_prefix);
+
+            char resolved[VFS_PATH_MAX];
+            const char* rpath = resolve_shell_path(dir_part, resolved, sizeof(resolved));
+            dir = vfs_namei(rpath);
+        } else {
+            strncpy(name_prefix, partial, VFS_NAME_MAX - 1);
+            name_prefix[VFS_NAME_MAX - 1] = '\0';
+            prefix_len = word_len;
+            dir = vfs_namei(cwd);
+        }
+
+        if (!dir || !(dir->type & VFS_DIRECTORY)) return;
+
+        /* Scan directory entries for the first match */
+        vfs_dirent_t entry;
+        uint32_t idx = 0;
+        while (vfs_readdir(dir, idx, &entry) == 0) {
+            if (strncmp(entry.name, name_prefix, prefix_len) == 0) {
+                /* Append the rest of the matching name */
+                const char* rest = entry.name + prefix_len;
+                while (*rest && command_length < MAX_COMMAND_LENGTH - 1) {
+                    command_buffer[command_length++] = *rest;
+                    terminal_putchar(*rest);
+                    rest++;
+                }
+                /* Append a trailing '/' for directories */
+                if ((entry.type & VFS_DIRECTORY) && command_length < MAX_COMMAND_LENGTH - 1) {
+                    command_buffer[command_length++] = '/';
+                    terminal_putchar('/');
+                }
+                command_buffer[command_length] = '\0';
+                return;
+            }
+            idx++;
+        }
+    }
+}
+
 static void shell_set_line(const char* s) {
-    // erase current line (only the editable part, not prompt)
+    // Move terminal cursor to end of current input first
+    while (cursor_pos < command_length) {
+        terminal_move_cursor_right();
+        cursor_pos++;
+    }
+    // Erase current line (only the editable part, not prompt)
     while (command_length > 0) {
-        terminal_putchar('\b'); // your terminal erases on backspace
+        terminal_putchar('\b');
         command_length--;
     }
-    // write new content
+    cursor_pos = 0;
+    // Write new content
     if (s && *s) {
         size_t i = 0;
         while (s[i] && i < MAX_COMMAND_LENGTH-1) {
@@ -494,6 +653,7 @@ static void shell_set_line(const char* s) {
         command_buffer[0] = '\0';
         command_length = 0;
     }
+    cursor_pos = command_length; // cursor at end
 }
 
 // Small helpers for syscalls and parsing
@@ -517,6 +677,43 @@ static uint32_t parse_uint(const char* s) {
     return v;
 }
 
+static int is_decimal_token(const char* s) {
+    if (!s || *s == '\0') return 0;
+    while (*s && *s != ' ') {
+        if (*s < '0' || *s > '9') return 0;
+        s++;
+    }
+    return 1;
+}
+
+static size_t copy_token(const char* src, char* dst, size_t dstsz) {
+    size_t i = 0;
+    if (!dst || dstsz == 0) return 0;
+    while (src && src[i] && src[i] != ' ' && i < dstsz - 1) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+    return i;
+}
+
+
+static const block_device_t* resolve_blockdev_token(const char* s, char* token_buf, size_t token_buf_sz) {
+    if (!s || !*s) return NULL;
+    copy_token(s, token_buf, token_buf_sz);
+    if (token_buf[0] == '\0') return NULL;
+    if (is_decimal_token(token_buf)) {
+        return blockdev_get(parse_uint(token_buf));
+    }
+    return blockdev_find_by_name(token_buf);
+}
+
+static const char* next_token(const char* s) {
+    while (s && *s && *s != ' ') s++;
+    while (s && *s == ' ') s++;
+    return s;
+}
+
 static int is_leap_year_u32(uint32_t year) {
     return ((year % 4u) == 0u && (year % 100u) != 0u) || ((year % 400u) == 0u);
 }
@@ -537,6 +734,15 @@ static void term_write_u32(uint32_t v) {
 static void term_write_2d(uint32_t v) {
     if (v < 10u) terminal_writestring("0");
     term_write_u32(v);
+}
+
+static void term_write_hex8(uint8_t v) {
+    char out[3];
+    static const char* hex = "0123456789ABCDEF";
+    out[0] = hex[(v >> 4) & 0xF];
+    out[1] = hex[v & 0xF];
+    out[2] = '\0';
+    terminal_writestring(out);
 }
 
 static void term_write_wallclock_from_epoch(uint32_t epoch_seconds) {
@@ -672,6 +878,512 @@ static void cmd_dmesg(const char* args) {
     terminal_writestring("--- kernel log (latest) ---\n");
     klog_dump();
     terminal_writestring("\n--- end kernel log ---\n");
+}
+
+static void cmd_mouse(const char* args) {
+    if (args && (strcmp(args, "clear") == 0 || strcmp(args, "reset") == 0)) {
+        mouse_reset_counters();
+        terminal_writestring("mouse: counters cleared\n");
+        return;
+    }
+
+    if (args && *args) {
+        terminal_writestring("usage: mouse [clear]\n");
+        return;
+    }
+
+    mouse_state_t st;
+    mouse_get_state(&st);
+
+    terminal_writestring("mouse ready: ");
+    terminal_writestring(mouse_is_ready() ? "yes\n" : "no\n");
+
+    char buf[24];
+    terminal_writestring("packets: ");
+    itoa((int)st.packet_count, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\nbuttons: ");
+    itoa((int)st.buttons, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" (L=");
+    terminal_writestring((st.buttons & 0x1) ? "1" : "0");
+    terminal_writestring(" M=");
+    terminal_writestring((st.buttons & 0x4) ? "1" : "0");
+    terminal_writestring(" R=");
+    terminal_writestring((st.buttons & 0x2) ? "1" : "0");
+    terminal_writestring(")\n");
+
+    terminal_writestring("pos: x=");
+    itoa(st.x, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" y=");
+    itoa(st.y, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\n");
+
+    terminal_writestring("motion total: dx=");
+    itoa(st.dx_total, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" dy=");
+    itoa(st.dy_total, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\n");
+
+    terminal_writestring("overflow: x=");
+    terminal_writestring(st.x_overflow ? "1" : "0");
+    terminal_writestring(" y=");
+    terminal_writestring(st.y_overflow ? "1" : "0");
+    terminal_writestring("\n");
+
+    terminal_writestring("clicks: L=");
+    itoa((int)st.left_clicks, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" M=");
+    itoa((int)st.middle_clicks, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" R=");
+    itoa((int)st.right_clicks, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\n");
+}
+
+static void cmd_blk(const char* args) {
+    if (!args || *args == '\0' || strcmp(args, "list") == 0) {
+        uint32_t n = blockdev_count();
+        char buf[24];
+
+        terminal_writestring("ID  NAME  BSIZE  BLOCKS  FLAGS\n");
+        terminal_writestring("--  ----  -----  ------  -----\n");
+        for (uint32_t i = 0; i < n; ++i) {
+            const block_device_t* d = blockdev_get(i);
+            if (!d) continue;
+
+            itoa((int)d->id, buf, 10);
+            terminal_writestring(buf);
+            terminal_writestring("   ");
+            terminal_writestring(d->name);
+            terminal_writestring("    ");
+
+            itoa((int)d->block_size, buf, 10);
+            terminal_writestring(buf);
+            terminal_writestring("    ");
+
+            itoa((int)d->block_count, buf, 10);
+            terminal_writestring(buf);
+            terminal_writestring("    ");
+
+            if (d->flags & BLOCKDEV_FLAG_READONLY) terminal_writestring("RO ");
+            if (d->flags & BLOCKDEV_FLAG_ATAPI) terminal_writestring("ATAPI ");
+            if (d->flags & BLOCKDEV_FLAG_PARTITION) terminal_writestring("PART ");
+            if (d->flags == 0) terminal_writestring("-");
+            terminal_writestring("\n");
+        }
+        if (n == 0) terminal_writestring("(no block devices)\n");
+        return;
+    }
+
+    if (strncmp(args, "read ", 5) == 0) {
+        const char* p = args + 5;
+        uint32_t dev = parse_uint(p);
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+        if (!*p) {
+            terminal_writestring("usage: blk read <dev> <lba>\n");
+            return;
+        }
+        uint32_t lba = parse_uint(p);
+
+        const block_device_t* d = blockdev_get(dev);
+        if (!d) {
+            terminal_writestring("blk: invalid device id\n");
+            return;
+        }
+        if (d->block_size > 2048u) {
+            terminal_writestring("blk: block size too large for shell dump\n");
+            return;
+        }
+
+        uint8_t sector[2048];
+        int rc = blockdev_read(dev, lba, 1, sector);
+        if (rc < 0) {
+            terminal_writestring("blk: read failed\n");
+            return;
+        }
+
+        terminal_writestring("blk: first 64 bytes\n");
+        for (uint32_t i = 0; i < 64; ++i) {
+            term_write_hex8(sector[i]);
+            if ((i & 0x0Fu) == 0x0Fu) terminal_writestring("\n");
+            else terminal_writestring(" ");
+        }
+
+        if (d->block_size >= 512u) {
+            terminal_writestring("sig[510..511]=");
+            term_write_hex8(sector[510]);
+            terminal_writestring(" ");
+            term_write_hex8(sector[511]);
+            terminal_writestring("\n");
+        }
+        return;
+    }
+
+    if (strncmp(args, "write ", 6) == 0) {
+        const char* p = args + 6;
+        uint32_t dev = parse_uint(p);
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+        if (!*p) {
+            terminal_writestring("usage: blk write <dev> <lba> <seed-byte>\n");
+            return;
+        }
+
+        uint32_t lba = parse_uint(p);
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+        if (!*p) {
+            terminal_writestring("usage: blk write <dev> <lba> <seed-byte>\n");
+            return;
+        }
+
+        uint32_t seed = parse_uint(p);
+        if (seed > 255u) {
+            terminal_writestring("blk: seed-byte must be 0..255\n");
+            return;
+        }
+
+        const block_device_t* d = blockdev_get(dev);
+        if (!d) {
+            terminal_writestring("blk: invalid device id\n");
+            return;
+        }
+        if (d->block_size > 2048u) {
+            terminal_writestring("blk: block size too large for shell write test\n");
+            return;
+        }
+        if (d->flags & BLOCKDEV_FLAG_ATAPI) {
+            terminal_writestring("blk: refusing writes to ATAPI device\n");
+            return;
+        }
+
+        uint8_t tx[2048];
+        uint8_t rx[2048];
+        for (uint32_t i = 0; i < d->block_size; ++i) {
+            tx[i] = (uint8_t)((seed + i) & 0xFFu);
+            rx[i] = 0;
+        }
+
+        int wrc = blockdev_write(dev, lba, 1, tx);
+        if (wrc < 0) {
+            terminal_writestring("blk: write failed\n");
+            return;
+        }
+
+        int rrc = blockdev_read(dev, lba, 1, rx);
+        if (rrc < 0) {
+            terminal_writestring("blk: readback failed\n");
+            return;
+        }
+
+        int mismatch = -1;
+        for (uint32_t i = 0; i < d->block_size; ++i) {
+            if (rx[i] != tx[i]) {
+                mismatch = (int)i;
+                break;
+            }
+        }
+
+        if (mismatch >= 0) {
+            terminal_writestring("blk: verify mismatch at byte ");
+            char nbuf[24];
+            itoa(mismatch, nbuf, 10);
+            terminal_writestring(nbuf);
+            terminal_writestring(" (expected ");
+            term_write_hex8(tx[(uint32_t)mismatch]);
+            terminal_writestring(", got ");
+            term_write_hex8(rx[(uint32_t)mismatch]);
+            terminal_writestring(")\n");
+            return;
+        }
+
+        terminal_writestring("blk: write+readback verify ok\n");
+        return;
+    }
+
+    terminal_writestring("usage: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed-byte>\n");
+}
+
+static void cmd_disk(const char* args) {
+    if (!args || *args == '\0' || strcmp(args, "help") == 0) {
+        terminal_writestring("usage:\n");
+        terminal_writestring("  disk parts\n");
+        terminal_writestring("  disk init <disk>\n");
+        terminal_writestring("  disk mkfs <partition>\n");
+        terminal_writestring("  disk mount <partition>\n");
+        terminal_writestring("  disk setup <disk>\n");
+        return;
+    }
+
+    if (strcmp(args, "parts") == 0) {
+        mbr_scan_all();
+        uint32_t n = mbr_partition_count();
+        if (n == 0) {
+            terminal_writestring("disk: no MBR partitions detected\n");
+            return;
+        }
+
+        terminal_writestring("DEV     PARENT  TYPE  START   BLOCKS\n");
+        terminal_writestring("------  ------  ----  ------  ------\n");
+        for (uint32_t i = 0; i < n; ++i) {
+            const mbr_partition_info_t* p = mbr_partition_get(i);
+            if (!p) continue;
+            terminal_writestring(p->name);
+            terminal_writestring("   ");
+
+            const block_device_t* parent = blockdev_get(p->parent_index);
+            terminal_writestring(parent ? parent->name : "?");
+            terminal_writestring("    ");
+
+            term_write_hex8(p->partition_type);
+            terminal_writestring("    ");
+
+            char buf[24];
+            itoa((int)p->start_lba, buf, 10);
+            terminal_writestring(buf);
+            terminal_writestring("    ");
+
+            itoa((int)p->block_count, buf, 10);
+            terminal_writestring(buf);
+            terminal_writestring("\n");
+        }
+        return;
+    }
+
+    if (strncmp(args, "init ", 5) == 0 || strncmp(args, "mkfs ", 5) == 0 ||
+        strncmp(args, "mount ", 6) == 0 || strncmp(args, "setup ", 6) == 0) {
+        int is_init = strncmp(args, "init ", 5) == 0;
+        int is_mkfs = strncmp(args, "mkfs ", 5) == 0;
+        int is_mount = strncmp(args, "mount ", 6) == 0;
+        int is_setup = strncmp(args, "setup ", 6) == 0;
+        const char* p = args + (is_init || is_mkfs ? 5 : 6);
+        char devtok[16];
+        const block_device_t* dev = resolve_blockdev_token(p, devtok, sizeof(devtok));
+        if (!dev) {
+            terminal_writestring("disk: unknown device\n");
+            return;
+        }
+
+        if (is_init) {
+            int rc = mbr_create_single_partition(dev->id, 0x83);
+            if (rc < 0) {
+                terminal_writestring("disk: failed to write MBR\n");
+                return;
+            }
+            mbr_scan_all();
+            terminal_writestring("disk: created single partition table on ");
+            terminal_writestring(dev->name);
+            terminal_writestring("\n");
+            return;
+        }
+
+        if (is_mkfs) {
+            int rc = minfs_format(dev->id);
+            if (rc < 0) {
+                terminal_writestring("disk: mkfs failed\n");
+                return;
+            }
+            terminal_writestring("disk: minfs formatted on ");
+            terminal_writestring(dev->name);
+            terminal_writestring("\n");
+            return;
+        }
+
+        if (is_mount) {
+            int rc = minfs_mount(dev->id, NULL);
+            if (rc < 0) {
+                terminal_writestring("disk: mount failed\n");
+                return;
+            }
+            terminal_writestring("disk: mounted /mnt/");
+            terminal_writestring(dev->name);
+            terminal_writestring("\n");
+            return;
+        }
+
+        if (is_setup) {
+            int rc = mbr_create_single_partition(dev->id, 0x83);
+            if (rc < 0) {
+                terminal_writestring("disk: setup failed while creating MBR\n");
+                return;
+            }
+            mbr_scan_all();
+
+            char pname[16];
+            strncpy(pname, dev->name, sizeof(pname) - 3);
+            pname[sizeof(pname) - 3] = '\0';
+            strcat(pname, "p1");
+
+            const block_device_t* part = blockdev_find_by_name(pname);
+            if (!part) {
+                terminal_writestring("disk: setup could not find new partition\n");
+                return;
+            }
+            if (minfs_format(part->id) < 0) {
+                terminal_writestring("disk: setup format failed\n");
+                return;
+            }
+            if (minfs_mount(part->id, NULL) < 0) {
+                terminal_writestring("disk: setup mount failed\n");
+                return;
+            }
+            terminal_writestring("disk: ready at /mnt/");
+            terminal_writestring(part->name);
+            terminal_writestring("\n");
+            return;
+        }
+    }
+
+    terminal_writestring("usage: disk parts | disk init <disk> | disk mkfs <partition> | disk mount <partition> | disk setup <disk>\n");
+}
+
+static void cmd_fsfill(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: fsfill <path> <bytes> <seed>\n");
+        return;
+    }
+
+    char path_arg[VFS_PATH_MAX];
+    copy_token(args, path_arg, sizeof(path_arg));
+    const char* p = next_token(args);
+    if (!*path_arg || !*p) {
+        terminal_writestring("usage: fsfill <path> <bytes> <seed>\n");
+        return;
+    }
+
+    uint32_t total = parse_uint(p);
+    p = next_token(p);
+    if (!*p) {
+        terminal_writestring("usage: fsfill <path> <bytes> <seed>\n");
+        return;
+    }
+    uint32_t seed = parse_uint(p) & 0xFFu;
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
+    int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_CREATE | VFS_O_TRUNC);
+    if (fd < 0) {
+        terminal_writestring("fsfill: cannot open: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    uint8_t chunk[256];
+    uint32_t written_total = 0;
+    while (written_total < total) {
+        uint32_t chunk_size = total - written_total;
+        if (chunk_size > sizeof(chunk)) chunk_size = sizeof(chunk);
+        for (uint32_t i = 0; i < chunk_size; ++i) {
+            chunk[i] = (uint8_t)((seed + written_total + i) & 0xFFu);
+        }
+
+        int32_t n = vfs_fd_write(fd, chunk, chunk_size);
+        if (n <= 0) {
+            terminal_writestring("fsfill: write failed\n");
+            vfs_fd_close(fd);
+            return;
+        }
+        written_total += (uint32_t)n;
+    }
+
+    vfs_fd_close(fd);
+    terminal_writestring("fsfill: wrote ");
+    char buf[24];
+    itoa((int)written_total, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" bytes to ");
+    terminal_writestring(path);
+    terminal_writestring("\n");
+}
+
+static void cmd_fsverify(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: fsverify <path> <bytes> <seed>\n");
+        return;
+    }
+
+    char path_arg[VFS_PATH_MAX];
+    copy_token(args, path_arg, sizeof(path_arg));
+    const char* p = next_token(args);
+    if (!*path_arg || !*p) {
+        terminal_writestring("usage: fsverify <path> <bytes> <seed>\n");
+        return;
+    }
+
+    uint32_t total = parse_uint(p);
+    p = next_token(p);
+    if (!*p) {
+        terminal_writestring("usage: fsverify <path> <bytes> <seed>\n");
+        return;
+    }
+    uint32_t seed = parse_uint(p) & 0xFFu;
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
+    vfs_node_t* node = vfs_namei(path);
+    if (!node || !(node->type & VFS_FILE)) {
+        terminal_writestring("fsverify: no such file: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+    if (node->size != total) {
+        terminal_writestring("fsverify: size mismatch\n");
+        return;
+    }
+
+    int fd = vfs_fd_open(path, VFS_O_RDONLY);
+    if (fd < 0) {
+        terminal_writestring("fsverify: cannot open: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    uint8_t chunk[256];
+    uint32_t checked = 0;
+    while (checked < total) {
+        uint32_t chunk_size = total - checked;
+        if (chunk_size > sizeof(chunk)) chunk_size = sizeof(chunk);
+
+        int32_t n = vfs_fd_read(fd, chunk, chunk_size);
+        if (n != (int32_t)chunk_size) {
+            terminal_writestring("fsverify: short read\n");
+            vfs_fd_close(fd);
+            return;
+        }
+
+        for (uint32_t i = 0; i < chunk_size; ++i) {
+            uint8_t expected = (uint8_t)((seed + checked + i) & 0xFFu);
+            if (chunk[i] != expected) {
+                terminal_writestring("fsverify: mismatch at byte ");
+                char buf[24];
+                itoa((int)(checked + i), buf, 10);
+                terminal_writestring(buf);
+                terminal_writestring(" (expected ");
+                term_write_hex8(expected);
+                terminal_writestring(", got ");
+                term_write_hex8(chunk[i]);
+                terminal_writestring(")\n");
+                vfs_fd_close(fd);
+                return;
+            }
+        }
+
+        checked += chunk_size;
+    }
+
+    vfs_fd_close(fd);
+    terminal_writestring("fsverify: ok\n");
 }
 
 static void cmd_libctest(const char* args) {
@@ -1112,13 +1824,37 @@ static void cmd_rm(const char* args) {
         return;
     }
 
-    vfs_node_t* parent = node->parent;
-    if (!parent) {
+    /* Resolve parent and basename from path, do not trust node->parent. */
+    size_t plen = strlen(path);
+    int last_slash = -1;
+    for (size_t i = 0; i < plen; ++i) {
+        if (path[i] == '/') last_slash = (int)i;
+    }
+
+    char parent_path[VFS_PATH_MAX];
+    char name[VFS_NAME_MAX];
+    if (last_slash <= 0) {
+        strcpy(parent_path, "/");
+        strncpy(name, path + (last_slash < 0 ? 0 : 1), VFS_NAME_MAX - 1);
+    } else {
+        memcpy(parent_path, path, (size_t)last_slash);
+        parent_path[last_slash] = '\0';
+        strncpy(name, path + last_slash + 1, VFS_NAME_MAX - 1);
+    }
+    name[VFS_NAME_MAX - 1] = '\0';
+
+    if (name[0] == '\0') {
         terminal_writestring("rm: cannot remove root\n");
         return;
     }
 
-    if (vfs_unlink(parent, node->name) < 0) {
+    vfs_node_t* parent = vfs_namei(parent_path);
+    if (!parent) {
+        terminal_writestring("rm: parent not found\n");
+        return;
+    }
+
+    if (vfs_unlink(parent, name) < 0) {
         terminal_writestring("rm: failed (directory not empty?)\n");
     }
 }

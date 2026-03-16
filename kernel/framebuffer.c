@@ -115,3 +115,13 @@ uint32_t framebuffer_width(void) {
 uint32_t framebuffer_height(void) {
     return g_height;
 }
+
+uint32_t framebuffer_getpixel(uint32_t x, uint32_t y) {
+    if (!g_fb || x >= g_width || y >= g_height) return 0;
+    return g_fb[y * g_pitch + x];
+}
+
+void framebuffer_putpixel(uint32_t x, uint32_t y, uint32_t color) {
+    if (!g_fb || x >= g_width || y >= g_height) return;
+    g_fb[y * g_pitch + x] = color;
+}

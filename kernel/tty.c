@@ -262,6 +262,36 @@
         terminal_write(data, strlen(data));
     }
 
+    void terminal_move_cursor_left(void) {
+        if (!terminal_ready) return;
+        if (cursor_enabled && cursor_visible) clear_cursor();
+        if (term_cursor_x > 0) {
+            term_cursor_x--;
+        } else if (term_cursor_y > 0) {
+            term_cursor_y--;
+            /* Find last used column on the previous row */
+            term_cursor_x = (int)TERM_COLS - 1;
+            while (term_cursor_x > 0 && term_buffer[term_cursor_y][term_cursor_x] == ' ')
+                term_cursor_x--;
+            if (term_buffer[term_cursor_y][term_cursor_x] != ' ')
+                term_cursor_x++;
+        }
+        if (cursor_enabled && cursor_visible) draw_cursor();
+    }
+
+    void terminal_move_cursor_right(void) {
+        if (!terminal_ready) return;
+        if (cursor_enabled && cursor_visible) clear_cursor();
+        term_cursor_x++;
+        if (term_cursor_x >= (int)TERM_COLS) {
+            term_cursor_x = 0;
+            term_cursor_y++;
+            clamp_or_scroll_cursor();
+            calculate_line_positions();
+        }
+        if (cursor_enabled && cursor_visible) draw_cursor();
+    }
+
     void terminal_setcolor(uint32_t color) { term_color = color; }
     void terminal_setbackground(uint32_t color) { term_bg = color; }
     void terminal_setscale(uint32_t scale) { current_scale = scale; }
