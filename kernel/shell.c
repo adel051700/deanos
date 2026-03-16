@@ -34,7 +34,7 @@ static size_t history_len = 0;     // number of stored entries
 static size_t history_pos = 0;     // browsing index: 0..history_len (history_len = current line)
 static char edit_backup[MAX_COMMAND_LENGTH]; // current line backup when entering history
 
-typedef enum { ESC_IDLE=0, ESC_GOT_ESC, ESC_GOT_BRACKET } esc_state_t;
+typedef enum { ESC_IDLE=0, ESC_GOT_ESC, ESC_GOT_BRACKET, ESC_GOT_BRACKET_3 } esc_state_t;
 static esc_state_t esc_state = ESC_IDLE;
 
 // Forward decls for history helpers
@@ -43,6 +43,7 @@ static void shell_set_line(const char* s);
 static void shell_execute_command(const char* command);
 static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz);
 static void shell_autocomplete(void);
+static void shell_insert_char_at_cursor(char c);
 
 // New forward decls (syscall test commands)
 static void cmd_sys_write(const char* args);
@@ -202,6 +203,29 @@ void shell_process_char(char c) {
                 cursor_pos++;
                 terminal_move_cursor_right();
             }
+        } else if (c == '3') {
+            // Begin Delete sequence: ESC [ 3 ~
+            esc_state = ESC_GOT_BRACKET_3;
+            return;
+        }
+        esc_state = ESC_IDLE;
+        return;
+    } else if (esc_state == ESC_GOT_BRACKET_3) {
+        if (c == '~' && cursor_pos < command_length) {
+            size_t chars_after = command_length - cursor_pos - 1;
+            memmove(&command_buffer[cursor_pos], &command_buffer[cursor_pos + 1], chars_after);
+            command_length--;
+            command_buffer[command_length] = '\0';
+
+            /* Redraw tail and erase stale last character cell. */
+            for (size_t i = cursor_pos; i < command_length; i++) {
+                terminal_putchar(command_buffer[i]);
+            }
+            terminal_putchar(' ');
+
+            for (size_t i = 0; i <= chars_after; i++) {
+                terminal_move_cursor_left();
+            }
         }
         esc_state = ESC_IDLE;
         return;
@@ -240,24 +264,10 @@ void shell_process_char(char c) {
         }
     } else if (c == '\t') {
         shell_autocomplete();
-        cursor_pos = command_length; // autocomplete always appends to end
     } else {
         unsigned char uc = (unsigned char)c;
         if (uc >= ' ' && uc != 0x7F && command_length < MAX_COMMAND_LENGTH - 1) {
-            /* Insert at cursor_pos */
-            memmove(&command_buffer[cursor_pos + 1], &command_buffer[cursor_pos],
-                    command_length - cursor_pos);
-            command_buffer[cursor_pos] = c;
-            command_length++;
-            command_buffer[command_length] = '\0';
-            /* Redraw from cursor_pos to end */
-            for (size_t i = cursor_pos; i < command_length; i++)
-                terminal_putchar(command_buffer[i]);
-            /* Move terminal cursor back to cursor_pos + 1 */
-            size_t move_back = command_length - cursor_pos - 1;
-            for (size_t i = 0; i < move_back; i++)
-                terminal_move_cursor_left();
-            cursor_pos++;
+            shell_insert_char_at_cursor(c);
         }
     }
 }
@@ -533,6 +543,27 @@ static void history_add(const char* cmd) {
     history_pos = history_len;
 }
 
+static void shell_insert_char_at_cursor(char c) {
+    if (command_length >= MAX_COMMAND_LENGTH - 1) return;
+
+    /* Insert and redraw tail so mid-line edits remain visually consistent. */
+    memmove(&command_buffer[cursor_pos + 1], &command_buffer[cursor_pos],
+            command_length - cursor_pos);
+    command_buffer[cursor_pos] = c;
+    command_length++;
+    command_buffer[command_length] = '\0';
+
+    for (size_t i = cursor_pos; i < command_length; i++) {
+        terminal_putchar(command_buffer[i]);
+    }
+
+    size_t move_back = command_length - cursor_pos - 1;
+    for (size_t i = 0; i < move_back; i++) {
+        terminal_move_cursor_left();
+    }
+    cursor_pos++;
+}
+
 /**
  * Tab-autocomplete: complete the current token against command names (first
  * word) or VFS paths (subsequent words).  Completes to the first match found.
@@ -540,26 +571,34 @@ static void history_add(const char* cmd) {
 static void shell_autocomplete(void) {
     command_buffer[command_length] = '\0';
 
-    /* Find the start of the current (last) word */
+    /* Find the start of the word at cursor position. */
     const char* word_start = command_buffer;
-    for (size_t i = 0; i < command_length; i++) {
+    for (size_t i = 0; i < cursor_pos; i++) {
         if (command_buffer[i] == ' ') {
             word_start = &command_buffer[i + 1];
         }
     }
-    size_t word_len = (size_t)(command_buffer + command_length - word_start);
+    size_t word_len = (size_t)(command_buffer + cursor_pos - word_start);
+
+    if (word_len == 0) return;
 
     if (word_start == command_buffer) {
         /* ---- Command name completion ---- */
         for (size_t i = 0; commands[i].name != NULL; i++) {
             if (strncmp(commands[i].name, word_start, word_len) == 0) {
                 const char* rest = commands[i].name + word_len;
-                while (*rest && command_length < MAX_COMMAND_LENGTH - 1) {
-                    command_buffer[command_length++] = *rest;
-                    terminal_putchar(*rest);
-                    rest++;
+
+                /* Avoid duplicating already-present suffix under cursor. */
+                size_t skip = 0;
+                while (rest[skip] && (cursor_pos + skip) < command_length &&
+                       command_buffer[cursor_pos + skip] == rest[skip]) {
+                    skip++;
                 }
-                command_buffer[command_length] = '\0';
+
+                rest += skip;
+                while (*rest && command_length < MAX_COMMAND_LENGTH - 1) {
+                    shell_insert_char_at_cursor(*rest++);
+                }
                 return;
             }
         }
@@ -609,17 +648,23 @@ static void shell_autocomplete(void) {
             if (strncmp(entry.name, name_prefix, prefix_len) == 0) {
                 /* Append the rest of the matching name */
                 const char* rest = entry.name + prefix_len;
-                while (*rest && command_length < MAX_COMMAND_LENGTH - 1) {
-                    command_buffer[command_length++] = *rest;
-                    terminal_putchar(*rest);
-                    rest++;
+
+                /* Avoid duplicating already-present suffix under cursor. */
+                size_t skip = 0;
+                while (rest[skip] && (cursor_pos + skip) < command_length &&
+                       command_buffer[cursor_pos + skip] == rest[skip]) {
+                    skip++;
                 }
+
+                rest += skip;
+                while (*rest && command_length < MAX_COMMAND_LENGTH - 1) {
+                    shell_insert_char_at_cursor(*rest++);
+                }
+
                 /* Append a trailing '/' for directories */
                 if ((entry.type & VFS_DIRECTORY) && command_length < MAX_COMMAND_LENGTH - 1) {
-                    command_buffer[command_length++] = '/';
-                    terminal_putchar('/');
+                    shell_insert_char_at_cursor('/');
                 }
-                command_buffer[command_length] = '\0';
                 return;
             }
             idx++;

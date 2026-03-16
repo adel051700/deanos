@@ -88,10 +88,10 @@ static void keyboard_irq_handler(struct registers* regs) {
             case 0x50: keyboard_buffer_enqueue_str("\x1B[B"); break; // Down
             case 0x4D: keyboard_buffer_enqueue_str("\x1B[C"); break; // Right
             case 0x4B: keyboard_buffer_enqueue_str("\x1B[D"); break; // Left
-            // (optional) Home/End/Delete:
+            // (optional) Home/End:
             // case 0x47: keyboard_buffer_enqueue_str("\x1B[H"); break; // Home
             // case 0x4F: keyboard_buffer_enqueue_str("\x1B[F"); break; // End
-            // case 0x53: keyboard_buffer_enqueue_str("\x1B[3~"); break; // Delete
+            case 0x53: keyboard_buffer_enqueue_str("\x1B[3~"); break; // Delete
             default: break;
         }
         e0_prefix = 0;
