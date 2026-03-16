@@ -9,6 +9,7 @@ extern char _kernel_end;
 
 /* Bitmap representation: 1 bit per frame. 1 = used, 0 = free */
 static uint32_t* g_bitmap = NULL;
+static uint16_t* g_refcounts = NULL;
 static uint32_t  g_bitmap_bits = 0;      // number of frames tracked
 static uint32_t  g_free_frames = 0;
 
@@ -26,6 +27,10 @@ static inline uint32_t addr_to_frame(uint64_t addr) {
 
 static inline uintptr_t frame_to_addr(uint32_t frame) {
     return ((uintptr_t)frame) << 12;
+}
+
+static inline int frame_valid(uint32_t frame) {
+    return (frame < g_bitmap_bits) && (g_bitmap != NULL);
 }
 
 /* Reserve [start,end) in frame granularity (set bits to 1 if in range) */
@@ -53,6 +58,7 @@ static void bitmap_free_range(uintptr_t start, uintptr_t end) {
     for (uint32_t f = first; f < last; ++f) {
         if (BIT_TST(g_bitmap, f)) {
             BIT_CLR(g_bitmap, f);
+            if (g_refcounts) g_refcounts[f] = 0;
             g_free_frames++;
         }
     }
@@ -143,7 +149,12 @@ void pmm_initialize(struct multiboot_tag_mmap* mmap_tag) {
 
     g_bitmap = (uint32_t*)boot_alloc(bitmap_bytes, PMM_FRAME_SIZE);
     if (!g_bitmap) { return; }
+
+    g_refcounts = (uint16_t*)boot_alloc(g_bitmap_bits * sizeof(uint16_t), 4);
+    if (!g_refcounts) { return; }
+
     memset(g_bitmap, 0xFF, bitmap_bytes);
+    memset(g_refcounts, 0, g_bitmap_bits * sizeof(uint16_t));
     g_free_frames = 0;
 
     uintptr_t reserved_end = boot_alloc_ptr;
@@ -173,6 +184,11 @@ void pmm_initialize(struct multiboot_tag_mmap* mmap_tag) {
         BIT_SET(g_bitmap, 0);
         if (g_free_frames) g_free_frames--;
     }
+
+    /* Mark currently used frames with refcount=1, free frames stay at 0. */
+    for (uint32_t i = 0; i < g_bitmap_bits; ++i) {
+        if (BIT_TST(g_bitmap, i)) g_refcounts[i] = 1;
+    }
 }
 
 uintptr_t phys_alloc_frame(void) {
@@ -180,6 +196,7 @@ uintptr_t phys_alloc_frame(void) {
     for (uint32_t i = 0; i < g_bitmap_bits; ++i) {
         if (!BIT_TST(g_bitmap, i)) {
             BIT_SET(g_bitmap, i);
+            if (g_refcounts) g_refcounts[i] = 1;
             if (g_free_frames) g_free_frames--;
             return frame_to_addr(i);
         }
@@ -192,6 +209,7 @@ void phys_free_frame(uintptr_t phys_addr) {
     if (f >= g_bitmap_bits) return;
     if (BIT_TST(g_bitmap, f)) {
         BIT_CLR(g_bitmap, f);
+        if (g_refcounts) g_refcounts[f] = 0;
         g_free_frames++;
     }
 }
@@ -207,6 +225,7 @@ uintptr_t phys_alloc_contiguous(uint32_t count, uint32_t align_frames) {
 
     for (uint32_t j = 0; j < count; ++j) {
         BIT_SET(g_bitmap, first + j);
+        if (g_refcounts) g_refcounts[first + j] = 1;
     }
     if (g_free_frames >= count) g_free_frames -= count;
     return frame_to_addr(first);
@@ -239,4 +258,29 @@ int pmm_self_test(uint32_t frames_to_test) {
 
 uintptr_t pmm_reserved_region_end(void) {
     return g_reserved_end;
+}
+
+void pmm_frame_ref(uintptr_t phys_addr) {
+    uint32_t f = addr_to_frame(phys_addr);
+    if (!frame_valid(f)) return;
+    if (!BIT_TST(g_bitmap, f)) return;
+    if (g_refcounts[f] != 0xFFFFu) g_refcounts[f]++;
+}
+
+void pmm_frame_unref(uintptr_t phys_addr) {
+    uint32_t f = addr_to_frame(phys_addr);
+    if (!frame_valid(f)) return;
+    if (!BIT_TST(g_bitmap, f)) return;
+
+    if (g_refcounts[f] > 1) {
+        g_refcounts[f]--;
+        return;
+    }
+    phys_free_frame(phys_addr);
+}
+
+uint16_t pmm_frame_refcount(uintptr_t phys_addr) {
+    uint32_t f = addr_to_frame(phys_addr);
+    if (!frame_valid(f) || !BIT_TST(g_bitmap, f)) return 0;
+    return g_refcounts[f];
 }

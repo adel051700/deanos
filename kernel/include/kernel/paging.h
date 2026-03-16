@@ -4,6 +4,16 @@
 #include <stdint.h>
 #include "multiboot.h"
 
+/* Public mapping flags used by demand-region registration. */
+#define PAGING_FLAG_WRITE 0x002u
+#define PAGING_FLAG_USER  0x004u
+
+typedef struct paging_stats {
+	uint32_t demand_regions;
+	uint32_t demand_faults;
+	uint32_t cow_faults;
+} paging_stats_t;
+
 void paging_initialize(struct multiboot_tag_framebuffer* fb_tag);
 
 uintptr_t paging_heap_base(void);
@@ -16,5 +26,14 @@ uintptr_t paging_heap_size(void);
  * Returns 0 on success, negative on error.
  */
 int paging_map_user(uintptr_t vaddr);
+
+/* Register a lazily populated region. Pages are allocated on first fault. */
+int paging_register_demand_region(uintptr_t start, uintptr_t size, uint32_t flags);
+
+/* Mark an already-mapped user page as copy-on-write (hook for future fork). */
+int paging_mark_cow(uintptr_t vaddr);
+
+/* Query VM hook counters for diagnostics. */
+void paging_get_stats(paging_stats_t* out);
 
 #endif

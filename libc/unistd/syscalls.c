@@ -54,6 +54,18 @@ int sleep_ms(unsigned milliseconds) {
     return (int)syscall1(SYS_sleep_ms, milliseconds);
 }
 
+int getpid(void) {
+    return (int)syscall1(SYS_getpid, 0);
+}
+
+int getppid(void) {
+    return (int)syscall1(SYS_getppid, 0);
+}
+
+int kill(int pid) {
+    return (int)syscall1(SYS_kill, (unsigned)pid);
+}
+
 unsigned sleep(unsigned seconds) {
     (void)syscall1(SYS_sleep_ms, seconds * 1000u);
     return 0;

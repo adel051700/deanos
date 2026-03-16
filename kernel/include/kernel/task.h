@@ -28,6 +28,7 @@ typedef struct task_context {
 
 typedef struct task {
     uint32_t        id;
+    uint32_t        parent_id;
     task_state_t    state;
     char            name[TASK_NAME_LEN];
 
@@ -59,6 +60,8 @@ int  task_create(void (*entry)(void), uint32_t stack_size);
 
 void task_yield(void);
 void task_exit(void);
+/* Mark task DEAD by id. Returns 0 on success, negative on error. */
+int  task_kill(int id);
 /* Block until the task with the given ID is TASK_DEAD (or not found). */
 void task_wait(int id);
 /* Block current task for N scheduler ticks (N=0 => yield). */
@@ -73,6 +76,8 @@ void scheduler_tick(void);
 uint32_t task_count(void);
 const task_t* task_get(uint32_t index);
 int task_current_id(void);
+int task_current_ppid(void);
+int task_parent_id(int id);
 
 #ifdef __cplusplus
 }

@@ -72,6 +72,26 @@ static int is_task_dead_or_missing(int id) {
     return 1;
 }
 
+static int find_task_index_by_id(int id) {
+    if (id <= 0) return -1;
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        if ((int)g_tasks[i].id == id) return (int)i;
+    }
+    return -1;
+}
+
+static uint32_t init_task_id(void) {
+    if (g_task_count > 0) return g_tasks[0].id;
+    return 1;
+}
+
+static void reparent_children(uint32_t old_parent_id, uint32_t new_parent_id) {
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        if (g_tasks[i].parent_id == old_parent_id)
+            g_tasks[i].parent_id = new_parent_id;
+    }
+}
+
 static void wake_blocked_tasks(void) {
     for (uint32_t i = 0; i < g_task_count; ++i) {
         task_t* t = &g_tasks[i];
@@ -129,6 +149,7 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
 
     task_t* t = &g_tasks[g_task_count];
     t->id      = g_next_id++;
+    t->parent_id = (g_current >= 0) ? g_tasks[g_current].id : 0;
     t->state   = TASK_READY;
     t->quantum = (quantum > 0) ? quantum : TASK_DEFAULT_QUANTUM;
     t->ticks_left = t->quantum;
@@ -183,10 +204,34 @@ int task_create(void (*entry)(void), uint32_t stack_size) {
 }
 
 void task_exit(void) {
-    if (g_current >= 0)
+    if (g_current >= 0) {
+        uint32_t dying_id = g_tasks[g_current].id;
+        reparent_children(dying_id, init_task_id());
         g_tasks[g_current].state = TASK_DEAD;
+    }
     task_yield();
     for (;;) __asm__ __volatile__("hlt");
+}
+
+int task_kill(int id) {
+    int idx = find_task_index_by_id(id);
+    if (idx < 0) return -1;
+    if (idx == 0) return -2; /* never kill idle */
+
+    if (idx == g_current) {
+        task_exit();
+        return 0;
+    }
+
+    if (g_tasks[idx].state == TASK_DEAD) return 0;
+
+    uint32_t dying_id = g_tasks[idx].id;
+    reparent_children(dying_id, init_task_id());
+
+    g_tasks[idx].wake_tick = 0;
+    g_tasks[idx].wait_task_id = 0;
+    g_tasks[idx].state = TASK_DEAD;
+    return 0;
 }
 
 void task_wait(int id) {
@@ -265,3 +310,9 @@ void scheduler_tick(void) {
 uint32_t task_count(void)              { return g_task_count; }
 const task_t* task_get(uint32_t idx)   { return (idx < g_task_count) ? &g_tasks[idx] : NULL; }
 int task_current_id(void)              { return (g_current >= 0) ? (int)g_tasks[g_current].id : -1; }
+int task_current_ppid(void)            { return (g_current >= 0) ? (int)g_tasks[g_current].parent_id : -1; }
+int task_parent_id(int id) {
+    int idx = find_task_index_by_id(id);
+    if (idx < 0) return -1;
+    return (int)g_tasks[idx].parent_id;
+}
