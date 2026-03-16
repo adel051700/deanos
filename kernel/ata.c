@@ -341,8 +341,8 @@ void ata_initialize(void) {
         b.name[3] = '\0';
 
         if (blockdev_register(&b) >= 0) {
-            if (d->atapi) klog("ata: registered ATAPI block device");
-            else klog("ata: registered ATA disk");
+            if (d->atapi) {}
+            else {};
         } else {
             klog("ata: failed to register disk");
         }
