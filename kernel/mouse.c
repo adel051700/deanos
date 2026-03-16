@@ -225,7 +225,6 @@ void mouse_initialize(void) {
     irq_install_handler(12, mouse_irq_handler);
     g_mouse_ready = 1;
     mouse_draw_cursor(0, 0);
-    klog("mouse: PS/2 ready on IRQ12");
 }
 
 int mouse_is_ready(void) {
