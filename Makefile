@@ -9,8 +9,11 @@ USER_BUILD_DIR = $(BUILD_DIR)/user
 DESTDIR = isodir
 DATE = $(shell date +%d-%m-%Y)
 MAJOR = 0
-MINOR = 3
+MINOR = 4
 VERSION = $(MAJOR)_$(MINOR)
+ISO_DIR = isos
+ISO_NAME = deanos-$(DATE)-$(VERSION).iso
+ISO_PATH = $(ISO_DIR)/$(ISO_NAME)
 # Cross-compiler settings
 CFLAGS?=-O2 -g
 CPPFLAGS?=
@@ -40,6 +43,7 @@ kernel/gdt.c \
 kernel/io.c \
 kernel/interrupt.c \
 kernel/keyboard.c \
+kernel/mouse.c \
 kernel/shell.c \
 kernel/rtc.c \
 kernel/pit.c \
@@ -50,12 +54,16 @@ kernel/pic.c \
 kernel/irq.c \
 kernel/log.c \
 kernel/serial.c \
+kernel/blockdev.c \
+kernel/ata.c \
+kernel/mbr.c \
 kernel/syscall.c \
 kernel/task.c \
 kernel/tss.c \
 kernel/usermode.c \
 kernel/vfs.c \
 kernel/ramfs.c \
+kernel/minfs.c \
 kernel/elf.c \
 kernel/context_switch.s
 
@@ -153,9 +161,9 @@ $(USER_BUILD_DIR)/anim_blob.o: $(USER_BUILD_DIR)/anim.elf | directories
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f deanos.bin
-	rm -f deanos-$(DATE)-$(VERSION).iso
+	rm -f $(ISO_NAME)
 	rm -rf $(DESTDIR)
-	rm -rf isos/deanos-$(DATE)-$(VERSION).iso
+	rm -f $(ISO_PATH)
 
 install: deanos.bin
 	mkdir -p $(DESTDIR)/boot/grub
@@ -163,16 +171,12 @@ install: deanos.bin
 	cp grub.cfg $(DESTDIR)/boot/grub/
 
 iso: install
-	mkdir -p isos
-	grub-mkrescue -o deanos-$(DATE)-$(VERSION).iso $(DESTDIR)
-	cp deanos-$(DATE)-$(VERSION).iso isos/
+	mkdir -p $(ISO_DIR)
+	rm -f $(ISO_PATH)
+	grub-mkrescue -o $(ISO_PATH) $(DESTDIR)
 
 run: iso
-	make clean
-	make 
-	make install
-	make iso
-	qemu-system-i386 -cdrom deanos-$(DATE)-$(VERSION).iso
+	qemu-system-i386 -cdrom $(ISO_PATH)
 
 # Include dependency files
 -include $(ALL_OBJS:.o=.d)

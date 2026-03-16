@@ -7,6 +7,10 @@ static irq_handler_t irq_handlers[16] = {0};
 void irq_install_handler(uint8_t irq, irq_handler_t handler) {
     if (irq < 16) {
         irq_handlers[irq] = handler;
+        if (irq >= 8) {
+            /* Slave PIC lines require master IRQ2 (cascade) unmasked. */
+            pic_unmask_irq(2);
+        }
         pic_unmask_irq(irq);
     }
 }

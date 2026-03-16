@@ -16,4 +16,6 @@ void terminal_setscale(uint32_t scale);
 void terminal_enable_cursor(void);
 void terminal_cursor_blink_tick(void);
 uint32_t terminal_get_color(void);
+void terminal_move_cursor_left(void);
+void terminal_move_cursor_right(void);
 #endif

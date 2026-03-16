@@ -37,6 +37,6 @@
 10. ~~Simple libc expansion: printf, malloc (once heap ready), basic file I/O wrappers.~~
 11. ~~Timer improvements: expose sleep/yield; convert busy waits to scheduler blocks.~~
 12. ~~Logging & debug: kernel log buffer, serial port driver (COM1) for debug output.~~
-13. Driver work: PS/2 mouse, ATA/ATAPI (PIO first), then a block device layer.
+13. ~~Driver work: PS/2 mouse, ATA/ATAPI (PIO first), then a block device layer.~~
 14. Virtual memory features: demand paging hooks, copy‑on‑write for fork (later).
 15. Process management enhancements: parent/child, signals or simple kill mechanism.
