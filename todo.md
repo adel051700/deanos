@@ -38,5 +38,64 @@
 11. ~~Timer improvements: expose sleep/yield; convert busy waits to scheduler blocks.~~
 12. ~~Logging & debug: kernel log buffer, serial port driver (COM1) for debug output.~~
 13. ~~Driver work: PS/2 mouse, ATA/ATAPI (PIO first), then a block device layer.~~
-14. Virtual memory features: demand paging hooks, copy‑on‑write for fork (later).
-15. Process management enhancements: parent/child, signals or simple kill mechanism.
+14. ~~Virtual memory features: demand paging hooks, copy‑on‑write for fork (later).~~
+15. ~~Process management enhancements: parent/child, signals or simple kill mechanism.~~
+16. Fork groundwork: duplicate task context and memory metadata without full copy.
+17. Execve path: replace current process image with a new ELF while preserving PID.
+18. Wait/waitpid: let parents block for child exit and collect status codes.
+19. File descriptor table: per-process fd state with close-on-exec support.
+20. Pipes: anonymous unidirectional pipes for shell command chaining.
+21. Redirection: shell support for >, >>, < with robust fd wiring.
+22. Session/job control basics: foreground/background groups and terminal ownership.
+23. Signal delivery core: SIGINT/SIGTERM/SIGKILL/SIGCHLD semantics and default handlers.
+24. Signal APIs: sigaction/signal-style user API and kernel dispatch hooks.
+25. Copy-on-write completion: full fork COW for user pages with verified refcount correctness.
+26. Demand paging completion: lazily load ELF text/data pages on first access.
+27. mmap/munmap primitives: map anonymous and file-backed regions.
+28. Shared memory: lightweight shm API for IPC between processes.
+29. Swap design pass: plan paging-to-disk layout and eviction policy.
+30. Swap implementation: page-out/page-in path with fault retry logic.
+31. VFS cleanup: unify mount points, path normalization, and permission checks.
+32. Real filesystem phase 1: FAT32 read-only mount support for disk partitions.
+33. Real filesystem phase 2: FAT32 write support with crash-safe metadata updates.
+34. Filesystem cache: block cache with LRU/clock eviction and dirty writeback.
+35. Journaling/minfs reliability: add transaction log or recovery markers.
+36. Unified storage probing: robust ATA + ATAPI + partition scan on boot.
+37. Better block I/O APIs: async request queue and completion callbacks.
+38. Network driver milestone: bring up a basic NIC (e1000 or RTL8139).
+39. Network stack phase 1: ARP + IPv4 + ICMP (ping).
+40. Network stack phase 2: UDP sockets and DNS client.
+41. Network stack phase 3: TCP state machine for simple clients.
+42. Userland networking tools: ping, netstat-lite, and DHCP client command.
+43. Security baseline: user/group IDs, chmod/chown, and permission enforcement.
+44. Hardening: kernel/user pointer validation audit for all syscalls.
+45. Hardening: stack canary support and non-executable user stacks.
+46. Randomness: entropy collector + /dev/random and /dev/urandom devices.
+47. Timekeeping improvements: monotonic clock + RTC synchronization strategy.
+48. TTY improvements: line discipline, canonical/raw mode, and control characters.
+49. Terminal UX: command history persistence and reverse search.
+50. Shell scripting mini-language: variables, simple loops, and conditionals.
+51. Boot reliability: support booting cleanly from disk without ISO fallback.
+52. SMP research task: AP bootstrap plan and per-CPU data structures.
+53. SMP phase 1: bring up second core and schedule idle task there.
+54. Locking audit: spinlocks/mutexes around scheduler, VFS, and heap critical paths.
+55. Deadlock diagnostics: lock order tracking and watchdog warnings.
+56. Test framework expansion: kernel unit tests + integration tests in QEMU.
+57. Regression suite: scripted boot tests for shell, FS, exec, and block I/O.
+58. Fuzzing pass: syscall and filesystem input fuzz tests.
+59. Profiling support: PIT-based sampling profiler and symbolized reports.
+60. Panic diagnostics: richer crash dump with registers, stack trace, and task info.
+61. Build system cleanup: reproducible builds and artifact version stamping.
+62. CI pipeline: automated build + run + smoke tests on every change.
+63. Developer docs: architecture overview and subsystem ownership notes.
+64. Contributor guide: coding style, testing requirements, and review checklist.
+65. User docs: shell command reference and filesystem usage guide.
+66. Release process: changelog generation and semantic versioning policy.
+67. Package format idea: simple app bundle with metadata and signatures.
+68. User program set: coreutils-lite (cat, cp, mv, grep, hexdump).
+69. Text editor prototype: minimal full-screen editor for in-OS editing.
+70. Init system: configurable startup scripts and service supervision.
+71. Power management: APM/ACPI detection and clean shutdown/reboot paths.
+72. Long-run soak testing: overnight stress tests for scheduler, memory, and I/O.
+73. Performance tuning: benchmark suite and top bottleneck fixes.
+74. Milestone release: freeze features, stabilize, and publish 1.0.0 roadmap.

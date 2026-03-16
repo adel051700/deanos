@@ -20,9 +20,11 @@
 
 static void shell_task(void) {
     while (1) {
-        if (keyboard_data_available()) {
+        /* Drain all pending keystrokes so commands run immediately. */
+        while (keyboard_data_available()) {
             char c = keyboard_getchar();
-            shell_process_char(c);
+            if (c != 0)
+                shell_process_char(c);
         }
         __asm__ __volatile__("hlt; nop");
     }

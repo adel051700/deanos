@@ -12,6 +12,9 @@ void _exit(int status);
 int sched_yield(void);
 unsigned sleep(unsigned seconds);
 int sleep_ms(unsigned milliseconds);
+int getpid(void);
+int getppid(void);
+int kill(int pid);
 #ifdef __cplusplus
 }
 #endif

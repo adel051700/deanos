@@ -15,6 +15,9 @@ enum {
     SYS_mkdir  = 8,
     SYS_yield  = 9,
     SYS_sleep_ms = 10,
+    SYS_getpid = 11,
+    SYS_getppid = 12,
+    SYS_kill = 13,
 };
 
 /* Install syscall handlers on vectors 0x80 and 0x81 */

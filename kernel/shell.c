@@ -13,6 +13,7 @@
 #include "include/kernel/blockdev.h"
 #include "include/kernel/mbr.h"
 #include "include/kernel/minfs.h"
+#include "include/kernel/paging.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -28,6 +29,7 @@ static char cwd[VFS_PATH_MAX] = "/";   /* current working directory */
 static char command_buffer[MAX_COMMAND_LENGTH];
 static size_t command_length = 0;
 static size_t cursor_pos = 0;   /* position of terminal cursor within command_buffer */
+static int input_line_dirty = 0; /* async output happened since last shell redraw */
 
 static char history[SHELL_HISTORY_SIZE][MAX_COMMAND_LENGTH];
 static size_t history_len = 0;     // number of stored entries
@@ -62,6 +64,7 @@ static void cmd_time(const char* args);
 static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
+static void cmd_kill(const char* args);
 static void cmd_libctest(const char* args);
 static void cmd_mouse(const char* args);
 static void cmd_dmesg(const char* args);
@@ -69,6 +72,7 @@ static void cmd_blk(const char* args);
 static void cmd_disk(const char* args);
 static void cmd_fsfill(const char* args);
 static void cmd_fsverify(const char* args);
+static void cmd_vm(const char* args);
 
 // Filesystem commands
 static void cmd_ls(const char* args);
@@ -104,12 +108,14 @@ static const struct shell_command commands[] = {
     {"time",   cmd_time,   "Show current time/date"},
     {"uptime", cmd_uptime, "Show system uptime"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
-    {"tasks",  cmd_tasks,  "List all tasks and their state"},
+    {"tasks",  cmd_tasks,  "List all tasks and their state (with PPID)"},
+    {"kill",   cmd_kill,   "Kill task(s) by parent id: kill <ppid>"},
     {"mouse",  cmd_mouse,  "Show PS/2 mouse state (mouse clear resets totals)"},
     {"blk",    cmd_blk,    "Block devices: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed>"},
     {"disk",   cmd_disk,   "Disk tools: disk parts | init | mkfs | mount | setup"},
     {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
     {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
+    {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr size pages] | vm cow"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
@@ -123,7 +129,7 @@ static const struct shell_command commands[] = {
     {"stat",    cmd_stat,    "Show file/directory info: stat <path>"},
     {"cd",      cmd_cd,      "Change directory: cd <path>"},
     {"pwd",     cmd_pwd,     "Print working directory"},
-    {"exec",    cmd_exec,    "Run an ELF program: exec <path>"},
+    {"exec",    cmd_exec,    "Run an ELF program: exec <path> [&]"},
     {"anim",    cmd_anim,    "Run large animated demo"},
 
     // New syscall test commands
@@ -146,6 +152,33 @@ static void shell_print_prompt(void) {
     terminal_writestring("DeanOS ");
     terminal_writestring(cwd);
     terminal_writestring(" $ ");
+    input_line_dirty = 0;
+}
+
+static void shell_redraw_current_input(void) {
+    for (size_t i = 0; i < command_length; ++i) {
+        terminal_putchar(command_buffer[i]);
+    }
+    size_t tail = command_length - cursor_pos;
+    for (size_t i = 0; i < tail; ++i) {
+        terminal_move_cursor_left();
+    }
+}
+
+void shell_mark_tty_async_output(void) {
+    input_line_dirty = 1;
+}
+
+void shell_write_async_output(const char* data, size_t len) {
+    if (!data || len == 0) return;
+
+    /* Start async output on a fresh line once, then keep streaming there. */
+    if (!input_line_dirty) {
+        terminal_putchar('\n');
+    }
+
+    terminal_write(data, len);
+    input_line_dirty = 1;
 }
 
 /**
@@ -157,6 +190,7 @@ void shell_initialize(void) {
     history_len = 0;
     history_pos = 0;
     esc_state = ESC_IDLE;
+    input_line_dirty = 0;
     cwd[0] = '/';
     cwd[1] = '\0';
     shell_print_prompt();
@@ -167,6 +201,13 @@ void shell_initialize(void) {
  * Process a character input to the shell
  */
 void shell_process_char(char c) {
+    if (input_line_dirty) {
+        terminal_putchar('\n');
+        shell_print_prompt();
+        shell_redraw_current_input();
+        input_line_dirty = 0;
+    }
+
     // Handle escape sequences for arrows
     if (esc_state == ESC_IDLE) {
         if ((unsigned char)c == 0x1B) { esc_state = ESC_GOT_ESC; return; }
@@ -722,6 +763,27 @@ static uint32_t parse_uint(const char* s) {
     return v;
 }
 
+static uint32_t parse_u32_auto(const char* s) {
+    while (*s == ' ') s++;
+    uint32_t base = 10;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    }
+    uint32_t v = 0;
+    for (;;) {
+        char c = *s;
+        uint32_t d;
+        if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
+        else if (base == 16 && c >= 'a' && c <= 'f') d = 10u + (uint32_t)(c - 'a');
+        else if (base == 16 && c >= 'A' && c <= 'F') d = 10u + (uint32_t)(c - 'A');
+        else break;
+        v = v * base + d;
+        s++;
+    }
+    return v;
+}
+
 static int is_decimal_token(const char* s) {
     if (!s || *s == '\0') return 0;
     while (*s && *s != ' ') {
@@ -870,8 +932,8 @@ static void cmd_tasks(const char* args) {
     static const char* state_names[] = {"READY","RUN  ","BLOCK","DEAD "};
     char buf[16];
 
-    terminal_writestring("ID  STATE  QUANTUM  NAME\n");
-    terminal_writestring("--  -----  -------  ----\n");
+    terminal_writestring("ID  PPID  STATE  QUANTUM  NAME\n");
+    terminal_writestring("--  ----  -----  -------  ----\n");
 
     uint32_t count = task_count();
     int cur = task_current_id();
@@ -890,6 +952,11 @@ static void cmd_tasks(const char* args) {
         terminal_writestring(buf);
         terminal_writestring("  ");
 
+        /* PPID */
+        itoa((int)t->parent_id, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("    ");
+
         /* State */
         if (t->state <= TASK_DEAD)
             terminal_writestring(state_names[t->state]);
@@ -905,6 +972,51 @@ static void cmd_tasks(const char* args) {
         /* Name */
         terminal_writestring(t->name);
         terminal_writestring("\n");
+    }
+}
+
+static void cmd_kill(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: kill <ppid>\n");
+        return;
+    }
+    int ppid = (int)parse_uint(args);
+    if (ppid <= 0) {
+        terminal_writestring("kill: invalid ppid\n");
+        return;
+    }
+
+    uint32_t count = task_count();
+    int killed = 0;
+    int refused_idle = 0;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const task_t* t = task_get(i);
+        if (!t) continue;
+        if ((int)t->parent_id != ppid) continue;
+        if (t->state == TASK_DEAD) continue;
+
+        int rc = task_kill((int)t->id);
+        if (rc == 0) {
+            killed++;
+        } else if (rc == -2) {
+            refused_idle = 1;
+        }
+    }
+
+    if (killed > 0) {
+        terminal_writestring("kill: killed ");
+        char buf[16];
+        itoa(killed, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" task(s) with ppid ");
+        itoa(ppid, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+    } else if (refused_idle) {
+        terminal_writestring("kill: refusing to kill idle task\n");
+    } else {
+        terminal_writestring("kill: no tasks with that ppid\n");
     }
 }
 
@@ -1534,6 +1646,85 @@ static void cmd_libctest(const char* args) {
     }
 }
 
+static void cmd_vm(const char* args) {
+    char op[16];
+    copy_token(args ? args : "", op, sizeof(op));
+
+    if (op[0] == '\0' || strcmp(op, "stats") == 0) {
+        paging_stats_t st;
+        paging_get_stats(&st);
+        char n[16];
+        terminal_writestring("VM stats:\n");
+        terminal_writestring("  demand regions: ");
+        itoa((int)st.demand_regions, n, 10);
+        terminal_writestring(n);
+        terminal_writestring("\n  demand faults:  ");
+        itoa((int)st.demand_faults, n, 10);
+        terminal_writestring(n);
+        terminal_writestring("\n  COW faults:     ");
+        itoa((int)st.cow_faults, n, 10);
+        terminal_writestring(n);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (strcmp(op, "demand") == 0) {
+        const char* p = next_token(args ? args : "");
+
+        uintptr_t base = 0x50000000u;
+        uint32_t pages = 4;
+
+        if (p && *p) {
+            base = (uintptr_t)parse_u32_auto(p);
+            p = next_token(p);
+            if (p && *p) pages = parse_uint(p);
+        }
+        if (pages == 0) pages = 1;
+
+        uint32_t size = pages * 4096u;
+        int rc = paging_register_demand_region(base, size, PAGING_FLAG_WRITE | PAGING_FLAG_USER);
+        if (rc < 0) {
+            terminal_writestring("vm demand: register failed\n");
+            return;
+        }
+
+        volatile uint8_t* mem = (volatile uint8_t*)base;
+        for (uint32_t i = 0; i < pages; ++i) {
+            mem[i * 4096u] = (uint8_t)(0xA0u + (i & 0x0Fu));
+        }
+
+        terminal_writestring("vm demand: touched pages at 0x");
+        char b[16];
+        itoa((int)base, b, 16);
+        terminal_writestring(b);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (strcmp(op, "cow") == 0) {
+        uintptr_t va = 0x51000000u;
+        int rc = paging_map_user(va);
+        if (rc < 0) {
+            terminal_writestring("vm cow: map failed\n");
+            return;
+        }
+
+        volatile uint8_t* p = (volatile uint8_t*)va;
+        p[0] = 0x11;
+
+        if (paging_mark_cow(va) < 0) {
+            terminal_writestring("vm cow: mark failed\n");
+            return;
+        }
+
+        p[0] = 0x22; /* write triggers COW path/hook */
+        terminal_writestring("vm cow: ok\n");
+        return;
+    }
+
+    terminal_writestring("usage: vm stats | vm demand [addr pages] | vm cow\n");
+}
+
 
 /* ---- Filesystem commands ----------------------------------------------- */
 
@@ -2032,24 +2223,49 @@ static void cmd_pwd(const char* args) {
 
 static void cmd_exec(const char* args) {
     if (!args || *args == '\0') {
-        terminal_writestring("usage: exec <path>\n");
+        terminal_writestring("usage: exec <path> [&]\n");
         return;
     }
 
+    uint32_t wait = 1;
+    char argbuf[VFS_PATH_MAX];
+    strncpy(argbuf, args, sizeof(argbuf) - 1);
+    argbuf[sizeof(argbuf) - 1] = '\0';
+
+    size_t n = strlen(argbuf);
+    while (n > 0 && argbuf[n - 1] == ' ') {
+        argbuf[n - 1] = '\0';
+        n--;
+    }
+    if (n > 0 && argbuf[n - 1] == '&') {
+        wait = 0;
+        argbuf[n - 1] = '\0';
+        while (n > 1 && argbuf[n - 2] == ' ') {
+            argbuf[n - 2] = '\0';
+            n--;
+        }
+    }
+
     char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
+    const char* path = resolve_shell_path(argbuf, pathbuf, sizeof(pathbuf));
 
     terminal_writestring("Loading ELF: ");
     terminal_writestring(path);
     terminal_writestring("\n");
 
-    int ret = elf_exec(path, 1);   /* 1 = wait for the task to finish */
+    int ret = elf_exec(path, (int)wait);
     if (ret < 0) {
         terminal_writestring("exec: failed (error ");
         char buf[16];
         itoa(ret, buf, 10);
         terminal_writestring(buf);
         terminal_writestring(")\n");
+    } else if (!wait) {
+        terminal_writestring("exec: started pid ");
+        char buf[16];
+        itoa(ret, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
     }
 }
 

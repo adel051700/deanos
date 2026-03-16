@@ -6,6 +6,7 @@
 #include "include/kernel/tty.h"
 #include "include/kernel/task.h"
 #include "include/kernel/vfs.h"
+#include "include/kernel/shell.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -14,7 +15,7 @@ static long sys_write(uint32_t fd, const char* buf, size_t len) {
     if (!buf || len == 0) return 0;
     /* Console for stdout/stderr */
     if (fd == 1 || fd == 2) {
-        terminal_write(buf, len);
+        shell_write_async_output(buf, len);
         return (long)len;
     }
     /* VFS file descriptors */
@@ -55,6 +56,18 @@ static long sys_yield(void) {
 static long sys_sleep_ms(uint32_t milliseconds) {
     pit_sleep(milliseconds);
     return 0;
+}
+
+static long sys_getpid(void) {
+    return (long)task_current_id();
+}
+
+static long sys_getppid(void) {
+    return (long)task_current_ppid();
+}
+
+static long sys_kill(uint32_t pid) {
+    return (long)task_kill((int)pid);
 }
 
 static long sys_open(const char* path, uint32_t flags) {
@@ -123,6 +136,9 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_mkdir: return sys_mkdir((const char*)a1);
         case SYS_yield: return sys_yield();
         case SYS_sleep_ms: return sys_sleep_ms(a1);
+        case SYS_getpid: return sys_getpid();
+        case SYS_getppid: return sys_getppid();
+        case SYS_kill: return sys_kill(a1);
         default:        return -38; /* ENOSYS */
     }
 }
