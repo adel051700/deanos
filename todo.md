@@ -40,9 +40,9 @@
 13. ~~Driver work: PS/2 mouse, ATA/ATAPI (PIO first), then a block device layer.~~
 14. ~~Virtual memory features: demand paging hooks, copy‑on‑write for fork (later).~~
 15. ~~Process management enhancements: parent/child, signals or simple kill mechanism.~~
-16. Fork groundwork: duplicate task context and memory metadata without full copy.
-17. Execve path: replace current process image with a new ELF while preserving PID.
-18. Wait/waitpid: let parents block for child exit and collect status codes.
+16. ~~Fork groundwork: duplicate task context and memory metadata without full copy.~~
+17. ~~Execve path: replace current process image with a new ELF while preserving PID.~~
+18. ~~Wait/waitpid: let parents block for child exit and collect status codes.~~
 19. File descriptor table: per-process fd state with close-on-exec support.
 20. Pipes: anonymous unidirectional pipes for shell command chaining.
 21. Redirection: shell support for >, >>, < with robust fd wiring.

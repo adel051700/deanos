@@ -66,6 +66,22 @@ int kill(int pid) {
     return (int)syscall1(SYS_kill, (unsigned)pid);
 }
 
+int fork(void) {
+    return (int)syscall1(SYS_fork, 0);
+}
+
+int execve(const char* path) {
+    return (int)syscall1(SYS_execve, (unsigned)path);
+}
+
+int wait(int* status) {
+    return (int)syscall3(SYS_waitpid, (unsigned)-1, (unsigned)status, 0u);
+}
+
+int waitpid(int pid, int* status, int options) {
+    return (int)syscall3(SYS_waitpid, (unsigned)pid, (unsigned)status, (unsigned)options);
+}
+
 unsigned sleep(unsigned seconds) {
     (void)syscall1(SYS_sleep_ms, seconds * 1000u);
     return 0;

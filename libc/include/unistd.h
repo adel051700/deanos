@@ -15,6 +15,10 @@ int sleep_ms(unsigned milliseconds);
 int getpid(void);
 int getppid(void);
 int kill(int pid);
+int fork(void);
+int execve(const char* path);
+int wait(int* status);
+int waitpid(int pid, int* status, int options);
 #ifdef __cplusplus
 }
 #endif

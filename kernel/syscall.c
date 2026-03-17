@@ -5,6 +5,7 @@
 #include "include/kernel/rtc.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/task.h"
+#include "include/kernel/elf.h"
 #include "include/kernel/vfs.h"
 #include "include/kernel/shell.h"
 #include <stddef.h>
@@ -43,8 +44,7 @@ static long sys_time(uint32_t* out) {
 }
 
 static long sys_exit(uint32_t status) {
-    (void)status;
-    task_exit();       /* marks task DEAD and yields — never returns */
+    task_exit_with_status(status); /* marks task DEAD and yields — never returns */
     return 0;
 }
 
@@ -68,6 +68,25 @@ static long sys_getppid(void) {
 
 static long sys_kill(uint32_t pid) {
     return (long)task_kill((int)pid);
+}
+
+static long sys_fork(struct registers* r) {
+    if (!r) return -1;
+    if ((r->cs & 0x3u) != 0x3u) return -38;
+    return (long)task_fork_user(r->eip, r->useresp, r->eflags);
+}
+
+static long sys_execve(const char* path, struct registers* r) {
+    if (!path || !r) return -1;
+    if ((r->cs & 0x3u) != 0x3u) return -38;
+    return (long)elf_execve_current(path, r);
+}
+
+static long sys_waitpid(int32_t pid, int32_t* status, uint32_t options) {
+    int st = 0;
+    int ret = task_waitpid((int)pid, status ? &st : NULL, options);
+    if (ret > 0 && status) *status = st;
+    return (long)ret;
 }
 
 static long sys_open(const char* path, uint32_t flags) {
@@ -124,7 +143,7 @@ static long sys_mkdir(const char* path) {
     return (long)vfs_create(parent, dir_name, VFS_DIRECTORY);
 }
 
-static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3) {
+static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
         case SYS_read:  return sys_read(a1, (char*)a2, (size_t)a3);
@@ -139,6 +158,9 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_getpid: return sys_getpid();
         case SYS_getppid: return sys_getppid();
         case SYS_kill: return sys_kill(a1);
+        case SYS_fork: return sys_fork(r);
+        case SYS_execve: return sys_execve((const char*)a1, r);
+        case SYS_waitpid: return sys_waitpid((int32_t)a1, (int32_t*)a2, a3);
         default:        return -38; /* ENOSYS */
     }
 }
@@ -149,7 +171,7 @@ static void syscall_isr(struct registers* r) {
     uint32_t a1  = r->ebx;
     uint32_t a2  = r->ecx;
     uint32_t a3  = r->edx;
-    long ret = syscall_dispatch(num, a1, a2, a3);
+    long ret = syscall_dispatch(num, a1, a2, a3, r);
     r->eax = (uint32_t)ret;
 }
 

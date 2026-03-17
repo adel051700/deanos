@@ -36,4 +36,8 @@ int paging_mark_cow(uintptr_t vaddr);
 /* Query VM hook counters for diagnostics. */
 void paging_get_stats(paging_stats_t* out);
 
+/* Fork groundwork: clone/release current shared mm metadata (no deep page copy). */
+int paging_clone_current_mm_metadata(uint32_t* out_mm_id, uint32_t* out_mm_flags);
+void paging_release_mm_metadata(uint32_t mm_id, uint32_t mm_flags);
+
 #endif

@@ -18,6 +18,9 @@ enum {
     SYS_getpid = 11,
     SYS_getppid = 12,
     SYS_kill = 13,
+    SYS_fork = 14,
+    SYS_execve = 15,
+    SYS_waitpid = 16,
 };
 
 /* Install syscall handlers on vectors 0x80 and 0x81 */

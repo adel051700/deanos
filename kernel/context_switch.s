@@ -102,3 +102,35 @@ enter_usermode:
 
     .size enter_usermode, .-enter_usermode
 
+/* ---- enter_usermode_with_ret ------------------------------------------ */
+/*
+ * void enter_usermode_with_ret(uint32_t entry, uint32_t user_esp,
+ *                              uint32_t user_eflags, uint32_t user_eax);
+ */
+    .global enter_usermode_with_ret
+    .type enter_usermode_with_ret, @function
+
+enter_usermode_with_ret:
+    movl 4(%esp), %ecx          /* ecx = entry point */
+    movl 8(%esp), %edx          /* edx = user esp    */
+    movl 12(%esp), %ebx         /* ebx = user eflags */
+    movl 16(%esp), %eax         /* eax = user return value */
+
+    cli
+
+    movl $0x23, %esi
+    movw %si, %ds
+    movw %si, %es
+    movw %si, %fs
+    movw %si, %gs
+
+    pushl $0x23                 /* SS */
+    pushl %edx                  /* ESP */
+    pushl %ebx                  /* EFLAGS from parent trapframe */
+    orl $0x200, (%esp)          /* force IF=1 */
+    pushl $0x1B                 /* CS */
+    pushl %ecx                  /* EIP */
+    iret
+
+    .size enter_usermode_with_ret, .-enter_usermode_with_ret
+

@@ -12,7 +12,9 @@
 
 #include "include/kernel/task.h"
 #include "include/kernel/kheap.h"
+#include "include/kernel/paging.h"
 #include "include/kernel/tss.h"
+#include "include/kernel/usermode.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,9 +31,32 @@ static uint64_t g_sched_ticks = 0;
 
 /* ---- internal helpers -------------------------------------------------- */
 
+static uint32_t init_task_id(void);
+
 static void idle_thread(void) {
     for (;;)
         __asm__ __volatile__("hlt");
+}
+
+static void fork_child_entry(void) {
+    if (g_current < 0) {
+        task_exit();
+        return;
+    }
+
+    task_t* self = &g_tasks[g_current];
+    if (!self->fork_resume_user) {
+        task_exit();
+        return;
+    }
+
+    self->fork_resume_user = 0;
+    enter_usermode_with_ret(self->fork_user_eip,
+                            self->fork_user_esp,
+                            self->fork_user_eflags,
+                            0);
+
+    task_exit();
 }
 
 /*
@@ -72,6 +97,62 @@ static int is_task_dead_or_missing(int id) {
     return 1;
 }
 
+static int has_child_for_wait(uint32_t parent_id, int pid_filter) {
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        const task_t* t = &g_tasks[i];
+        if (t->parent_id != parent_id) continue;
+        if (pid_filter > 0 && (int)t->id != pid_filter) continue;
+        if (t->state == TASK_DEAD && t->wait_collected) continue;
+        return 1;
+    }
+    return 0;
+}
+
+static int find_waitable_child_index(uint32_t parent_id, int pid_filter) {
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        const task_t* t = &g_tasks[i];
+        if (t->parent_id != parent_id) continue;
+        if (pid_filter > 0 && (int)t->id != pid_filter) continue;
+        if (t->state != TASK_DEAD) continue;
+        if (t->wait_collected) continue;
+        return (int)i;
+    }
+    return -1;
+}
+
+static void reap_task_index(uint32_t idx) {
+    if (idx >= g_task_count) return;
+    if ((int)idx == g_current) return;
+    if (g_tasks[idx].state != TASK_DEAD) return;
+
+    if (g_tasks[idx].kstack_base) {
+        kfree((void*)g_tasks[idx].kstack_base);
+        g_tasks[idx].kstack_base = 0;
+    }
+
+    for (uint32_t i = idx + 1; i < g_task_count; ++i) {
+        g_tasks[i - 1] = g_tasks[i];
+    }
+
+    if (g_task_count > 0) g_task_count--;
+    if (g_current > (int)idx) g_current--;
+}
+
+static void sweep_reapable_tasks(void) {
+    uint32_t init_id = init_task_id();
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        task_t* t = &g_tasks[i];
+        if (t->state != TASK_DEAD) continue;
+        if (t->id == init_id) continue;
+
+        /* Parent-reaped tasks and init-orphans are reclaimable. */
+        if (t->wait_collected || t->parent_id == init_id) {
+            reap_task_index(i);
+            i--;
+        }
+    }
+}
+
 static int find_task_index_by_id(int id) {
     if (id <= 0) return -1;
     for (uint32_t i = 0; i < g_task_count; ++i) {
@@ -92,15 +173,33 @@ static void reparent_children(uint32_t old_parent_id, uint32_t new_parent_id) {
     }
 }
 
+static void release_task_mm(task_t* t) {
+    if (!t) return;
+    paging_release_mm_metadata(t->mm_id, t->mm_flags);
+    t->mm_flags = 0;
+}
+
 static void wake_blocked_tasks(void) {
     for (uint32_t i = 0; i < g_task_count; ++i) {
         task_t* t = &g_tasks[i];
         if (t->state != TASK_BLOCKED) continue;
 
         if (t->wait_task_id > 0 && is_task_dead_or_missing(t->wait_task_id)) {
-            t->wait_task_id = 0;
-            t->state = TASK_READY;
-            continue;
+            int idx = find_task_index_by_id(t->wait_task_id);
+            if (idx < 0 || (g_tasks[idx].state == TASK_DEAD && !g_tasks[idx].wait_collected)) {
+                t->wait_task_id = 0;
+                t->state = TASK_READY;
+                continue;
+            }
+        }
+
+        if (t->wait_task_id == -1) {
+            int waitable = find_waitable_child_index(t->id, -1);
+            if (waitable >= 0) {
+                t->wait_task_id = 0;
+                t->state = TASK_READY;
+                continue;
+            }
         }
 
         if (t->wake_tick != 0 && g_sched_ticks >= t->wake_tick) {
@@ -145,7 +244,10 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
                       uint32_t quantum, const char* name)
 {
     if (!entry) return -1;
-    if (g_task_count >= TASK_MAX) return -2;
+    if (g_task_count >= TASK_MAX) {
+        sweep_reapable_tasks();
+        if (g_task_count >= TASK_MAX) return -2;
+    }
 
     task_t* t = &g_tasks[g_task_count];
     t->id      = g_next_id++;
@@ -155,6 +257,14 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->ticks_left = t->quantum;
     t->wake_tick = 0;
     t->wait_task_id = 0;
+    t->exit_status = 0;
+    t->wait_collected = 0;
+    t->mm_id = 1;
+    t->mm_flags = 0;
+    t->fork_user_eip = 0;
+    t->fork_user_esp = 0;
+    t->fork_user_eflags = 0;
+    t->fork_resume_user = 0;
 
     /* Copy name (or generate one). */
     if (name) {
@@ -204,9 +314,16 @@ int task_create(void (*entry)(void), uint32_t stack_size) {
 }
 
 void task_exit(void) {
+    task_exit_with_status(0);
+}
+
+void task_exit_with_status(uint32_t status) {
     if (g_current >= 0) {
         uint32_t dying_id = g_tasks[g_current].id;
         reparent_children(dying_id, init_task_id());
+        g_tasks[g_current].exit_status = status;
+        g_tasks[g_current].wait_collected = 0;
+        release_task_mm(&g_tasks[g_current]);
         g_tasks[g_current].state = TASK_DEAD;
     }
     task_yield();
@@ -219,7 +336,7 @@ int task_kill(int id) {
     if (idx == 0) return -2; /* never kill idle */
 
     if (idx == g_current) {
-        task_exit();
+        task_exit_with_status(128u + 9u);
         return 0;
     }
 
@@ -227,21 +344,80 @@ int task_kill(int id) {
 
     uint32_t dying_id = g_tasks[idx].id;
     reparent_children(dying_id, init_task_id());
+    release_task_mm(&g_tasks[idx]);
 
     g_tasks[idx].wake_tick = 0;
     g_tasks[idx].wait_task_id = 0;
+    g_tasks[idx].exit_status = 128u + 9u; /* SIGKILL-style convention */
+    g_tasks[idx].wait_collected = 0;
     g_tasks[idx].state = TASK_DEAD;
     return 0;
 }
 
-void task_wait(int id) {
-    if (g_current < 0 || id <= 0) return;
-    if (is_task_dead_or_missing(id)) return;
+int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
+    if (g_current < 0) return -1;
 
-    g_tasks[g_current].wait_task_id = id;
-    g_tasks[g_current].wake_tick = 0;
-    g_tasks[g_current].state = TASK_BLOCKED;
-    task_yield();
+    task_t* parent = &g_tasks[g_current];
+    int child_id = task_create_named(fork_child_entry,
+                                     parent->kstack_size,
+                                     parent->quantum,
+                                     parent->name);
+    if (child_id < 0) return child_id;
+
+    int child_idx = find_task_index_by_id(child_id);
+    if (child_idx < 0) return -2;
+
+    task_t* child = &g_tasks[child_idx];
+    child->parent_id = parent->id;
+
+    uint32_t child_mm_id = parent->mm_id;
+    uint32_t child_mm_flags = parent->mm_flags;
+    if (paging_clone_current_mm_metadata(&child_mm_id, &child_mm_flags) < 0) {
+        child->state = TASK_DEAD;
+        return -3;
+    }
+
+    child->mm_id = child_mm_id;
+    child->mm_flags = child_mm_flags;
+    child->fork_user_eip = user_eip;
+    child->fork_user_esp = user_esp;
+    child->fork_user_eflags = user_eflags;
+    child->fork_resume_user = 1;
+    return child_id;
+}
+
+void task_wait(int id) {
+    (void)task_waitpid(id, NULL, 0);
+}
+
+int task_waitpid(int pid, int* status, uint32_t options) {
+    if (g_current < 0) return -1;
+    if (pid == 0 || pid < -1) return -2;
+
+    uint32_t parent_id = g_tasks[g_current].id;
+
+    for (;;) {
+        int child_idx = find_waitable_child_index(parent_id, pid);
+        if (child_idx >= 0) {
+            task_t* child = &g_tasks[child_idx];
+            int child_id = (int)child->id;
+            uint32_t child_status = child->exit_status;
+            if (status) *status = (int)child->exit_status;
+            child->wait_collected = 1;
+
+            reap_task_index((uint32_t)child_idx);
+            if (status) *status = (int)child_status;
+            return child_id;
+        }
+
+        if (!has_child_for_wait(parent_id, pid)) return -3;
+        if (options & TASK_WAIT_NOHANG) return 0;
+
+        g_tasks[g_current].wait_task_id = (pid > 0) ? pid : -1;
+        g_tasks[g_current].wake_tick = 0;
+        g_tasks[g_current].state = TASK_BLOCKED;
+        task_yield();
+    }
 }
 
 void task_sleep_ticks(uint64_t ticks) {
@@ -316,3 +492,14 @@ int task_parent_id(int id) {
     if (idx < 0) return -1;
     return (int)g_tasks[idx].parent_id;
 }
+
+void task_set_current_name(const char* name) {
+    if (g_current < 0 || !name) return;
+    task_t* t = &g_tasks[g_current];
+    uint32_t i = 0;
+    for (; i < TASK_NAME_LEN - 1 && name[i]; ++i) {
+        t->name[i] = name[i];
+    }
+    t->name[i] = '\0';
+}
+
