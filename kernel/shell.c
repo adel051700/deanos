@@ -65,6 +65,7 @@ static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
 static void cmd_kill(const char* args);
+static void cmd_wait(const char* args);
 static void cmd_libctest(const char* args);
 static void cmd_mouse(const char* args);
 static void cmd_dmesg(const char* args);
@@ -110,6 +111,7 @@ static const struct shell_command commands[] = {
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
     {"tasks",  cmd_tasks,  "List all tasks and their state (with PPID)"},
     {"kill",   cmd_kill,   "Kill task(s) by parent id: kill <ppid>"},
+    {"wait",   cmd_wait,   "Wait for child exit: wait [pid|any]"},
     {"mouse",  cmd_mouse,  "Show PS/2 mouse state (mouse clear resets totals)"},
     {"blk",    cmd_blk,    "Block devices: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed>"},
     {"disk",   cmd_disk,   "Disk tools: disk parts | init | mkfs | mount | setup"},
@@ -1017,6 +1019,41 @@ static void cmd_kill(const char* args) {
         terminal_writestring("kill: refusing to kill idle task\n");
     } else {
         terminal_writestring("kill: no tasks with that ppid\n");
+    }
+}
+
+static void cmd_wait(const char* args) {
+    int pid = -1;
+    if (args && *args) {
+        if (strcmp(args, "any") == 0) {
+            pid = -1;
+        } else {
+            pid = (int)parse_uint(args);
+            if (pid <= 0) {
+                terminal_writestring("wait: invalid pid (use positive pid or 'any')\n");
+                return;
+            }
+        }
+    }
+
+    int status = 0;
+    int ret = task_waitpid(pid, &status, 0);
+    if (ret > 0) {
+        char buf[16];
+        terminal_writestring("wait: child ");
+        itoa(ret, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" exited with status ");
+        itoa(status, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (ret == -3) {
+        terminal_writestring("wait: no matching child\n");
+    } else {
+        terminal_writestring("wait: failed\n");
     }
 }
 

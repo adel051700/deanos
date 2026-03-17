@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+struct registers;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -95,6 +97,9 @@ int elf_validate(const uint8_t* data, uint32_t size);
  * If `wait` is non-zero the caller blocks until the task exits.
  */
 int elf_exec(const char* path, int wait);
+
+/* Replace current task's user image and return through same PID context. */
+int elf_execve_current(const char* path, struct registers* r);
 
 /*
  * Write built-in demo ELF programs into the ramfs so the user can run

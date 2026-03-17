@@ -12,6 +12,7 @@
 #define PTE_W  0x002
 #define PTE_U  0x004
 #define PTE_COW 0x200
+#define MM_FLAG_SHARED 0x1u
 
 // Simple kernel heap mapping (virtual)
 #define KHEAP_BASE 0x40000000u
@@ -37,6 +38,8 @@ static uint32_t g_demand_region_count = 0;
 static uint32_t g_demand_fault_count = 0;
 static uint32_t g_cow_fault_count = 0;
 static uint8_t g_cow_scratch[PAGE_SIZE];
+static uint32_t g_mm_root_id = 1;
+static uint32_t g_mm_shared_refs = 1;
 
 // Helpers
 static inline void load_cr3(uint32_t phys) { __asm__ __volatile__("mov %0, %%cr3" : : "r"(phys) : "memory"); }
@@ -261,6 +264,20 @@ void paging_get_stats(paging_stats_t* out) {
     out->cow_faults = g_cow_fault_count;
 }
 
+int paging_clone_current_mm_metadata(uint32_t* out_mm_id, uint32_t* out_mm_flags) {
+    if (!out_mm_id || !out_mm_flags) return -1;
+    g_mm_shared_refs++;
+    *out_mm_id = g_mm_root_id;
+    *out_mm_flags = MM_FLAG_SHARED;
+    return 0;
+}
+
+void paging_release_mm_metadata(uint32_t mm_id, uint32_t mm_flags) {
+    if (mm_id != g_mm_root_id) return;
+    if ((mm_flags & MM_FLAG_SHARED) == 0u) return;
+    if (g_mm_shared_refs > 1) g_mm_shared_refs--;
+}
+
 void paging_initialize(struct multiboot_tag_framebuffer* fb_tag) {
     memset(page_directory, 0, sizeof(page_directory));
     memset(pde_virt_tables, 0, sizeof(pde_virt_tables));
@@ -268,6 +285,8 @@ void paging_initialize(struct multiboot_tag_framebuffer* fb_tag) {
     g_demand_region_count = 0;
     g_demand_fault_count = 0;
     g_cow_fault_count = 0;
+    g_mm_root_id = 1;
+    g_mm_shared_refs = 1;
 
     // Leave page 0 unmapped to catch NULL derefs; start identity map at 0x1000
     uintptr_t reserved_end = pmm_reserved_region_end();
