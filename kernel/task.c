@@ -217,6 +217,12 @@ static int find_task_index_by_id(int id) {
     return -1;
 }
 
+static int resolve_target_task_index(int pid) {
+    if (g_current < 0) return -1;
+    if (pid == 0) return g_current;
+    return find_task_index_by_id(pid);
+}
+
 static uint32_t init_task_id(void) {
     if (g_task_count > 0) return g_tasks[0].id;
     return 1;
@@ -317,6 +323,13 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->wait_collected = 0;
     t->mm_id = 1;
     t->mm_flags = 0;
+    if (g_current >= 0) {
+        t->sid = g_tasks[g_current].sid;
+        t->pgid = g_tasks[g_current].pgid;
+    } else {
+        t->sid = t->id;
+        t->pgid = t->id;
+    }
     t->fork_user_eip = 0;
     t->fork_user_esp = 0;
     t->fork_user_eflags = 0;
@@ -555,6 +568,75 @@ int task_parent_id(int id) {
     int idx = find_task_index_by_id(id);
     if (idx < 0) return -1;
     return (int)g_tasks[idx].parent_id;
+}
+
+int task_current_sid(void) {
+    return (g_current >= 0) ? (int)g_tasks[g_current].sid : -1;
+}
+
+int task_current_pgid(void) {
+    return (g_current >= 0) ? (int)g_tasks[g_current].pgid : -1;
+}
+
+int task_getsid(int pid) {
+    int idx = resolve_target_task_index(pid);
+    if (idx < 0) return -1;
+    return (int)g_tasks[idx].sid;
+}
+
+int task_getpgid(int pid) {
+    int idx = resolve_target_task_index(pid);
+    if (idx < 0) return -1;
+    return (int)g_tasks[idx].pgid;
+}
+
+int task_pgid_exists_in_session(uint32_t sid, uint32_t pgid) {
+    if (sid == 0 || pgid == 0) return 0;
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        const task_t* t = &g_tasks[i];
+        if (t->state == TASK_DEAD) continue;
+        if (t->sid == sid && t->pgid == pgid) return 1;
+    }
+    return 0;
+}
+
+int task_setpgid(int pid, int pgid) {
+    if (g_current < 0) return -1;
+
+    int target_idx = resolve_target_task_index(pid);
+    if (target_idx < 0) return -1;
+
+    task_t* caller = &g_tasks[g_current];
+    task_t* target = &g_tasks[target_idx];
+    if (target->state == TASK_DEAD) return -1;
+
+    if (target_idx != g_current && target->parent_id != caller->id) {
+        return -1;
+    }
+
+    if (pgid == 0) pgid = (int)target->id;
+    if (pgid <= 0) return -1;
+
+    if (target->sid != caller->sid) return -1;
+    if ((uint32_t)pgid != target->id && !task_pgid_exists_in_session(target->sid, (uint32_t)pgid)) {
+        return -1;
+    }
+
+    target->pgid = (uint32_t)pgid;
+    return 0;
+}
+
+int task_setsid(void) {
+    if (g_current < 0) return -1;
+    task_t* self = &g_tasks[g_current];
+
+    if (self->pgid == self->id) {
+        return -1;
+    }
+
+    self->sid = self->id;
+    self->pgid = self->id;
+    return (int)self->sid;
 }
 
 task_t* task_current(void) {
