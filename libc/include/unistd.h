@@ -17,6 +17,7 @@ int getppid(void);
 int kill(int pid);
 int fork(void);
 int execve(const char* path);
+int pipe(int pipefd[2]);
 int wait(int* status);
 int waitpid(int pid, int* status, int options);
 #ifdef __cplusplus

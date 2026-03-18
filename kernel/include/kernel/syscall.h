@@ -21,6 +21,8 @@ enum {
     SYS_fork = 14,
     SYS_execve = 15,
     SYS_waitpid = 16,
+    SYS_fcntl = 17,
+    SYS_pipe = 18,
 };
 
 /* Install syscall handlers on vectors 0x80 and 0x81 */

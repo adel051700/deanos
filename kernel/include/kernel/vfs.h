@@ -25,6 +25,14 @@ extern "C" {
 #define VFS_O_CREATE    0x04
 #define VFS_O_TRUNC     0x08
 #define VFS_O_APPEND    0x10
+#define VFS_O_CLOEXEC   0x20
+
+/* FD flags exposed through vfs_fd_fcntl() */
+#define VFS_FD_CLOEXEC  0x1
+
+/* fcntl-like commands */
+#define VFS_F_GETFD     1
+#define VFS_F_SETFD     2
 
 /* ---- Types ------------------------------------------------------------- */
 
@@ -106,12 +114,14 @@ int          vfs_create(vfs_node_t* parent, const char* name, uint32_t type);
 int          vfs_unlink(vfs_node_t* parent, const char* name);
 int          vfs_stat(vfs_node_t* node, vfs_stat_t* st);
 
-/* FD-based API (uses global fd table for now) */
+/* FD-based API (uses the current task's fd table) */
 int          vfs_fd_open(const char* path, uint32_t flags);
 int32_t      vfs_fd_read(int fd, uint8_t* buffer, uint32_t size);
 int32_t      vfs_fd_write(int fd, const uint8_t* buffer, uint32_t size);
 int          vfs_fd_close(int fd);
 int          vfs_fd_stat(int fd, vfs_stat_t* st);
+int          vfs_fd_fcntl(int fd, uint32_t cmd, uint32_t arg);
+int          vfs_fd_pipe(int out_fds[2]);
 
 #ifdef __cplusplus
 }

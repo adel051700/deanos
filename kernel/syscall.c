@@ -14,18 +14,36 @@
 
 static long sys_write(uint32_t fd, const char* buf, size_t len) {
     if (!buf || len == 0) return 0;
-    /* Console for stdout/stderr */
+
+    task_t* t = task_current();
+    int fd_bound = 0;
+    if (t && fd < TASK_MAX_FDS && t->fds[fd].in_use) fd_bound = 1;
+
+    if (fd_bound) {
+        return (long)vfs_fd_write((int)fd, (const uint8_t*)buf, (uint32_t)len);
+    }
+
+    /* Fallback console for default stdout/stderr when unbound. */
     if (fd == 1 || fd == 2) {
         shell_write_async_output(buf, len);
         return (long)len;
     }
-    /* VFS file descriptors */
-    int32_t ret = vfs_fd_write((int)fd, (const uint8_t*)buf, (uint32_t)len);
-    return (long)ret;
+
+    return -1;
 }
 
 static long sys_read(uint32_t fd, char* buf, size_t len) {
     if (!buf || len == 0) return 0;
+
+    task_t* t = task_current();
+    int fd_bound = 0;
+    if (t && fd < TASK_MAX_FDS && t->fds[fd].in_use) fd_bound = 1;
+
+    if (fd_bound) {
+        return (long)vfs_fd_read((int)fd, (uint8_t*)buf, (uint32_t)len);
+    }
+
+    /* Fallback keyboard input for default stdin when unbound. */
     if (fd == 0) {
         size_t nread = 0;
         while (nread < len && keyboard_data_available()) {
@@ -33,8 +51,8 @@ static long sys_read(uint32_t fd, char* buf, size_t len) {
         }
         return (long)nread;
     }
-    int32_t ret = vfs_fd_read((int)fd, (uint8_t*)buf, (uint32_t)len);
-    return (long)ret;
+
+    return -1;
 }
 
 static long sys_time(uint32_t* out) {
@@ -103,6 +121,22 @@ static long sys_fstat(uint32_t fd, vfs_stat_t* st) {
     return (long)vfs_fd_stat((int)fd, st);
 }
 
+static long sys_fcntl(uint32_t fd, uint32_t cmd, uint32_t arg) {
+    return (long)vfs_fd_fcntl((int)fd, cmd, arg);
+}
+
+static long sys_pipe(int32_t* out_fds) {
+    if (!out_fds) return -1;
+
+    int fds[2] = {-1, -1};
+    int rc = vfs_fd_pipe(fds);
+    if (rc < 0) return rc;
+
+    out_fds[0] = fds[0];
+    out_fds[1] = fds[1];
+    return 0;
+}
+
 static long sys_mkdir(const char* path) {
     if (!path) return -1;
     /* Resolve parent, create directory child */
@@ -161,6 +195,8 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_fork: return sys_fork(r);
         case SYS_execve: return sys_execve((const char*)a1, r);
         case SYS_waitpid: return sys_waitpid((int32_t)a1, (int32_t*)a2, a3);
+        case SYS_fcntl: return sys_fcntl(a1, a2, a3);
+        case SYS_pipe: return sys_pipe((int32_t*)a1);
         default:        return -38; /* ENOSYS */
     }
 }

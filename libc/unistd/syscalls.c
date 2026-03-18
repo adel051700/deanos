@@ -38,6 +38,10 @@ int open(const char* path, int flags) {
     return (int)syscall2(SYS_open, (unsigned)path, (unsigned)flags);
 }
 
+int fcntl(int fd, int cmd, int arg) {
+    return (int)syscall3(SYS_fcntl, (unsigned)fd, (unsigned)cmd, (unsigned)arg);
+}
+
 int fstat(int fd, struct stat* st) {
     return (int)syscall2(SYS_fstat, (unsigned)fd, (unsigned)st);
 }
@@ -72,6 +76,10 @@ int fork(void) {
 
 int execve(const char* path) {
     return (int)syscall1(SYS_execve, (unsigned)path);
+}
+
+int pipe(int pipefd[2]) {
+    return (int)syscall1(SYS_pipe, (unsigned)pipefd);
 }
 
 int wait(int* status) {
