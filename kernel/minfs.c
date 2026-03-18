@@ -61,6 +61,7 @@ typedef struct minfs {
     uint32_t bitmap_start;
     uint32_t bitmap_sectors;
     uint32_t bitmap_bytes;
+    uint8_t* bitmap_dirty;
     uint32_t data_start_sector;
     uint32_t data_block_count;
     minfs_disk_node_t* nodes;
@@ -106,6 +107,7 @@ static void minfs_free_mount(minfs_t* fs) {
         kfree(fs->vnodes);
     }
     if (fs->impls) kfree(fs->impls);
+    if (fs->bitmap_dirty) kfree(fs->bitmap_dirty);
     if (fs->bitmap) kfree(fs->bitmap);
     if (fs->nodes) kfree(fs->nodes);
     kfree(fs);
@@ -162,9 +164,61 @@ static int minfs_flush_nodes(minfs_t* fs) {
     return rc;
 }
 
+static int minfs_flush_node(minfs_t* fs, uint32_t node_index) {
+    if (!fs || !fs->nodes || node_index >= fs->total_nodes) return -1;
+
+    uint32_t node_bytes = (uint32_t)sizeof(minfs_disk_node_t);
+    uint32_t start_byte = node_index * node_bytes;
+    uint32_t end_byte = start_byte + node_bytes;
+
+    uint32_t first_sector = start_byte / MINFS_BLOCK_SIZE;
+    uint32_t last_sector = (end_byte - 1u) / MINFS_BLOCK_SIZE;
+    uint32_t sector_count = last_sector - first_sector + 1u;
+    uint32_t table_bytes = fs->total_nodes * (uint32_t)sizeof(minfs_disk_node_t);
+    uint32_t sector_offset = first_sector * MINFS_BLOCK_SIZE;
+    uint32_t max_copy = sector_count * MINFS_BLOCK_SIZE;
+
+    uint8_t* scratch = (uint8_t*)kcalloc(1, sector_count * MINFS_BLOCK_SIZE);
+    if (!scratch) return -1;
+
+    if (sector_offset < table_bytes) {
+        uint32_t copy_len = table_bytes - sector_offset;
+        if (copy_len > max_copy) copy_len = max_copy;
+        memcpy(scratch, ((const uint8_t*)fs->nodes) + sector_offset, copy_len);
+    }
+
+    uint64_t lba = (uint64_t)fs->node_table_start + first_sector;
+    int rc = blockdev_write(fs->dev_index, lba, sector_count, scratch);
+    kfree(scratch);
+    return rc;
+}
+
 static int minfs_flush_bitmap(minfs_t* fs) {
     if (!fs || !fs->bitmap) return -1;
-    return blockdev_write(fs->dev_index, fs->bitmap_start, fs->bitmap_sectors, fs->bitmap);
+
+    if (!fs->bitmap_dirty) {
+        return blockdev_write(fs->dev_index, fs->bitmap_start, fs->bitmap_sectors, fs->bitmap);
+    }
+
+    for (uint32_t s = 0; s < fs->bitmap_sectors; ++s) {
+        if (!fs->bitmap_dirty[s]) continue;
+        if (blockdev_write(fs->dev_index,
+                           (uint64_t)fs->bitmap_start + s,
+                           1,
+                           fs->bitmap + (s * MINFS_BLOCK_SIZE)) < 0) {
+            return -1;
+        }
+        fs->bitmap_dirty[s] = 0;
+    }
+
+    return 0;
+}
+
+static void minfs_bitmap_mark_dirty(minfs_t* fs, uint32_t index) {
+    if (!fs || !fs->bitmap_dirty || index >= fs->data_block_count) return;
+    uint32_t byte_index = index / 8u;
+    uint32_t sector = byte_index / MINFS_BLOCK_SIZE;
+    if (sector < fs->bitmap_sectors) fs->bitmap_dirty[sector] = 1;
 }
 
 static uint32_t minfs_blocks_for_size(uint32_t size) {
@@ -180,11 +234,13 @@ static int minfs_bitmap_is_set(const minfs_t* fs, uint32_t index) {
 static void minfs_bitmap_set(minfs_t* fs, uint32_t index) {
     if (!fs || !fs->bitmap || index >= fs->data_block_count) return;
     fs->bitmap[index / 8u] |= (uint8_t)(1u << (index % 8u));
+    minfs_bitmap_mark_dirty(fs, index);
 }
 
 static void minfs_bitmap_clear(minfs_t* fs, uint32_t index) {
     if (!fs || !fs->bitmap || index >= fs->data_block_count) return;
     fs->bitmap[index / 8u] &= (uint8_t)~(1u << (index % 8u));
+    minfs_bitmap_mark_dirty(fs, index);
 }
 
 static int minfs_alloc_block(minfs_t* fs, uint32_t* out_index) {
@@ -419,7 +475,7 @@ static int32_t minfs_write(vfs_node_t* node, uint32_t offset, uint32_t size, con
 
     if (bitmap_dirty && minfs_flush_bitmap(fs) < 0) return -1;
     if (dnode->size != old_size || dnode->block_count != old_blocks) {
-        if (minfs_flush_nodes(fs) < 0) return -1;
+        if (minfs_flush_node(fs, impl->index) < 0) return -1;
     }
 
     return (int32_t)done;
@@ -436,7 +492,7 @@ static int minfs_open(vfs_node_t* node, uint32_t flags) {
     if (minfs_release_file_blocks(impl->fs, &impl->fs->nodes[impl->index]) < 0) return -1;
     node->size = 0;
     if (minfs_flush_bitmap(impl->fs) < 0) return -1;
-    if (minfs_flush_nodes(impl->fs) < 0) return -1;
+    if (minfs_flush_node(impl->fs, impl->index) < 0) return -1;
     return 0;
 }
 
@@ -633,9 +689,10 @@ int minfs_mount(uint32_t dev_index, const char* mount_name) {
     fs->data_block_count = super.data_block_count;
     fs->nodes = (minfs_disk_node_t*)kcalloc(fs->total_nodes, sizeof(minfs_disk_node_t));
     fs->bitmap = (uint8_t*)kcalloc(1, fs->bitmap_bytes);
+    fs->bitmap_dirty = (uint8_t*)kcalloc(1, fs->bitmap_sectors);
     fs->impls = (minfs_node_impl_t*)kcalloc(fs->total_nodes, sizeof(minfs_node_impl_t));
     fs->vnodes = (vfs_node_t**)kcalloc(fs->total_nodes, sizeof(vfs_node_t*));
-    if (!fs->nodes || !fs->bitmap || !fs->impls || !fs->vnodes) {
+    if (!fs->nodes || !fs->bitmap || !fs->bitmap_dirty || !fs->impls || !fs->vnodes) {
         minfs_free_mount(fs);
         return -9;
     }
