@@ -2,6 +2,13 @@
    designated as the entry point. */
 ENTRY(_start)
 
+/* Define program headers to separate executable and writable segments */
+PHDRS
+{
+    rotext PT_LOAD FLAGS(4);    /* 4 = R, readable only */
+    rwtext PT_LOAD FLAGS(6);    /* 6 = RW, readable and writable */
+}
+
 /* Tell where the various sections of the object files will be put in the final
    kernel image. */
 SECTIONS
@@ -16,27 +23,27 @@ SECTIONS
     .multiboot ALIGN(4K) : AT(ADDR(.multiboot))
     {
         *(.multiboot)
-    }
+    } :rotext
 
-    /* Text section follows */
+    /* Text section follows - executable and read-only */
     .text ALIGN(4K) : AT(ADDR(.text))
     {
         *(.text)
-    }
+    } :rotext
 
-    /* Read-only data */
+    /* Read-only data - no execution permission */
     .rodata ALIGN(4K) : AT(ADDR(.rodata))
     {
         *(.rodata)
-    }
+    } :rotext
 
-    /* Read-write data (initialized) */
+    /* Read-write data (initialized) - no execution permission */
     .data ALIGN(4K) : AT(ADDR(.data))
     {
         *(.data)
-    }
+    } :rwtext
 
-    /* Constructor table */
+    /* Constructor table - no execution permission */
     .ctors ALIGN(4K) : AT(ADDR(.ctors))
     {
         __ctors_start = .;
@@ -44,14 +51,14 @@ SECTIONS
         *(.init_array)
         *(.init_array.*)
         __ctors_end = .;
-    }
+    } :rwtext
 
-    /* Read-write data (uninitialized) and stack */
+    /* Read-write data (uninitialized) and stack - no execution permission */
     .bss ALIGN(4K) : AT(ADDR(.bss))
     {
         *(COMMON)
         *(.bss)
-    }
+    } :rwtext
 
     /* Mark kernel end after the last section */
     _kernel_end = .;
