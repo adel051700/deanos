@@ -97,6 +97,7 @@ int elf_validate(const uint8_t* data, uint32_t size);
  * If `wait` is non-zero the caller blocks until the task exits.
  */
 int elf_exec(const char* path, int wait);
+int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd);
 
 /* Replace current task's user image and return through same PID context. */
 int elf_execve_current(const char* path, struct registers* r);

@@ -5,6 +5,8 @@
 
 #define TASK_MM_SHARED 0x1u
 #define TASK_WAIT_NOHANG 0x1u
+#define TASK_FD_CLOEXEC 0x1u
+#define TASK_MAX_FDS    64
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +30,16 @@ typedef enum {
 typedef struct task_context {
     uint32_t esp;
 } task_context_t;
+
+struct vfs_node;
+
+typedef struct task_fd {
+    struct vfs_node* node;
+    uint32_t         offset;
+    uint32_t         open_flags;
+    uint32_t         fd_flags;
+    uint8_t          in_use;
+} task_fd_t;
 
 typedef struct task {
     uint32_t        id;
@@ -54,6 +66,9 @@ typedef struct task {
     /* Address-space metadata (groundwork for fork/COW). */
     uint32_t        mm_id;
     uint32_t        mm_flags;
+
+    /* Per-process file descriptor table. */
+    task_fd_t       fds[TASK_MAX_FDS];
 
     /* Fork return context for child first run. */
     uint32_t        fork_user_eip;
@@ -95,7 +110,12 @@ const task_t* task_get(uint32_t index);
 int task_current_id(void);
 int task_current_ppid(void);
 int task_parent_id(int id);
+task_t* task_current(void);
 void task_set_current_name(const char* name);
+
+/* FD lifecycle helpers used by exec/vfs paths. */
+void task_close_cloexec_fds_current(void);
+int task_clone_fd_to_task(int task_id, int target_fd, int src_fd);
 
 /* Fork groundwork: clone current task metadata and user return context. */
 int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags);

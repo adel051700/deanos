@@ -43,9 +43,9 @@
 16. ~~Fork groundwork: duplicate task context and memory metadata without full copy.~~
 17. ~~Execve path: replace current process image with a new ELF while preserving PID.~~
 18. ~~Wait/waitpid: let parents block for child exit and collect status codes.~~
-19. File descriptor table: per-process fd state with close-on-exec support.
-20. Pipes: anonymous unidirectional pipes for shell command chaining.
-21. Redirection: shell support for >, >>, < with robust fd wiring.
+19. ~~File descriptor table: per-process fd state with close-on-exec support.~~
+20. ~~Pipes: anonymous unidirectional pipes for shell command chaining.~~
+21. ~~Redirection: shell support for >, >>, < with robust fd wiring.~~
 22. Session/job control basics: foreground/background groups and terminal ownership.
 23. Signal delivery core: SIGINT/SIGTERM/SIGKILL/SIGCHLD semantics and default handlers.
 24. Signal APIs: sigaction/signal-style user API and kernel dispatch hooks.

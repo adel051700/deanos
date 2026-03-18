@@ -25,7 +25,7 @@ static const unsigned char dk_shift_map[128] = {
 
 // AltGr (Right-Alt, E0 38) mapping for common dk-latin1 combos
 static const unsigned char dk_altgr_map[128] = {
-    /* 00-0F */ 0, 0, 0, '@', 0x9C, '$', 0, 0, '{', '[', ']', '}', '\\', 0, 0,
+    /* 00-0F */ 0, 0, 0, '@', 0x9C, '$', 0, 0, '{', '[', ']', '}', '\\', '|', 0,
     /* 10-1F */ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,      0,
                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,              0,
     /* 20-2F */ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,             0,

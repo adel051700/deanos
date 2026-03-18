@@ -9,7 +9,14 @@ extern "C" {
 #define O_CREAT  0x04
 #define O_TRUNC  0x08
 #define O_APPEND 0x10
+#define O_CLOEXEC 0x20
+
+#define FD_CLOEXEC 0x1
+#define F_GETFD    1
+#define F_SETFD    2
+
 int open(const char* path, int flags);
+int fcntl(int fd, int cmd, int arg);
 int mkdir(const char* path);
 #ifdef __cplusplus
 }

@@ -15,6 +15,7 @@
 #include "include/kernel/paging.h"
 #include "include/kernel/tss.h"
 #include "include/kernel/usermode.h"
+#include "include/kernel/vfs.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,6 +29,61 @@ static uint32_t g_task_count = 0;
 static int      g_current    = -1;
 static uint32_t g_next_id    = 1;
 static uint64_t g_sched_ticks = 0;
+
+static void task_fd_table_init(task_t* t) {
+    if (!t) return;
+    for (int i = 0; i < TASK_MAX_FDS; ++i) {
+        t->fds[i].node = NULL;
+        t->fds[i].offset = 0;
+        t->fds[i].open_flags = 0;
+        t->fds[i].fd_flags = 0;
+        t->fds[i].in_use = 0;
+    }
+}
+
+static void task_fd_table_close_all(task_t* t) {
+    if (!t) return;
+    for (int i = 0; i < TASK_MAX_FDS; ++i) {
+        if (!t->fds[i].in_use) continue;
+        vfs_close_node(t->fds[i].node);
+        t->fds[i].node = NULL;
+        t->fds[i].offset = 0;
+        t->fds[i].open_flags = 0;
+        t->fds[i].fd_flags = 0;
+        t->fds[i].in_use = 0;
+    }
+}
+
+static int task_fd_table_clone(task_t* dst, const task_t* src) {
+    if (!dst || !src) return -1;
+    task_fd_table_init(dst);
+
+    for (int i = 0; i < TASK_MAX_FDS; ++i) {
+        if (!src->fds[i].in_use) continue;
+
+        dst->fds[i] = src->fds[i];
+        if (vfs_open_node(dst->fds[i].node, dst->fds[i].open_flags) < 0) {
+            task_fd_table_close_all(dst);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static void task_fd_table_close_cloexec(task_t* t) {
+    if (!t) return;
+    for (int i = 0; i < TASK_MAX_FDS; ++i) {
+        if (!t->fds[i].in_use) continue;
+        if (!(t->fds[i].fd_flags & TASK_FD_CLOEXEC)) continue;
+        vfs_close_node(t->fds[i].node);
+        t->fds[i].node = NULL;
+        t->fds[i].offset = 0;
+        t->fds[i].open_flags = 0;
+        t->fds[i].fd_flags = 0;
+        t->fds[i].in_use = 0;
+    }
+}
 
 /* ---- internal helpers -------------------------------------------------- */
 
@@ -265,6 +321,7 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->fork_user_esp = 0;
     t->fork_user_eflags = 0;
     t->fork_resume_user = 0;
+    task_fd_table_init(t);
 
     /* Copy name (or generate one). */
     if (name) {
@@ -321,6 +378,7 @@ void task_exit_with_status(uint32_t status) {
     if (g_current >= 0) {
         uint32_t dying_id = g_tasks[g_current].id;
         reparent_children(dying_id, init_task_id());
+        task_fd_table_close_all(&g_tasks[g_current]);
         g_tasks[g_current].exit_status = status;
         g_tasks[g_current].wait_collected = 0;
         release_task_mm(&g_tasks[g_current]);
@@ -344,6 +402,7 @@ int task_kill(int id) {
 
     uint32_t dying_id = g_tasks[idx].id;
     reparent_children(dying_id, init_task_id());
+    task_fd_table_close_all(&g_tasks[idx]);
     release_task_mm(&g_tasks[idx]);
 
     g_tasks[idx].wake_tick = 0;
@@ -379,6 +438,11 @@ int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
 
     child->mm_id = child_mm_id;
     child->mm_flags = child_mm_flags;
+    if (task_fd_table_clone(child, parent) < 0) {
+        release_task_mm(child);
+        child->state = TASK_DEAD;
+        return -4;
+    }
     child->fork_user_eip = user_eip;
     child->fork_user_esp = user_esp;
     child->fork_user_eflags = user_eflags;
@@ -493,6 +557,10 @@ int task_parent_id(int id) {
     return (int)g_tasks[idx].parent_id;
 }
 
+task_t* task_current(void) {
+    return (g_current >= 0) ? &g_tasks[g_current] : NULL;
+}
+
 void task_set_current_name(const char* name) {
     if (g_current < 0 || !name) return;
     task_t* t = &g_tasks[g_current];
@@ -501,5 +569,45 @@ void task_set_current_name(const char* name) {
         t->name[i] = name[i];
     }
     t->name[i] = '\0';
+}
+
+void task_close_cloexec_fds_current(void) {
+    if (g_current < 0) return;
+    task_fd_table_close_cloexec(&g_tasks[g_current]);
+}
+
+int task_clone_fd_to_task(int task_id, int target_fd, int src_fd) {
+    if (g_current < 0) return -1;
+    if (task_id <= 0) return -1;
+    if (target_fd < 0 || target_fd >= TASK_MAX_FDS) return -1;
+    if (src_fd < 0 || src_fd >= TASK_MAX_FDS) return -1;
+
+    task_t* src_task = &g_tasks[g_current];
+    if (!src_task->fds[src_fd].in_use) return -1;
+
+    int dst_idx = find_task_index_by_id(task_id);
+    if (dst_idx < 0) return -1;
+    task_t* dst_task = &g_tasks[dst_idx];
+
+    if (dst_task->fds[target_fd].in_use) {
+        vfs_close_node(dst_task->fds[target_fd].node);
+        dst_task->fds[target_fd].node = NULL;
+        dst_task->fds[target_fd].offset = 0;
+        dst_task->fds[target_fd].open_flags = 0;
+        dst_task->fds[target_fd].fd_flags = 0;
+        dst_task->fds[target_fd].in_use = 0;
+    }
+
+    dst_task->fds[target_fd] = src_task->fds[src_fd];
+    if (vfs_open_node(dst_task->fds[target_fd].node, dst_task->fds[target_fd].open_flags) < 0) {
+        dst_task->fds[target_fd].node = NULL;
+        dst_task->fds[target_fd].offset = 0;
+        dst_task->fds[target_fd].open_flags = 0;
+        dst_task->fds[target_fd].fd_flags = 0;
+        dst_task->fds[target_fd].in_use = 0;
+        return -1;
+    }
+
+    return 0;
 }
 

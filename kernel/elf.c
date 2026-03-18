@@ -80,7 +80,46 @@ static int elf_load_segments(const uint8_t* data, uint32_t size,
     }
     return 0;
 }
-static struct { uint32_t entry; uintptr_t ustk; } g_elf_launch;
+typedef struct {
+    int       in_use;
+    int       task_id;
+    uint32_t  entry;
+    uintptr_t ustk;
+} elf_launch_slot_t;
+
+static elf_launch_slot_t g_elf_launch_slots[TASK_MAX];
+
+static int elf_launch_slot_set(int task_id, uint32_t entry, uintptr_t ustk) {
+    for (int i = 0; i < TASK_MAX; ++i) {
+        if (g_elf_launch_slots[i].in_use) continue;
+        g_elf_launch_slots[i].in_use = 1;
+        g_elf_launch_slots[i].task_id = task_id;
+        g_elf_launch_slots[i].entry = entry;
+        g_elf_launch_slots[i].ustk = ustk;
+        return 0;
+    }
+    return -1;
+}
+
+static elf_launch_slot_t* elf_launch_slot_take(int task_id) {
+    for (int i = 0; i < TASK_MAX; ++i) {
+        if (!g_elf_launch_slots[i].in_use) continue;
+        if (g_elf_launch_slots[i].task_id != task_id) continue;
+
+        g_elf_launch_slots[i].in_use = 0;
+        return &g_elf_launch_slots[i];
+    }
+    return NULL;
+}
+
+static void elf_launch_slot_clear(int task_id) {
+    for (int i = 0; i < TASK_MAX; ++i) {
+        if (!g_elf_launch_slots[i].in_use) continue;
+        if (g_elf_launch_slots[i].task_id != task_id) continue;
+        g_elf_launch_slots[i].in_use = 0;
+        return;
+    }
+}
 extern const uint8_t _binary_build_user_anim_elf_start[];
 extern const uint8_t _binary_build_user_anim_elf_end[];
 extern const uint8_t _binary_build_user_forktest_elf_start[];
@@ -93,14 +132,24 @@ extern const uint8_t _binary_build_user_waitstress_elf_start[];
 extern const uint8_t _binary_build_user_waitstress_elf_end[];
 extern const uint8_t _binary_build_user_waitstressbg_elf_start[];
 extern const uint8_t _binary_build_user_waitstressbg_elf_end[];
+extern const uint8_t _binary_build_user_catfd_elf_start[];
+extern const uint8_t _binary_build_user_catfd_elf_end[];
 
 static void elf_task_wrapper(void) {
-    uint32_t  entry    = g_elf_launch.entry;
-    uintptr_t ustk     = g_elf_launch.ustk;
+    int tid = task_current_id();
+    elf_launch_slot_t* slot = elf_launch_slot_take(tid);
+    if (!slot) {
+        task_exit();
+        return;
+    }
+
+    uint32_t  entry    = slot->entry;
+    uintptr_t ustk     = slot->ustk;
     uint32_t  user_esp = (uint32_t)(ustk + ELF_USER_STACK_SIZE) & ~0xFu;
     enter_usermode(entry, user_esp);
 }
-int elf_exec(const char* path, int wait) {
+
+int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd) {
     uint8_t* buf = NULL;
     uint32_t size = 0;
     int io = elf_read_from_vfs(path, &buf, &size);
@@ -114,17 +163,40 @@ int elf_exec(const char* path, int wait) {
     }
     void* ustk = kmalloc(ELF_USER_STACK_SIZE);
     if (!ustk) { kfree(buf); return -7; }
-    g_elf_launch.entry = eh->e_entry;
-    g_elf_launch.ustk  = (uintptr_t)ustk;
+    uint32_t entry = eh->e_entry;
     const char* name = path_basename(path);
     int tid = task_create_named(elf_task_wrapper, 0, TASK_DEFAULT_QUANTUM, name);
     kfree(buf);
-    if (tid < 0) return tid;
+    if (tid < 0) {
+        kfree(ustk);
+        return tid;
+    }
+
+    if (elf_launch_slot_set(tid, entry, (uintptr_t)ustk) < 0) {
+        task_kill(tid);
+        return -10;
+    }
+
+    if (stdin_fd >= 0 && task_clone_fd_to_task(tid, 0, stdin_fd) < 0) {
+        elf_launch_slot_clear(tid);
+        task_kill(tid);
+        return -8;
+    }
+    if (stdout_fd >= 0 && task_clone_fd_to_task(tid, 1, stdout_fd) < 0) {
+        elf_launch_slot_clear(tid);
+        task_kill(tid);
+        return -9;
+    }
+
     if (wait) {
         int status = 0;
         (void)task_waitpid(tid, &status, 0);
     }
     return tid;
+}
+
+int elf_exec(const char* path, int wait) {
+    return elf_exec_with_stdio(path, wait, -1, -1);
 }
 
 int elf_execve_current(const char* path, struct registers* r) {
@@ -157,6 +229,9 @@ int elf_execve_current(const char* path, struct registers* r) {
     r->eip = eh->e_entry;
     r->useresp = user_esp;
     r->eax = 0;
+
+    /* POSIX-like behavior: apply CLOEXEC only on successful image replacement. */
+    task_close_cloexec_fds_current();
 
     const char* name = path_basename(path);
     if (name) task_set_current_name(name);
@@ -242,4 +317,10 @@ void elf_install_test_programs(void) {
     if (!waitstressbg) return;
     uint32_t waitstressbg_size = (uint32_t)(_binary_build_user_waitstressbg_elf_end - _binary_build_user_waitstressbg_elf_start);
     vfs_write(waitstressbg, 0, waitstressbg_size, _binary_build_user_waitstressbg_elf_start);
+
+    vfs_create(bin, "catfd", VFS_FILE);
+    vfs_node_t* catfd = vfs_finddir(bin, "catfd");
+    if (!catfd) return;
+    uint32_t catfd_size = (uint32_t)(_binary_build_user_catfd_elf_end - _binary_build_user_catfd_elf_start);
+    vfs_write(catfd, 0, catfd_size, _binary_build_user_catfd_elf_start);
 }

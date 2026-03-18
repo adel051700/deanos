@@ -43,9 +43,11 @@ static esc_state_t esc_state = ESC_IDLE;
 static void history_add(const char* cmd);
 static void shell_set_line(const char* s);
 static void shell_execute_command(const char* command);
+static void shell_execute_pipeline(const char* command);
 static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz);
 static void shell_autocomplete(void);
 static void shell_insert_char_at_cursor(char c);
+static size_t copy_token(const char* src, char* dst, size_t dstsz);
 
 // New forward decls (syscall test commands)
 static void cmd_sys_write(const char* args);
@@ -142,6 +144,21 @@ static const struct shell_command commands[] = {
 
     {NULL, NULL, NULL}
 };
+
+static int shell_is_hidden_help_command(const char* name) {
+    if (!name) return 0;
+
+    /* Keep internal test/debug commands callable, but hide them from help. */
+    if (strcmp(name, "fsfill") == 0) return 1;
+    if (strcmp(name, "fsverify") == 0) return 1;
+    if (strcmp(name, "vm") == 0) return 1;
+    if (strcmp(name, "libctest") == 0) return 1;
+    if (strcmp(name, "sys.write") == 0) return 1;
+    if (strcmp(name, "sys.time") == 0) return 1;
+    if (strcmp(name, "sys81.time") == 0) return 1;
+    if (strcmp(name, "sys.exit") == 0) return 1;
+    return 0;
+}
 
 // Remove the old non-static forward line:
 // - void cmd_cls(const char* args);
@@ -328,7 +345,12 @@ static void shell_execute_command(const char* command) {
     if (*command == '\0') {
         return;
     }
-    
+
+    if (strchr(command, '|') != NULL || strchr(command, '<') != NULL || strchr(command, '>') != NULL) {
+        shell_execute_pipeline(command);
+        return;
+    }
+
     // Extract command name (first word)
     char cmd_name[32];
     size_t i = 0;
@@ -362,6 +384,271 @@ static void shell_execute_command(const char* command) {
     terminal_writestring("\nType 'help' for a list of commands.\n");
 }
 
+#define SHELL_PIPE_MAX_STAGES 8
+
+typedef struct {
+    char path[VFS_PATH_MAX];
+    char in_path[VFS_PATH_MAX];
+    char out_path[VFS_PATH_MAX];
+    int  has_in;
+    int  has_out;
+    int  append_out;
+} shell_stage_spec_t;
+
+static size_t shell_stage_next_token(const char** p_in, char* out, size_t out_sz) {
+    if (!p_in || !*p_in || !out || out_sz == 0) return 0;
+    const char* p = *p_in;
+
+    while (*p == ' ') p++;
+    if (*p == '\0') {
+        *p_in = p;
+        out[0] = '\0';
+        return 0;
+    }
+
+    if (*p == '<') {
+        if (out_sz < 2) return 0;
+        out[0] = '<';
+        out[1] = '\0';
+        p++;
+        *p_in = p;
+        return 1;
+    }
+
+    if (*p == '>') {
+        if (*(p + 1) == '>') {
+            if (out_sz < 3) return 0;
+            out[0] = '>';
+            out[1] = '>';
+            out[2] = '\0';
+            p += 2;
+            *p_in = p;
+            return 2;
+        }
+        if (out_sz < 2) return 0;
+        out[0] = '>';
+        out[1] = '\0';
+        p++;
+        *p_in = p;
+        return 1;
+    }
+
+    size_t i = 0;
+    while (p[i] && p[i] != ' ' && p[i] != '<' && p[i] != '>' && i < out_sz - 1) {
+        out[i] = p[i];
+        i++;
+    }
+    out[i] = '\0';
+    p += i;
+    *p_in = p;
+    return i;
+}
+
+static char* shell_trim_spaces(char* s) {
+    while (*s == ' ') s++;
+
+    size_t n = strlen(s);
+    while (n > 0 && s[n - 1] == ' ') {
+        s[n - 1] = '\0';
+        n--;
+    }
+    return s;
+}
+
+static int shell_stage_parse(char* segment, shell_stage_spec_t* spec) {
+    if (!segment || !spec) return -1;
+
+    memset(spec, 0, sizeof(*spec));
+    const char* p = shell_trim_spaces(segment);
+    if (*p == '\0') return -1;
+
+    char token[VFS_PATH_MAX];
+    size_t n = shell_stage_next_token(&p, token, sizeof(token));
+    if (n == 0) return -1;
+
+    if (strcmp(token, "exec") == 0) {
+        while (*p == ' ') p++;
+    }
+
+    while (*p) {
+        n = shell_stage_next_token(&p, token, sizeof(token));
+        if (n == 0) break;
+
+        if (strcmp(token, "<") == 0 || strcmp(token, ">") == 0 || strcmp(token, ">>") == 0) {
+            int is_in = (token[0] == '<');
+            int is_append = (token[0] == '>' && token[1] == '>');
+
+            char file_token[VFS_PATH_MAX];
+            size_t fn = shell_stage_next_token(&p, file_token, sizeof(file_token));
+            if (fn == 0) return -1;
+            if (strcmp(file_token, "<") == 0 || strcmp(file_token, ">") == 0 || strcmp(file_token, ">>") == 0) {
+                return -1;
+            }
+
+            if (is_in) {
+                if (spec->has_in) return -1;
+                strncpy(spec->in_path, file_token, sizeof(spec->in_path) - 1);
+                spec->in_path[sizeof(spec->in_path) - 1] = '\0';
+                spec->has_in = 1;
+            } else {
+                if (spec->has_out) return -1;
+                strncpy(spec->out_path, file_token, sizeof(spec->out_path) - 1);
+                spec->out_path[sizeof(spec->out_path) - 1] = '\0';
+                spec->has_out = 1;
+                spec->append_out = is_append;
+            }
+            continue;
+        }
+
+        if (spec->path[0] != '\0') {
+            return -1;
+        }
+
+        strncpy(spec->path, token, sizeof(spec->path) - 1);
+        spec->path[sizeof(spec->path) - 1] = '\0';
+    }
+
+    return (spec->path[0] != '\0') ? 0 : -1;
+}
+
+static void shell_execute_pipeline(const char* command) {
+    if (!command || *command == '\0') return;
+
+    char line[MAX_COMMAND_LENGTH];
+    strncpy(line, command, sizeof(line) - 1);
+    line[sizeof(line) - 1] = '\0';
+
+    char* stages[SHELL_PIPE_MAX_STAGES];
+    shell_stage_spec_t specs[SHELL_PIPE_MAX_STAGES];
+    int stage_count = 0;
+    char* cur = line;
+
+    while (stage_count < SHELL_PIPE_MAX_STAGES) {
+        char* bar = strchr(cur, '|');
+        if (bar) *bar = '\0';
+
+        char* seg = shell_trim_spaces(cur);
+        if (*seg == '\0') {
+            terminal_writestring("pipe: empty stage\n");
+            return;
+        }
+        stages[stage_count++] = seg;
+
+        if (!bar) break;
+        cur = bar + 1;
+    }
+
+    if (strchr(cur, '|') != NULL) {
+        terminal_writestring("pipe: too many stages\n");
+        return;
+    }
+
+    for (int i = 0; i < stage_count; ++i) {
+        if (shell_stage_parse(stages[i], &specs[i]) < 0) {
+            terminal_writestring("pipe: invalid stage syntax\n");
+            return;
+        }
+        if (i > 0 && specs[i].has_in) {
+            terminal_writestring("pipe: '<' only supported on the first stage\n");
+            return;
+        }
+        if (i < stage_count - 1 && specs[i].has_out) {
+            terminal_writestring("pipe: '>'/'>>' only supported on the last stage\n");
+            return;
+        }
+    }
+
+    int pipes[SHELL_PIPE_MAX_STAGES - 1][2];
+    for (int i = 0; i < SHELL_PIPE_MAX_STAGES - 1; ++i) {
+        pipes[i][0] = -1;
+        pipes[i][1] = -1;
+    }
+
+    for (int i = 0; i < stage_count - 1; ++i) {
+        if (vfs_fd_pipe(pipes[i]) < 0) {
+            terminal_writestring("pipe: failed to allocate pipe\n");
+            for (int j = 0; j < i; ++j) {
+                if (pipes[j][0] >= 0) vfs_fd_close(pipes[j][0]);
+                if (pipes[j][1] >= 0) vfs_fd_close(pipes[j][1]);
+            }
+            return;
+        }
+    }
+
+    int pids[SHELL_PIPE_MAX_STAGES];
+    int started = 0;
+    int launch_failed = 0;
+    for (int i = 0; i < stage_count; ++i) {
+        char resolved[VFS_PATH_MAX];
+        const char* path = resolve_shell_path(specs[i].path, resolved, sizeof(resolved));
+        int in_fd = (i == 0) ? -1 : pipes[i - 1][0];
+        int out_fd = (i == stage_count - 1) ? -1 : pipes[i][1];
+
+        int opened_in_fd = -1;
+        int opened_out_fd = -1;
+
+        if (specs[i].has_in) {
+            char in_resolved[VFS_PATH_MAX];
+            const char* in_path = resolve_shell_path(specs[i].in_path, in_resolved, sizeof(in_resolved));
+            opened_in_fd = vfs_fd_open(in_path, VFS_O_RDONLY);
+            if (opened_in_fd < 0) {
+                terminal_writestring("pipe: failed to open input: ");
+                terminal_writestring(in_path);
+                terminal_writestring("\n");
+                launch_failed = 1;
+                break;
+            }
+            in_fd = opened_in_fd;
+        }
+
+        if (specs[i].has_out) {
+            char out_resolved[VFS_PATH_MAX];
+            const char* out_path = resolve_shell_path(specs[i].out_path, out_resolved, sizeof(out_resolved));
+            uint32_t oflags = VFS_O_WRONLY | VFS_O_CREATE;
+            oflags |= specs[i].append_out ? VFS_O_APPEND : VFS_O_TRUNC;
+            opened_out_fd = vfs_fd_open(out_path, oflags);
+            if (opened_out_fd < 0) {
+                if (opened_in_fd >= 0) vfs_fd_close(opened_in_fd);
+                terminal_writestring("pipe: failed to open output: ");
+                terminal_writestring(out_path);
+                terminal_writestring("\n");
+                launch_failed = 1;
+                break;
+            }
+            out_fd = opened_out_fd;
+        }
+
+        int pid = elf_exec_with_stdio(path, 0, in_fd, out_fd);
+        if (opened_in_fd >= 0) vfs_fd_close(opened_in_fd);
+        if (opened_out_fd >= 0) vfs_fd_close(opened_out_fd);
+        if (pid < 0) {
+            terminal_writestring("pipe: launch failed for ");
+            terminal_writestring(path);
+            terminal_writestring("\n");
+            launch_failed = 1;
+            break;
+        }
+
+        pids[started++] = pid;
+    }
+
+    for (int i = 0; i < stage_count - 1; ++i) {
+        if (pipes[i][0] >= 0) vfs_fd_close(pipes[i][0]);
+        if (pipes[i][1] >= 0) vfs_fd_close(pipes[i][1]);
+    }
+
+    if (launch_failed || started < stage_count) {
+        for (int i = 0; i < started; ++i) {
+            (void)task_kill(pids[i]);
+        }
+    }
+
+    for (int i = 0; i < started; ++i) {
+        int status = 0;
+        (void)task_waitpid(pids[i], &status, 0);
+    }
+}
+
 /**
  * Update shell state - check for and process input
  */
@@ -383,6 +670,7 @@ static void cmd_help(const char* args) {
     
     terminal_writestring("Available commands:\n");
     for (size_t i = 0; commands[i].name != NULL; i++) {
+        if (shell_is_hidden_help_command(commands[i].name)) continue;
         terminal_writestring("  ");
         terminal_writestring(commands[i].name);
         terminal_writestring(" - ");
