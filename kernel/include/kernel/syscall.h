@@ -23,6 +23,11 @@ enum {
     SYS_waitpid = 16,
     SYS_fcntl = 17,
     SYS_pipe = 18,
+    SYS_setpgid = 19,
+    SYS_getpgrp = 20,
+    SYS_setsid = 21,
+    SYS_tcsetpgrp = 22,
+    SYS_tcgetpgrp = 23,
 };
 
 /* Install syscall handlers on vectors 0x80 and 0x81 */

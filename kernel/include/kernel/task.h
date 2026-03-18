@@ -67,6 +67,10 @@ typedef struct task {
     uint32_t        mm_id;
     uint32_t        mm_flags;
 
+    /* Session / job-control metadata. */
+    uint32_t        sid;
+    uint32_t        pgid;
+
     /* Per-process file descriptor table. */
     task_fd_t       fds[TASK_MAX_FDS];
 
@@ -110,6 +114,13 @@ const task_t* task_get(uint32_t index);
 int task_current_id(void);
 int task_current_ppid(void);
 int task_parent_id(int id);
+int task_current_sid(void);
+int task_current_pgid(void);
+int task_getsid(int pid);
+int task_getpgid(int pid);
+int task_setpgid(int pid, int pgid);
+int task_setsid(void);
+int task_pgid_exists_in_session(uint32_t sid, uint32_t pgid);
 task_t* task_current(void);
 void task_set_current_name(const char* name);
 

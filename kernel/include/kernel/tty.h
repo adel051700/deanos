@@ -18,4 +18,8 @@ void terminal_cursor_blink_tick(void);
 uint32_t terminal_get_color(void);
 void terminal_move_cursor_left(void);
 void terminal_move_cursor_right(void);
+int terminal_set_foreground_pgid(int pgid);
+int terminal_get_foreground_pgid(void);
+int terminal_set_controlling_sid(int sid);
+int terminal_get_controlling_sid(void);
 #endif

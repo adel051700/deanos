@@ -45,6 +45,13 @@ static long sys_read(uint32_t fd, char* buf, size_t len) {
 
     /* Fallback keyboard input for default stdin when unbound. */
     if (fd == 0) {
+        int fg_pgid = terminal_get_foreground_pgid();
+        int ctl_sid = terminal_get_controlling_sid();
+        if (t && ((fg_pgid > 0 && (int)t->pgid != fg_pgid) ||
+                  (ctl_sid > 0 && (int)t->sid != ctl_sid))) {
+            return -1;
+        }
+
         size_t nread = 0;
         while (nread < len && keyboard_data_available()) {
             buf[nread++] = keyboard_getchar();
@@ -137,6 +144,44 @@ static long sys_pipe(int32_t* out_fds) {
     return 0;
 }
 
+static long sys_setpgid(int32_t pid, int32_t pgid) {
+    return (long)task_setpgid((int)pid, (int)pgid);
+}
+
+static long sys_getpgrp(void) {
+    return (long)task_current_pgid();
+}
+
+static long sys_setsid(void) {
+    return (long)task_setsid();
+}
+
+static long sys_tcsetpgrp(uint32_t fd, int32_t pgid) {
+    (void)fd;
+    if (pgid <= 0) return -1;
+
+    int sid = task_current_sid();
+    if (sid <= 0) return -1;
+
+    int ctl_sid = terminal_get_controlling_sid();
+    if (ctl_sid == 0) {
+        if (terminal_set_controlling_sid(sid) < 0) return -1;
+    } else if (ctl_sid != sid) {
+        return -1;
+    }
+
+    if (!task_pgid_exists_in_session((uint32_t)sid, (uint32_t)pgid)) {
+        return -1;
+    }
+
+    return (long)terminal_set_foreground_pgid((int)pgid);
+}
+
+static long sys_tcgetpgrp(uint32_t fd) {
+    (void)fd;
+    return (long)terminal_get_foreground_pgid();
+}
+
 static long sys_mkdir(const char* path) {
     if (!path) return -1;
     /* Resolve parent, create directory child */
@@ -197,6 +242,11 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_waitpid: return sys_waitpid((int32_t)a1, (int32_t*)a2, a3);
         case SYS_fcntl: return sys_fcntl(a1, a2, a3);
         case SYS_pipe: return sys_pipe((int32_t*)a1);
+        case SYS_setpgid: return sys_setpgid((int32_t)a1, (int32_t)a2);
+        case SYS_getpgrp: return sys_getpgrp();
+        case SYS_setsid: return sys_setsid();
+        case SYS_tcsetpgrp: return sys_tcsetpgrp(a1, (int32_t)a2);
+        case SYS_tcgetpgrp: return sys_tcgetpgrp(a1);
         default:        return -38; /* ENOSYS */
     }
 }

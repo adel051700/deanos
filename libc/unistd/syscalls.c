@@ -90,6 +90,26 @@ int waitpid(int pid, int* status, int options) {
     return (int)syscall3(SYS_waitpid, (unsigned)pid, (unsigned)status, (unsigned)options);
 }
 
+int setpgid(int pid, int pgid) {
+    return (int)syscall2(SYS_setpgid, (unsigned)pid, (unsigned)pgid);
+}
+
+int getpgrp(void) {
+    return (int)syscall1(SYS_getpgrp, 0);
+}
+
+int setsid(void) {
+    return (int)syscall1(SYS_setsid, 0);
+}
+
+int tcsetpgrp(int fd, int pgrp) {
+    return (int)syscall2(SYS_tcsetpgrp, (unsigned)fd, (unsigned)pgrp);
+}
+
+int tcgetpgrp(int fd) {
+    return (int)syscall1(SYS_tcgetpgrp, (unsigned)fd);
+}
+
 unsigned sleep(unsigned seconds) {
     (void)syscall1(SYS_sleep_ms, seconds * 1000u);
     return 0;

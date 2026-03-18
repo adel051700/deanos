@@ -23,6 +23,7 @@
 
 #define MAX_COMMAND_LENGTH 256
 #define SHELL_HISTORY_SIZE 32
+#define SHELL_BG_JOBS_MAX 16
 
 static char cwd[VFS_PATH_MAX] = "/";   /* current working directory */
 
@@ -30,6 +31,18 @@ static char command_buffer[MAX_COMMAND_LENGTH];
 static size_t command_length = 0;
 static size_t cursor_pos = 0;   /* position of terminal cursor within command_buffer */
 static int input_line_dirty = 0; /* async output happened since last shell redraw */
+static int shell_jobctl_ready = 0;
+static int shell_sid = 0;
+static int shell_pgid = 0;
+
+typedef struct {
+    int in_use;
+    int pid;
+    int pgid;
+    char cmd[VFS_PATH_MAX];
+} shell_bg_job_t;
+
+static shell_bg_job_t shell_bg_jobs[SHELL_BG_JOBS_MAX];
 
 static char history[SHELL_HISTORY_SIZE][MAX_COMMAND_LENGTH];
 static size_t history_len = 0;     // number of stored entries
@@ -48,6 +61,8 @@ static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz);
 static void shell_autocomplete(void);
 static void shell_insert_char_at_cursor(char c);
 static size_t copy_token(const char* src, char* dst, size_t dstsz);
+
+static void shell_jobctl_ensure(void);
 
 // New forward decls (syscall test commands)
 static void cmd_sys_write(const char* args);
@@ -89,6 +104,14 @@ static void cmd_cd(const char* args);
 static void cmd_pwd(const char* args);
 static void cmd_exec(const char* args);
 static void cmd_anim(const char* args);
+static void cmd_jobs(const char* args);
+static void cmd_fg(const char* args);
+static void cmd_bg(const char* args);
+
+static void shell_jobs_reap(void);
+static void shell_jobs_add(int pid, int pgid, const char* cmd);
+static int shell_jobs_find_by_pid(int pid);
+static void shell_jobs_remove_index(int idx);
 
 /* Print the shell prompt: "DeanOS /path $ " */
 static void shell_print_prompt(void);
@@ -134,6 +157,9 @@ static const struct shell_command commands[] = {
     {"cd",      cmd_cd,      "Change directory: cd <path>"},
     {"pwd",     cmd_pwd,     "Print working directory"},
     {"exec",    cmd_exec,    "Run an ELF program: exec <path> [&]"},
+    {"jobs",    cmd_jobs,    "List background jobs"},
+    {"fg",      cmd_fg,      "Bring job to foreground: fg <pid>"},
+    {"bg",      cmd_bg,      "Keep job in background: bg <pid>"},
     {"anim",    cmd_anim,    "Run large animated demo"},
 
     // New syscall test commands
@@ -184,6 +210,81 @@ static void shell_redraw_current_input(void) {
     }
 }
 
+static void shell_jobctl_ensure(void) {
+    if (shell_jobctl_ready) return;
+
+    int self = task_current_id();
+    if (self <= 0) return;
+
+    int sid = task_setsid();
+    if (sid < 0) {
+        sid = task_current_sid();
+    }
+    int pgid = task_current_pgid();
+    if (sid <= 0 || pgid <= 0) return;
+
+    shell_sid = sid;
+    shell_pgid = pgid;
+
+    if (terminal_set_controlling_sid(shell_sid) == 0) {
+        (void)terminal_set_foreground_pgid(shell_pgid);
+        shell_jobctl_ready = 1;
+    }
+}
+
+static void shell_jobs_remove_index(int idx) {
+    if (idx < 0 || idx >= SHELL_BG_JOBS_MAX) return;
+    shell_bg_jobs[idx].in_use = 0;
+    shell_bg_jobs[idx].pid = 0;
+    shell_bg_jobs[idx].pgid = 0;
+    shell_bg_jobs[idx].cmd[0] = '\0';
+}
+
+static int shell_jobs_find_by_pid(int pid) {
+    if (pid <= 0) return -1;
+    for (int i = 0; i < SHELL_BG_JOBS_MAX; ++i) {
+        if (!shell_bg_jobs[i].in_use) continue;
+        if (shell_bg_jobs[i].pid == pid) return i;
+    }
+    return -1;
+}
+
+static void shell_jobs_add(int pid, int pgid, const char* cmd) {
+    if (pid <= 0 || pgid <= 0) return;
+
+    int slot = -1;
+    for (int i = 0; i < SHELL_BG_JOBS_MAX; ++i) {
+        if (!shell_bg_jobs[i].in_use) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot < 0) return;
+
+    shell_bg_jobs[slot].in_use = 1;
+    shell_bg_jobs[slot].pid = pid;
+    shell_bg_jobs[slot].pgid = pgid;
+    if (cmd) {
+        strncpy(shell_bg_jobs[slot].cmd, cmd, sizeof(shell_bg_jobs[slot].cmd) - 1);
+        shell_bg_jobs[slot].cmd[sizeof(shell_bg_jobs[slot].cmd) - 1] = '\0';
+    } else {
+        shell_bg_jobs[slot].cmd[0] = '\0';
+    }
+}
+
+static void shell_jobs_reap(void) {
+    for (int i = 0; i < SHELL_BG_JOBS_MAX; ++i) {
+        if (!shell_bg_jobs[i].in_use) continue;
+
+        int status = 0;
+        int rc = task_waitpid(shell_bg_jobs[i].pid, &status, TASK_WAIT_NOHANG);
+        if (rc == shell_bg_jobs[i].pid || rc == -3) {
+            shell_jobs_remove_index(i);
+        }
+    }
+}
+
 void shell_mark_tty_async_output(void) {
     input_line_dirty = 1;
 }
@@ -212,6 +313,9 @@ void shell_initialize(void) {
     input_line_dirty = 0;
     cwd[0] = '/';
     cwd[1] = '\0';
+    for (int i = 0; i < SHELL_BG_JOBS_MAX; ++i) {
+        shell_jobs_remove_index(i);
+    }
     shell_print_prompt();
     terminal_enable_cursor();  // Enable cursor now that we're ready for input
 }
@@ -220,6 +324,9 @@ void shell_initialize(void) {
  * Process a character input to the shell
  */
 void shell_process_char(char c) {
+    shell_jobctl_ensure();
+    shell_jobs_reap();
+
     if (input_line_dirty) {
         terminal_putchar('\n');
         shell_print_prompt();
@@ -513,6 +620,7 @@ static int shell_stage_parse(char* segment, shell_stage_spec_t* spec) {
 
 static void shell_execute_pipeline(const char* command) {
     if (!command || *command == '\0') return;
+    shell_jobctl_ensure();
 
     char line[MAX_COMMAND_LENGTH];
     strncpy(line, command, sizeof(line) - 1);
@@ -578,6 +686,7 @@ static void shell_execute_pipeline(const char* command) {
     int pids[SHELL_PIPE_MAX_STAGES];
     int started = 0;
     int launch_failed = 0;
+    int pipeline_pgid = 0;
     for (int i = 0; i < stage_count; ++i) {
         char resolved[VFS_PATH_MAX];
         const char* path = resolve_shell_path(specs[i].path, resolved, sizeof(resolved));
@@ -630,6 +739,13 @@ static void shell_execute_pipeline(const char* command) {
         }
 
         pids[started++] = pid;
+
+        if (pipeline_pgid == 0) {
+            pipeline_pgid = pid;
+            (void)task_setpgid(pid, pid);
+        } else {
+            (void)task_setpgid(pid, pipeline_pgid);
+        }
     }
 
     for (int i = 0; i < stage_count - 1; ++i) {
@@ -643,9 +759,17 @@ static void shell_execute_pipeline(const char* command) {
         }
     }
 
+    if (!launch_failed && started > 0 && pipeline_pgid > 0) {
+        (void)terminal_set_foreground_pgid(pipeline_pgid);
+    }
+
     for (int i = 0; i < started; ++i) {
         int status = 0;
         (void)task_waitpid(pids[i], &status, 0);
+    }
+
+    if (shell_jobctl_ready && shell_pgid > 0) {
+        (void)terminal_set_foreground_pgid(shell_pgid);
     }
 }
 
@@ -1222,8 +1346,8 @@ static void cmd_tasks(const char* args) {
     static const char* state_names[] = {"READY","RUN  ","BLOCK","DEAD "};
     char buf[16];
 
-    terminal_writestring("ID  PPID  STATE  QUANTUM  NAME\n");
-    terminal_writestring("--  ----  -----  -------  ----\n");
+    terminal_writestring("ID  PPID  SID  PGID  STATE  QUANTUM  NAME\n");
+    terminal_writestring("--  ----  ---  ----  -----  -------  ----\n");
 
     uint32_t count = task_count();
     int cur = task_current_id();
@@ -1248,6 +1372,14 @@ static void cmd_tasks(const char* args) {
         terminal_writestring("    ");
 
         /* State */
+        itoa((int)t->sid, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("   ");
+
+        itoa((int)t->pgid, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("    ");
+
         if (t->state <= TASK_DEAD)
             terminal_writestring(state_names[t->state]);
         else
@@ -2547,6 +2679,8 @@ static void cmd_pwd(const char* args) {
 }
 
 static void cmd_exec(const char* args) {
+    shell_jobctl_ensure();
+
     if (!args || *args == '\0') {
         terminal_writestring("usage: exec <path> [&]\n");
         return;
@@ -2578,20 +2712,103 @@ static void cmd_exec(const char* args) {
     terminal_writestring(path);
     terminal_writestring("\n");
 
-    int ret = elf_exec(path, (int)wait);
+    int ret = elf_exec(path, 0);
     if (ret < 0) {
         terminal_writestring("exec: failed (error ");
         char buf[16];
         itoa(ret, buf, 10);
         terminal_writestring(buf);
         terminal_writestring(")\n");
-    } else if (!wait) {
+        return;
+    }
+
+    (void)task_setpgid(ret, ret);
+
+    if (!wait) {
+        shell_jobs_add(ret, ret, path);
         terminal_writestring("exec: started pid ");
         char buf[16];
         itoa(ret, buf, 10);
         terminal_writestring(buf);
+        terminal_writestring(" pgid ");
+        itoa(ret, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+        return;
+    }
+
+    (void)terminal_set_foreground_pgid(ret);
+    int status = 0;
+    (void)task_waitpid(ret, &status, 0);
+    if (shell_jobctl_ready && shell_pgid > 0) {
+        (void)terminal_set_foreground_pgid(shell_pgid);
+    }
+}
+
+static void cmd_jobs(const char* args) {
+    (void)args;
+    shell_jobs_reap();
+
+    terminal_writestring("PID  PGID  CMD\n");
+    terminal_writestring("---  ----  ---\n");
+    for (int i = 0; i < SHELL_BG_JOBS_MAX; ++i) {
+        if (!shell_bg_jobs[i].in_use) continue;
+
+        char buf[16];
+        itoa(shell_bg_jobs[i].pid, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("   ");
+        itoa(shell_bg_jobs[i].pgid, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("    ");
+        terminal_writestring(shell_bg_jobs[i].cmd[0] ? shell_bg_jobs[i].cmd : "(unknown)");
         terminal_writestring("\n");
     }
+}
+
+static void cmd_fg(const char* args) {
+    shell_jobs_reap();
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: fg <pid>\n");
+        return;
+    }
+
+    int pid = (int)parse_uint(args);
+    int idx = shell_jobs_find_by_pid(pid);
+    if (idx < 0) {
+        terminal_writestring("fg: job not found\n");
+        return;
+    }
+
+    (void)terminal_set_foreground_pgid(shell_bg_jobs[idx].pgid);
+    int status = 0;
+    (void)task_waitpid(shell_bg_jobs[idx].pid, &status, 0);
+    shell_jobs_remove_index(idx);
+
+    if (shell_jobctl_ready && shell_pgid > 0) {
+        (void)terminal_set_foreground_pgid(shell_pgid);
+    }
+}
+
+static void cmd_bg(const char* args) {
+    shell_jobs_reap();
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: bg <pid>\n");
+        return;
+    }
+
+    int pid = (int)parse_uint(args);
+    int idx = shell_jobs_find_by_pid(pid);
+    if (idx < 0) {
+        terminal_writestring("bg: job not found\n");
+        return;
+    }
+
+    terminal_writestring("bg: job running in background: ");
+    char buf[16];
+    itoa(shell_bg_jobs[idx].pid, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\n");
 }
 
 static void cmd_anim(const char* args) {

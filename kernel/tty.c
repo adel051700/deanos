@@ -22,6 +22,8 @@
     static int cursor_visible = 1;
     static uint32_t cursor_blink_counter = 0;
     static int terminal_ready = 0;
+    static int terminal_controlling_sid = 0;
+    static int terminal_foreground_pgid = 0;
     #define CURSOR_BLINK_INTERVAL_TICKS 50
 
     static void calculate_line_positions(void) {
@@ -166,6 +168,8 @@
         cursor_visible = 1;
         cursor_enabled = 0;
         terminal_ready = 0;
+        terminal_controlling_sid = 0;
+        terminal_foreground_pgid = 0;
 
         for (uint32_t y = 0; y < TERM_ROWS; y++) {
             for (uint32_t x = 0; x < TERM_COLS; x++) {
@@ -297,3 +301,25 @@
     void terminal_setscale(uint32_t scale) { current_scale = scale; }
 
     uint32_t terminal_get_color(void) { return term_color; }
+
+    int terminal_set_foreground_pgid(int pgid) {
+        if (pgid < 0) return -1;
+        terminal_foreground_pgid = pgid;
+        return 0;
+    }
+
+    int terminal_get_foreground_pgid(void) {
+        return terminal_foreground_pgid;
+    }
+
+    int terminal_set_controlling_sid(int sid) {
+        if (sid < 0) return -1;
+        if (terminal_controlling_sid != 0 && terminal_controlling_sid != sid) return -1;
+        terminal_controlling_sid = sid;
+        return 0;
+    }
+
+    int terminal_get_controlling_sid(void) {
+        return terminal_controlling_sid;
+    }
+
