@@ -36,6 +36,13 @@
 #define ATA_CMD_CACHE_FLUSH      0xE7
 #define ATA_CMD_PACKET           0xA0
 
+/*
+ * Flushing on every write is very expensive under emulators and can add
+ * seconds to tiny writes. Keep this off for speed; add explicit sync support
+ * later if stronger durability guarantees are needed.
+ */
+#define ATA_FLUSH_ON_EACH_WRITE 0
+
 typedef struct ata_device {
     uint16_t io_base;
     uint16_t ctrl_base;
@@ -204,8 +211,10 @@ static int ata_pio_write_blocks(void* ctx, uint64_t lba, uint32_t count, const v
         if (!ata_wait_ready(d, 1000000u)) return -6;
     }
 
-    outb((uint16_t)(d->io_base + ATA_REG_COMMAND), ATA_CMD_CACHE_FLUSH);
-    if (!ata_wait_ready(d, 1000000u)) return -7;
+    if (ATA_FLUSH_ON_EACH_WRITE) {
+        outb((uint16_t)(d->io_base + ATA_REG_COMMAND), ATA_CMD_CACHE_FLUSH);
+        if (!ata_wait_ready(d, 1000000u)) return -7;
+    }
 
     return 0;
 }
