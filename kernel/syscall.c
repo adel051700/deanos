@@ -5,6 +5,7 @@
 #include "include/kernel/rtc.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/task.h"
+#include "include/kernel/signal.h"
 #include "include/kernel/elf.h"
 #include "include/kernel/vfs.h"
 #include "include/kernel/shell.h"
@@ -92,7 +93,7 @@ static long sys_getppid(void) {
 }
 
 static long sys_kill(uint32_t pid) {
-    return (long)task_kill((int)pid);
+    return (long)signal_send_task((int)pid, KSIGKILL);
 }
 
 static long sys_fork(struct registers* r) {

@@ -7,6 +7,7 @@
 #include "include/kernel/task.h"
 #include "include/kernel/usermode.h"
 #include "include/kernel/syscall.h"   // SYS_write, SYS_time, SYS_exit
+#include "include/kernel/signal.h"
 #include "include/kernel/vfs.h"
 #include "include/kernel/elf.h"
 #include "include/kernel/log.h"
@@ -115,6 +116,8 @@ static void shell_jobs_remove_index(int idx);
 
 /* Print the shell prompt: "DeanOS /path $ " */
 static void shell_print_prompt(void);
+static void shell_clear_screen(int redraw_input);
+static void shell_redraw_current_input(void);
 
 /* Command descriptor */
 struct shell_command {
@@ -200,6 +203,28 @@ static void shell_print_prompt(void) {
     input_line_dirty = 0;
 }
 
+static void shell_clear_screen(int redraw_input) {
+    uint32_t cursor_color = terminal_get_color();
+    int ctl_sid = terminal_get_controlling_sid();
+    int fg_pgid = terminal_get_foreground_pgid();
+
+    terminal_initialize();
+    terminal_enable_cursor();
+    terminal_setcolor(cursor_color);
+
+    if (ctl_sid > 0) {
+        (void)terminal_set_controlling_sid(ctl_sid);
+    }
+    if (fg_pgid >= 0) {
+        (void)terminal_set_foreground_pgid(fg_pgid);
+    }
+
+    if (redraw_input) {
+        shell_print_prompt();
+        shell_redraw_current_input();
+    }
+}
+
 static void shell_redraw_current_input(void) {
     for (size_t i = 0; i < command_length; ++i) {
         terminal_putchar(command_buffer[i]);
@@ -228,6 +253,7 @@ static void shell_jobctl_ensure(void) {
 
     if (terminal_set_controlling_sid(shell_sid) == 0) {
         (void)terminal_set_foreground_pgid(shell_pgid);
+        (void)task_set_signal_ignored(KSIGINT, 1);
         shell_jobctl_ready = 1;
     }
 }
@@ -327,11 +353,30 @@ void shell_process_char(char c) {
     shell_jobctl_ensure();
     shell_jobs_reap();
 
+    if ((unsigned char)c == 12u) {
+        shell_clear_screen(1);
+        return;
+    }
+
     if (input_line_dirty) {
         terminal_putchar('\n');
         shell_print_prompt();
         shell_redraw_current_input();
         input_line_dirty = 0;
+    }
+
+    if ((unsigned char)c == 3u) {
+        terminal_writestring("^C\n");
+        command_length = 0;
+        cursor_pos = 0;
+        command_buffer[0] = '\0';
+        history_pos = history_len;
+        esc_state = ESC_IDLE;
+        if (shell_jobctl_ready && shell_pgid > 0) {
+            (void)terminal_set_foreground_pgid(shell_pgid);
+        }
+        shell_print_prompt();
+        return;
     }
 
     // Handle escape sequences for arrows
@@ -837,10 +882,7 @@ static void cmd_color(const char* args) {
  */
 static void cmd_cls(const char* args) {
     (void)args;
-    uint32_t cursor_color = terminal_get_color();
-    terminal_initialize();      // reset buffers and clear screen
-    terminal_enable_cursor();   // show cursor again
-    terminal_setcolor(cursor_color); // restore text color
+    shell_clear_screen(0);
 }
 
 /**

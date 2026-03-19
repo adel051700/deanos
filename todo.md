@@ -47,7 +47,7 @@
 20. ~~Pipes: anonymous unidirectional pipes for shell command chaining.~~
 21. ~~Redirection: shell support for >, >>, < with robust fd wiring.~~
 22. ~~Session/job control basics: foreground/background groups and terminal ownership.~~
-23. Signal delivery core: SIGINT/SIGTERM/SIGKILL/SIGCHLD semantics and default handlers.
+23. ~~Signal delivery core: SIGINT/SIGTERM/SIGKILL/SIGCHLD semantics and default handlers.~~
 24. Signal APIs: sigaction/signal-style user API and kernel dispatch hooks.
 25. Copy-on-write completion: full fork COW for user pages with verified refcount correctness.
 26. Demand paging completion: lazily load ELF text/data pages on first access.
