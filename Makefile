@@ -45,6 +45,7 @@ kernel/interrupt.c \
 kernel/keyboard.c \
 kernel/mouse.c \
 kernel/shell.c \
+kernel/signal.c \
 kernel/rtc.c \
 kernel/pit.c \
 kernel/pmm.c \

@@ -57,6 +57,9 @@ typedef struct task {
     uint64_t        wake_tick;      /* scheduler tick to wake on (0 = none) */
     int             wait_task_id;   /* >0 specific child, -1 any child, 0 none */
     uint32_t        exit_status;    /* _exit(status) value */
+    uint32_t        pending_signals;
+    uint32_t        ignored_signals;
+    uint32_t        term_signal;    /* terminating signal number (0 if normal exit) */
     uint8_t         wait_collected; /* set once parent reaps exit status */
 
     /* Kernel stack */
@@ -97,6 +100,9 @@ void task_exit(void);
 void task_exit_with_status(uint32_t status);
 /* Mark task DEAD by id. Returns 0 on success, negative on error. */
 int  task_kill(int id);
+int  task_send_signal(int pid, int sig);
+int  task_send_signal_pgid(int pgid, int sig);
+int  task_set_signal_ignored(int sig, int ignored);
 /* Block until the task with the given ID is TASK_DEAD (or not found). */
 void task_wait(int id);
 int task_waitpid(int pid, int* status, uint32_t options);

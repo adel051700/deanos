@@ -1,6 +1,8 @@
 #include "include/kernel/keyboard.h"
 #include "include/kernel/io.h"
 #include "include/kernel/irq.h"
+#include "include/kernel/signal.h"
+#include "include/kernel/tty.h"
 #include <stdint.h>
 
 // dk-latin1 keyboard mapping (Set 1 scancodes)
@@ -101,6 +103,16 @@ static void keyboard_irq_handler(struct registers* regs) {
     // Non-modifier keys (non-E0)
     e0_prefix = 0;
     if (code >= 128) return;
+
+    /* Ctrl+C sends SIGINT to the foreground process group. */
+    if (ctrl_pressed && code == 0x2E) {
+        int fg_pgid = terminal_get_foreground_pgid();
+        if (fg_pgid > 0) {
+            (void)signal_send_pgid(fg_pgid, KSIGINT);
+        }
+        keyboard_buffer_enqueue((char)3);
+        return;
+    }
 
     char c = 0;
     if (code == 86) {

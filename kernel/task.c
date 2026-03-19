@@ -11,6 +11,7 @@
  */
 
 #include "include/kernel/task.h"
+#include "include/kernel/signal.h"
 #include "include/kernel/kheap.h"
 #include "include/kernel/paging.h"
 #include "include/kernel/tss.h"
@@ -88,6 +89,9 @@ static void task_fd_table_close_cloexec(task_t* t) {
 /* ---- internal helpers -------------------------------------------------- */
 
 static uint32_t init_task_id(void);
+static int find_task_index_by_id(int id);
+static void reparent_children(uint32_t old_parent_id, uint32_t new_parent_id);
+static void release_task_mm(task_t* t);
 
 static void idle_thread(void) {
     for (;;)
@@ -176,6 +180,33 @@ static int find_waitable_child_index(uint32_t parent_id, int pid_filter) {
     return -1;
 }
 
+static void notify_parent_sigchld(uint32_t parent_id) {
+    int parent_idx = find_task_index_by_id((int)parent_id);
+    if (parent_idx < 0) return;
+    g_tasks[parent_idx].pending_signals |= KSIG_BIT(KSIGCHLD);
+}
+
+static void mark_task_dead_index(uint32_t idx, uint32_t status, uint32_t term_sig) {
+    if (idx >= g_task_count) return;
+    if (g_tasks[idx].state == TASK_DEAD) return;
+
+    uint32_t dying_id = g_tasks[idx].id;
+    uint32_t parent_id = g_tasks[idx].parent_id;
+    reparent_children(dying_id, init_task_id());
+    task_fd_table_close_all(&g_tasks[idx]);
+    release_task_mm(&g_tasks[idx]);
+
+    g_tasks[idx].wake_tick = 0;
+    g_tasks[idx].wait_task_id = 0;
+    g_tasks[idx].exit_status = status;
+    g_tasks[idx].term_signal = term_sig;
+    g_tasks[idx].pending_signals = 0;
+    g_tasks[idx].wait_collected = 0;
+    g_tasks[idx].state = TASK_DEAD;
+
+    notify_parent_sigchld(parent_id);
+}
+
 static void reap_task_index(uint32_t idx) {
     if (idx >= g_task_count) return;
     if ((int)idx == g_current) return;
@@ -221,6 +252,10 @@ static int resolve_target_task_index(int pid) {
     if (g_current < 0) return -1;
     if (pid == 0) return g_current;
     return find_task_index_by_id(pid);
+}
+
+static int signal_is_fatal_default(int sig) {
+    return (sig == KSIGINT || sig == KSIGTERM || sig == KSIGKILL);
 }
 
 static uint32_t init_task_id(void) {
@@ -320,6 +355,9 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->wake_tick = 0;
     t->wait_task_id = 0;
     t->exit_status = 0;
+    t->pending_signals = 0;
+    t->ignored_signals = 0;
+    t->term_signal = 0;
     t->wait_collected = 0;
     t->mm_id = 1;
     t->mm_flags = 0;
@@ -389,41 +427,14 @@ void task_exit(void) {
 
 void task_exit_with_status(uint32_t status) {
     if (g_current >= 0) {
-        uint32_t dying_id = g_tasks[g_current].id;
-        reparent_children(dying_id, init_task_id());
-        task_fd_table_close_all(&g_tasks[g_current]);
-        g_tasks[g_current].exit_status = status;
-        g_tasks[g_current].wait_collected = 0;
-        release_task_mm(&g_tasks[g_current]);
-        g_tasks[g_current].state = TASK_DEAD;
+        mark_task_dead_index((uint32_t)g_current, status, 0);
     }
     task_yield();
     for (;;) __asm__ __volatile__("hlt");
 }
 
 int task_kill(int id) {
-    int idx = find_task_index_by_id(id);
-    if (idx < 0) return -1;
-    if (idx == 0) return -2; /* never kill idle */
-
-    if (idx == g_current) {
-        task_exit_with_status(128u + 9u);
-        return 0;
-    }
-
-    if (g_tasks[idx].state == TASK_DEAD) return 0;
-
-    uint32_t dying_id = g_tasks[idx].id;
-    reparent_children(dying_id, init_task_id());
-    task_fd_table_close_all(&g_tasks[idx]);
-    release_task_mm(&g_tasks[idx]);
-
-    g_tasks[idx].wake_tick = 0;
-    g_tasks[idx].wait_task_id = 0;
-    g_tasks[idx].exit_status = 128u + 9u; /* SIGKILL-style convention */
-    g_tasks[idx].wait_collected = 0;
-    g_tasks[idx].state = TASK_DEAD;
-    return 0;
+    return task_send_signal(id, KSIGKILL);
 }
 
 int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
@@ -441,6 +452,7 @@ int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
 
     task_t* child = &g_tasks[child_idx];
     child->parent_id = parent->id;
+    child->ignored_signals = parent->ignored_signals;
 
     uint32_t child_mm_id = parent->mm_id;
     uint32_t child_mm_flags = parent->mm_flags;
@@ -495,6 +507,74 @@ int task_waitpid(int pid, int* status, uint32_t options) {
         g_tasks[g_current].state = TASK_BLOCKED;
         task_yield();
     }
+}
+
+int task_send_signal(int pid, int sig) {
+    if (!signal_is_supported(sig)) return -1;
+
+    int idx = find_task_index_by_id(pid);
+    if (idx < 0) return -1;
+    if (idx == 0 && signal_is_fatal_default(sig)) return -2; /* never kill idle */
+
+    task_t* t = &g_tasks[idx];
+    if (t->state == TASK_DEAD) return 0;
+
+    uint32_t bit = KSIG_BIT(sig);
+    t->pending_signals |= bit;
+
+    if (t->ignored_signals & bit) {
+        t->pending_signals &= ~bit;
+        return 0;
+    }
+
+    if (sig == KSIGCHLD) {
+        return 0;
+    }
+
+    if (!signal_is_fatal_default(sig)) {
+        return 0;
+    }
+
+    t->pending_signals &= ~bit;
+    if (idx == g_current) {
+        task_exit_with_status(signal_default_exit_status(sig));
+        return 0;
+    }
+
+    mark_task_dead_index((uint32_t)idx, signal_default_exit_status(sig), (uint32_t)sig);
+    return 0;
+}
+
+int task_send_signal_pgid(int pgid, int sig) {
+    if (!signal_is_supported(sig)) return -1;
+    if (pgid <= 0) return -1;
+
+    int matched = 0;
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        task_t* t = &g_tasks[i];
+        if (t->state == TASK_DEAD) continue;
+        if ((int)t->pgid != pgid) continue;
+        if ((int)i == 0 && signal_is_fatal_default(sig)) continue;
+        matched = 1;
+        (void)task_send_signal((int)t->id, sig);
+    }
+
+    return matched ? 0 : -1;
+}
+
+int task_set_signal_ignored(int sig, int ignored) {
+    if (g_current < 0) return -1;
+    if (!signal_is_supported(sig)) return -1;
+    if (sig == KSIGKILL) return -1;
+
+    uint32_t bit = KSIG_BIT(sig);
+    if (ignored) {
+        g_tasks[g_current].ignored_signals |= bit;
+        g_tasks[g_current].pending_signals &= ~bit;
+    } else {
+        g_tasks[g_current].ignored_signals &= ~bit;
+    }
+    return 0;
 }
 
 void task_sleep_ticks(uint64_t ticks) {
