@@ -2,6 +2,8 @@
 #define KERNEL_TASK_H
 
 #include <stdint.h>
+#include "signal.h"
+#include "interrupt.h"
 
 #define TASK_MM_SHARED 0x1u
 #define TASK_WAIT_NOHANG 0x1u
@@ -59,6 +61,11 @@ typedef struct task {
     uint32_t        exit_status;    /* _exit(status) value */
     uint32_t        pending_signals;
     uint32_t        ignored_signals;
+    uintptr_t       signal_handlers[KSIG_MAX + 1];
+    uintptr_t       signal_restorers[KSIG_MAX + 1];
+    uint8_t         signal_in_handler;
+    uint32_t        signal_active;
+    struct registers signal_saved_regs;
     uint32_t        term_signal;    /* terminating signal number (0 if normal exit) */
     uint8_t         wait_collected; /* set once parent reaps exit status */
 

@@ -14,7 +14,7 @@ unsigned sleep(unsigned seconds);
 int sleep_ms(unsigned milliseconds);
 int getpid(void);
 int getppid(void);
-int kill(int pid);
+int kill(int pid, int sig);
 int fork(void);
 int execve(const char* path);
 int pipe(int pipefd[2]);

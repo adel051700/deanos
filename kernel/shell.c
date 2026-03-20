@@ -138,7 +138,7 @@ static const struct shell_command commands[] = {
     {"uptime", cmd_uptime, "Show system uptime"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
     {"tasks",  cmd_tasks,  "List all tasks and their state (with PPID)"},
-    {"kill",   cmd_kill,   "Kill task(s) by parent id: kill <ppid>"},
+    {"kill",   cmd_kill,   "Send signal by parent id: kill [-INT|-TERM|-KILL|-<num>] <ppid>"},
     {"wait",   cmd_wait,   "Wait for child exit: wait [pid|any]"},
     {"mouse",  cmd_mouse,  "Show PS/2 mouse state (mouse clear resets totals)"},
     {"blk",    cmd_blk,    "Block devices: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed>"},
@@ -1439,12 +1439,71 @@ static void cmd_tasks(const char* args) {
     }
 }
 
+static int shell_parse_signal_token(const char* token) {
+    if (!token || *token == '\0') return -1;
+    if (*token == '-') token++;
+    if (*token == '\0') return -1;
+
+    if (*token >= '0' && *token <= '9') {
+        int sig = (int)parse_uint(token);
+        return signal_is_supported(sig) ? sig : -1;
+    }
+
+    if ((token[0] == 'S' || token[0] == 's') &&
+        (token[1] == 'I' || token[1] == 'i') &&
+        (token[2] == 'G' || token[2] == 'g')) {
+        token += 3;
+    }
+
+    if (strcmp(token, "INT") == 0 || strcmp(token, "int") == 0) return KSIGINT;
+    if (strcmp(token, "TERM") == 0 || strcmp(token, "term") == 0) return KSIGTERM;
+    if (strcmp(token, "KILL") == 0 || strcmp(token, "kill") == 0) return KSIGKILL;
+    if (strcmp(token, "CHLD") == 0 || strcmp(token, "chld") == 0) return KSIGCHLD;
+    return -1;
+}
+
 static void cmd_kill(const char* args) {
     if (!args || *args == '\0') {
-        terminal_writestring("usage: kill <ppid>\n");
+        terminal_writestring("usage: kill [-INT|-TERM|-KILL|-<num>] <ppid>\n");
         return;
     }
-    int ppid = (int)parse_uint(args);
+
+    const char* p = args;
+    while (*p == ' ') p++;
+
+    char tok1[24];
+    char tok2[24];
+    size_t n1 = copy_token(p, tok1, sizeof(tok1));
+    if (n1 == 0) {
+        terminal_writestring("usage: kill [-INT|-TERM|-KILL|-<num>] <ppid>\n");
+        return;
+    }
+    p += n1;
+    while (*p == ' ') p++;
+
+    int sig = KSIGKILL;
+    const char* ppid_tok = tok1;
+    if (tok1[0] == '-') {
+        sig = shell_parse_signal_token(tok1);
+        if (sig <= 0) {
+            terminal_writestring("kill: invalid signal (use INT, TERM, KILL, CHLD, or number)\n");
+            return;
+        }
+
+        size_t n2 = copy_token(p, tok2, sizeof(tok2));
+        if (n2 == 0) {
+            terminal_writestring("usage: kill [-INT|-TERM|-KILL|-<num>] <ppid>\n");
+            return;
+        }
+        ppid_tok = tok2;
+    }
+
+    if (!is_decimal_token(ppid_tok)) {
+        terminal_writestring("kill: invalid ppid\n");
+        return;
+    }
+
+    int ppid = (int)parse_uint(ppid_tok);
     if (ppid <= 0) {
         terminal_writestring("kill: invalid ppid\n");
         return;
@@ -1460,7 +1519,7 @@ static void cmd_kill(const char* args) {
         if ((int)t->parent_id != ppid) continue;
         if (t->state == TASK_DEAD) continue;
 
-        int rc = task_kill((int)t->id);
+        int rc = signal_send_task((int)t->id, sig);
         if (rc == 0) {
             killed++;
         } else if (rc == -2) {
@@ -1469,12 +1528,15 @@ static void cmd_kill(const char* args) {
     }
 
     if (killed > 0) {
-        terminal_writestring("kill: killed ");
+        terminal_writestring("kill: signaled ");
         char buf[16];
         itoa(killed, buf, 10);
         terminal_writestring(buf);
         terminal_writestring(" task(s) with ppid ");
         itoa(ppid, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" using sig ");
+        itoa(sig, buf, 10);
         terminal_writestring(buf);
         terminal_writestring("\n");
     } else if (refused_idle) {
