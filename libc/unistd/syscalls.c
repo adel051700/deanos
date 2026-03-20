@@ -1,8 +1,21 @@
 #include <fcntl.h>
 #include <kernel/syscall.h>
+#include <signal.h>
 #include <stddef.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+__attribute__((naked, noreturn)) static void __signal_restorer(void) {
+    __asm__ volatile(
+        "add $4, %%esp\n"
+        "mov %[nr], %%eax\n"
+        "int $0x80\n"
+        "1: hlt\n"
+        "jmp 1b\n"
+        :
+        : [nr] "i" (SYS_sigreturn)
+        : "eax", "memory");
+}
 
 static inline long syscall1(unsigned num, unsigned a1) {
     long ret;
@@ -66,8 +79,28 @@ int getppid(void) {
     return (int)syscall1(SYS_getppid, 0);
 }
 
-int kill(int pid) {
-    return (int)syscall1(SYS_kill, (unsigned)pid);
+int kill(int pid, int sig) {
+    return (int)syscall2(SYS_kill, (unsigned)pid, (unsigned)sig);
+}
+
+int sigaction(int signum, const struct sigaction* act, struct sigaction* oldact) {
+    struct sigaction tmp;
+    const struct sigaction* use_act = act;
+
+    if (act && act->sa_handler != SIG_DFL && act->sa_handler != SIG_IGN && act->sa_restorer == 0) {
+        tmp = *act;
+        tmp.sa_restorer = __signal_restorer;
+        use_act = &tmp;
+    }
+
+    return (int)syscall3(SYS_sigaction, (unsigned)signum, (unsigned)use_act, (unsigned)oldact);
+}
+
+sighandler_t signal(int signum, sighandler_t handler) {
+    return (sighandler_t)syscall3(SYS_signal,
+                                  (unsigned)signum,
+                                  (unsigned)handler,
+                                  (unsigned)__signal_restorer);
 }
 
 int fork(void) {

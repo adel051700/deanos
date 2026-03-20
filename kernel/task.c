@@ -31,6 +31,14 @@ static int      g_current    = -1;
 static uint32_t g_next_id    = 1;
 static uint64_t g_sched_ticks = 0;
 
+static void task_signal_table_init(task_t* t) {
+    if (!t) return;
+    for (uint32_t i = 0; i <= KSIG_MAX; ++i) {
+        t->signal_handlers[i] = KSIG_DFL;
+        t->signal_restorers[i] = 0;
+    }
+}
+
 static void task_fd_table_init(task_t* t) {
     if (!t) return;
     for (int i = 0; i < TASK_MAX_FDS; ++i) {
@@ -201,6 +209,8 @@ static void mark_task_dead_index(uint32_t idx, uint32_t status, uint32_t term_si
     g_tasks[idx].exit_status = status;
     g_tasks[idx].term_signal = term_sig;
     g_tasks[idx].pending_signals = 0;
+    g_tasks[idx].signal_in_handler = 0;
+    g_tasks[idx].signal_active = 0;
     g_tasks[idx].wait_collected = 0;
     g_tasks[idx].state = TASK_DEAD;
 
@@ -357,6 +367,9 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->exit_status = 0;
     t->pending_signals = 0;
     t->ignored_signals = 0;
+    task_signal_table_init(t);
+    t->signal_in_handler = 0;
+    t->signal_active = 0;
     t->term_signal = 0;
     t->wait_collected = 0;
     t->mm_id = 1;
@@ -453,6 +466,10 @@ int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
     task_t* child = &g_tasks[child_idx];
     child->parent_id = parent->id;
     child->ignored_signals = parent->ignored_signals;
+    for (uint32_t i = 0; i <= KSIG_MAX; ++i) {
+        child->signal_handlers[i] = parent->signal_handlers[i];
+        child->signal_restorers[i] = parent->signal_restorers[i];
+    }
 
     uint32_t child_mm_id = parent->mm_id;
     uint32_t child_mm_flags = parent->mm_flags;
@@ -522,8 +539,22 @@ int task_send_signal(int pid, int sig) {
     uint32_t bit = KSIG_BIT(sig);
     t->pending_signals |= bit;
 
-    if (t->ignored_signals & bit) {
+    uintptr_t disposition = KSIG_DFL;
+    if (sig > 0 && sig <= KSIG_MAX) {
+        disposition = t->signal_handlers[(uint32_t)sig];
+    }
+
+    if ((t->ignored_signals & bit) || disposition == KSIG_IGN) {
         t->pending_signals &= ~bit;
+        return 0;
+    }
+
+    if (disposition > KSIG_IGN) {
+        if (t->state == TASK_BLOCKED) {
+            t->state = TASK_READY;
+            t->wake_tick = 0;
+            t->wait_task_id = 0;
+        }
         return 0;
     }
 
@@ -570,9 +601,17 @@ int task_set_signal_ignored(int sig, int ignored) {
     uint32_t bit = KSIG_BIT(sig);
     if (ignored) {
         g_tasks[g_current].ignored_signals |= bit;
+        if (sig > 0 && sig <= KSIG_MAX) {
+            g_tasks[g_current].signal_handlers[(uint32_t)sig] = KSIG_IGN;
+            g_tasks[g_current].signal_restorers[(uint32_t)sig] = 0;
+        }
         g_tasks[g_current].pending_signals &= ~bit;
     } else {
         g_tasks[g_current].ignored_signals &= ~bit;
+        if (sig > 0 && sig <= KSIG_MAX && g_tasks[g_current].signal_handlers[(uint32_t)sig] == KSIG_IGN) {
+            g_tasks[g_current].signal_handlers[(uint32_t)sig] = KSIG_DFL;
+            g_tasks[g_current].signal_restorers[(uint32_t)sig] = 0;
+        }
     }
     return 0;
 }

@@ -2,6 +2,7 @@
 #include "include/kernel/idt.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/irq.h"
+#include "include/kernel/signal.h"
 #include <stdio.h>
 
 static isr_t interrupt_handlers[256] = {0};
@@ -41,5 +42,9 @@ void isr_handler(struct registers* regs) {
     // Hardware IRQs (PIC remapped to 32..47)
     if (regs->int_no >= 32 && regs->int_no < 48) {
         irq_dispatch((uint8_t)(regs->int_no - 32), regs);
+    }
+
+    if ((regs->cs & 0x3u) == 0x3u) {
+        (void)signal_dispatch_current(regs);
     }
 }

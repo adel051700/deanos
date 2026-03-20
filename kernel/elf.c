@@ -134,6 +134,8 @@ extern const uint8_t _binary_build_user_waitstressbg_elf_start[];
 extern const uint8_t _binary_build_user_waitstressbg_elf_end[];
 extern const uint8_t _binary_build_user_catfd_elf_start[];
 extern const uint8_t _binary_build_user_catfd_elf_end[];
+extern const uint8_t _binary_build_user_sigtest_elf_start[];
+extern const uint8_t _binary_build_user_sigtest_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -323,4 +325,10 @@ void elf_install_test_programs(void) {
     if (!catfd) return;
     uint32_t catfd_size = (uint32_t)(_binary_build_user_catfd_elf_end - _binary_build_user_catfd_elf_start);
     vfs_write(catfd, 0, catfd_size, _binary_build_user_catfd_elf_start);
+
+    vfs_create(bin, "sigtest", VFS_FILE);
+    vfs_node_t* sigtest = vfs_finddir(bin, "sigtest");
+    if (!sigtest) return;
+    uint32_t sigtest_size = (uint32_t)(_binary_build_user_sigtest_elf_end - _binary_build_user_sigtest_elf_start);
+    vfs_write(sigtest, 0, sigtest_size, _binary_build_user_sigtest_elf_start);
 }

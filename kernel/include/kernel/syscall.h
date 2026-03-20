@@ -28,6 +28,9 @@ enum {
     SYS_setsid = 21,
     SYS_tcsetpgrp = 22,
     SYS_tcgetpgrp = 23,
+    SYS_sigaction = 24,
+    SYS_signal = 25,
+    SYS_sigreturn = 26,
 };
 
 /* Install syscall handlers on vectors 0x80 and 0x81 */

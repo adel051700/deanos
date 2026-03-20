@@ -92,8 +92,28 @@ static long sys_getppid(void) {
     return (long)task_current_ppid();
 }
 
-static long sys_kill(uint32_t pid) {
-    return (long)signal_send_task((int)pid, KSIGKILL);
+static long sys_kill(int32_t pid, int32_t sig) {
+    return (long)signal_send_task((int)pid, (int)sig);
+}
+
+static long sys_sigaction(int32_t sig, const ksigaction_t* act, ksigaction_t* oldact) {
+    return (long)signal_set_action_current((int)sig, act, oldact);
+}
+
+static long sys_signal(int32_t sig, uintptr_t handler, uintptr_t restorer) {
+    ksigaction_t oldact;
+    ksigaction_t newact;
+    newact.sa_handler = handler;
+    newact.sa_flags = 0;
+    newact.sa_mask = 0;
+    newact.sa_restorer = restorer;
+
+    if (signal_set_action_current((int)sig, &newact, &oldact) < 0) return -1;
+    return (long)oldact.sa_handler;
+}
+
+static long sys_sigreturn(struct registers* r) {
+    return (long)signal_sigreturn_current(r);
 }
 
 static long sys_fork(struct registers* r) {
@@ -237,7 +257,7 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_sleep_ms: return sys_sleep_ms(a1);
         case SYS_getpid: return sys_getpid();
         case SYS_getppid: return sys_getppid();
-        case SYS_kill: return sys_kill(a1);
+        case SYS_kill: return sys_kill((int32_t)a1, (int32_t)a2);
         case SYS_fork: return sys_fork(r);
         case SYS_execve: return sys_execve((const char*)a1, r);
         case SYS_waitpid: return sys_waitpid((int32_t)a1, (int32_t*)a2, a3);
@@ -248,6 +268,9 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_setsid: return sys_setsid();
         case SYS_tcsetpgrp: return sys_tcsetpgrp(a1, (int32_t)a2);
         case SYS_tcgetpgrp: return sys_tcgetpgrp(a1);
+        case SYS_sigaction: return sys_sigaction((int32_t)a1, (const ksigaction_t*)a2, (ksigaction_t*)a3);
+        case SYS_signal: return sys_signal((int32_t)a1, (uintptr_t)a2, (uintptr_t)a3);
+        case SYS_sigreturn: return sys_sigreturn(r);
         default:        return -38; /* ENOSYS */
     }
 }
