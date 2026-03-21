@@ -130,7 +130,7 @@ struct shell_command {
 static const struct shell_command commands[] = {
     {"help",   cmd_help,   "List available commands"},
     {"echo",   cmd_echo,   "Echo text"},
-    {"color",  cmd_color,  "Change text color"},
+    {"color",  cmd_color,  "Set colors: color <text> | color <background> <text>"},
     {"cls",    cmd_cls,    "Clear screen"},
     {"about",  cmd_about,  "About DeanOS"},
     {"dean",   cmd_dean,   "Show DeanOS banner"},
@@ -205,11 +205,13 @@ static void shell_print_prompt(void) {
 
 static void shell_clear_screen(int redraw_input) {
     uint32_t cursor_color = terminal_get_color();
+    uint32_t bg_color = terminal_get_background();
     int ctl_sid = terminal_get_controlling_sid();
     int fg_pgid = terminal_get_foreground_pgid();
 
     terminal_initialize();
     terminal_enable_cursor();
+    terminal_setbackground(bg_color);
     terminal_setcolor(cursor_color);
 
     if (ctl_sid > 0) {
@@ -856,24 +858,101 @@ static void cmd_echo(const char* args) {
     terminal_writestring("\n");
 }
 
+static int shell_hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return (int)(c - '0');
+    if (c >= 'a' && c <= 'f') return 10 + (int)(c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (int)(c - 'A');
+    return -1;
+}
+
+static int shell_parse_color_token(const char* token, uint32_t* out_color) {
+    if (!token || !out_color || *token == '\0') return 0;
+
+    if (strcmp(token, "black") == 0) { *out_color = 0x000000; return 1; }
+    if (strcmp(token, "white") == 0) { *out_color = 0xFFFFFF; return 1; }
+    if (strcmp(token, "red") == 0) { *out_color = 0xFF0000; return 1; }
+    if (strcmp(token, "green") == 0) { *out_color = 0x00FF00; return 1; }
+    if (strcmp(token, "blue") == 0) { *out_color = 0x0000FF; return 1; }
+    if (strcmp(token, "yellow") == 0) { *out_color = 0xFFFF00; return 1; }
+    if (strcmp(token, "cyan") == 0) { *out_color = 0x00FFFF; return 1; }
+    if (strcmp(token, "magenta") == 0) { *out_color = 0xFF00FF; return 1; }
+    if (strcmp(token, "gray") == 0 || strcmp(token, "grey") == 0) { *out_color = 0x808080; return 1; }
+
+    const char* p = token;
+    if (*p == '#') {
+        p++;
+    } else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+
+    uint32_t value = 0;
+    for (int i = 0; i < 6; ++i) {
+        int nib = shell_hex_nibble(p[i]);
+        if (nib < 0) return 0;
+        value = (value << 4) | (uint32_t)nib;
+    }
+    if (p[6] != '\0') return 0;
+
+    *out_color = value;
+    return 1;
+}
+
 /**
- * Color command - change text color
+ * Color command - change background/text colors
  */
 static void cmd_color(const char* args) {
-    if (strcmp(args, "red") == 0) {
-        terminal_setcolor(0xFF0000);
-        terminal_writestring("Color changed to red\n");
-    } else if (strcmp(args, "green") == 0) {
-        terminal_setcolor(0x00FF00);
-        terminal_writestring("Color changed to green\n");
-    } else if (strcmp(args, "blue") == 0) {
-        terminal_setcolor(0x0000FF);
-        terminal_writestring("Color changed to blue\n");
-    } else if (strcmp(args, "white") == 0) {
-        terminal_setcolor(0xFFFFFF);
-        terminal_writestring("Color changed to white\n");
+    const char* p = args;
+    char tok1[24];
+    char tok2[24];
+    uint32_t bg = terminal_get_background();
+    uint32_t fg = 0;
+    int has_bg_arg = 0;
+
+    while (p && *p == ' ') p++;
+    size_t n1 = copy_token(p, tok1, sizeof(tok1));
+    if (n1 == 0) {
+        terminal_writestring("Usage: color <text> | color <background> <text>\n");
+        terminal_writestring("Colors: black white red green blue yellow cyan magenta gray\n");
+        terminal_writestring("Hex: #RRGGBB or 0xRRGGBB\n");
+        return;
+    }
+
+    p += n1;
+    while (*p == ' ') p++;
+
+    size_t n2 = copy_token(p, tok2, sizeof(tok2));
+    if (n2 == 0) {
+        if (!shell_parse_color_token(tok1, &fg)) {
+            terminal_writestring("color: invalid text color\n");
+            return;
+        }
     } else {
-        terminal_writestring("Usage: color [red|green|blue|white]\n");
+        has_bg_arg = 1;
+        p += n2;
+        while (*p == ' ') p++;
+        if (*p != '\0') {
+            terminal_writestring("Usage: color <text> | color <background> <text>\n");
+            return;
+        }
+        if (!shell_parse_color_token(tok1, &bg)) {
+            terminal_writestring("color: invalid background color\n");
+            return;
+        }
+        if (!shell_parse_color_token(tok2, &fg)) {
+            terminal_writestring("color: invalid text color\n");
+            return;
+        }
+    }
+
+    if (has_bg_arg) {
+        terminal_setbackground(bg);
+    }
+    terminal_setcolor(fg);
+
+    if (has_bg_arg) {
+        terminal_writestring("Background and text colors updated\n");
+    } else {
+        terminal_writestring("Text color updated\n");
     }
 }
 
@@ -893,7 +972,7 @@ static void cmd_about(const char* args) {
     
     terminal_writestring("DeanOS - A minimal operating system\n");
     terminal_writestring("Created as a learning project\n");
-    terminal_writestring("Version 0.5\n");
+    terminal_writestring("Version 0.6\n");
 }
 
 static void cmd_dean(const char* args) {

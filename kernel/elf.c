@@ -158,6 +158,8 @@ extern const uint8_t _binary_build_user_sigtest_elf_start[];
 extern const uint8_t _binary_build_user_sigtest_elf_end[];
 extern const uint8_t _binary_build_user_mmaptest_elf_start[];
 extern const uint8_t _binary_build_user_mmaptest_elf_end[];
+extern const uint8_t _binary_build_user_shmtest_elf_start[];
+extern const uint8_t _binary_build_user_shmtest_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -419,4 +421,10 @@ void elf_install_test_programs(void) {
     if (!mmaptest) return;
     uint32_t mmaptest_size = (uint32_t)(_binary_build_user_mmaptest_elf_end - _binary_build_user_mmaptest_elf_start);
     vfs_write(mmaptest, 0, mmaptest_size, _binary_build_user_mmaptest_elf_start);
+
+    vfs_create(bin, "shmtest", VFS_FILE);
+    vfs_node_t* shmtest = vfs_finddir(bin, "shmtest");
+    if (!shmtest) return;
+    uint32_t shmtest_size = (uint32_t)(_binary_build_user_shmtest_elf_end - _binary_build_user_shmtest_elf_start);
+    vfs_write(shmtest, 0, shmtest_size, _binary_build_user_shmtest_elf_start);
 }

@@ -11,6 +11,12 @@
 #define TASK_MAX_FDS    64
 #define TASK_ELF_LAZY_MAX 16
 #define TASK_MMAP_MAX   32
+#define TASK_SHM_MAX_OBJECTS 16
+#define TASK_SHM_MAX_PAGES   64
+
+#define TASK_MMAP_BACKING_ANON 0u
+#define TASK_MMAP_BACKING_FILE 1u
+#define TASK_MMAP_BACKING_SHM  2u
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,7 +66,9 @@ typedef struct task_mmap_region {
     uintptr_t        end;
     uint32_t         prot;
     uint32_t         flags;
+    uint32_t         backing;
     uint32_t         file_offset;
+    int32_t          shm_id;
     struct vfs_node* file_node;
     uint8_t          in_use;
 } task_mmap_region_t;
@@ -190,6 +198,10 @@ int task_adopt_elf_lazy_layout(int task_id,
 /* mmap()/munmap() primitives for current task. */
 int task_mmap_current(const syscall_mmap_args_t* args, uintptr_t* out_addr);
 int task_munmap_current(uintptr_t addr, uint32_t length);
+int task_shm_open_current(int32_t key, uint32_t size, uint32_t flags);
+int task_shm_unlink_current(int32_t key);
+int task_shm_get_frame(int32_t shm_id, uint32_t page_index, uintptr_t* out_frame, uint32_t* out_size);
+int task_is_shared_page(uintptr_t page);
 
 /* Fork groundwork: clone current task metadata and user return context. */
 int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags);

@@ -16,6 +16,7 @@ extern "C" {
 #define MAP_PRIVATE   MMAP_MAP_PRIVATE
 #define MAP_FIXED     MMAP_MAP_FIXED
 #define MAP_ANONYMOUS MMAP_MAP_ANONYMOUS
+#define MAP_SHM       MMAP_MAP_SHM
 
 #define MAP_FAILED ((void*)(-1))
 

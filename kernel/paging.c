@@ -303,18 +303,35 @@ static int handle_mmap_fault(uintptr_t fault_addr, uint32_t err_code) {
     }
     if (!reg) return 0;
 
-    uintptr_t pa = phys_alloc_frame();
-    if (!pa) return -1;
+    uintptr_t pa = 0;
+    int shared_frame = 0;
+
+    if (reg->backing == TASK_MMAP_BACKING_SHM) {
+        uintptr_t page_off = page - reg->start;
+        uint32_t shm_page = (reg->file_offset + (uint32_t)page_off) >> 12;
+        if (task_shm_get_frame(reg->shm_id, shm_page, &pa, NULL) < 0) return -1;
+        pmm_frame_ref(pa);
+        shared_frame = 1;
+    } else {
+        pa = phys_alloc_frame();
+        if (!pa) return -1;
+    }
 
     uint32_t map_flags = PTE_P | PTE_U | PTE_W;
     if (map_page(page, pa, map_flags) < 0) {
-        phys_free_frame(pa);
+        if (shared_frame) {
+            pmm_frame_unref(pa);
+        } else {
+            phys_free_frame(pa);
+        }
         return -1;
     }
 
-    memset((void*)page, 0, PAGE_SIZE);
+    if (!shared_frame) {
+        memset((void*)page, 0, PAGE_SIZE);
+    }
 
-    if (!(reg->flags & MMAP_MAP_ANONYMOUS) && reg->file_node) {
+    if (reg->backing == TASK_MMAP_BACKING_FILE && reg->file_node) {
         uint32_t page_off = (uint32_t)(page - reg->start);
         uint32_t file_off = reg->file_offset + page_off;
         uint32_t max_in_region = (uint32_t)(reg->end - page);
@@ -598,7 +615,10 @@ int paging_fork_current_cow(uint32_t* out_child_cr3_phys) {
             if ((pte & PTE_P) == 0u) continue;
             if ((pte & PTE_U) == 0u) continue;
 
-            if (pte & (PTE_W | PTE_COW)) {
+            uintptr_t vaddr = ((uintptr_t)i << 22) | ((uintptr_t)j << 12);
+            int shared = task_is_shared_page(vaddr);
+
+            if (!shared && (pte & (PTE_W | PTE_COW))) {
                 pte = (pte | PTE_COW) & ~PTE_W;
                 parent_pt[j] = pte;
             }
