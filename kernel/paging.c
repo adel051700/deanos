@@ -2,6 +2,7 @@
 #include "include/kernel/pmm.h"
 #include "../libc/include/string.h"
 #include "include/kernel/interrupt.h"
+#include "include/kernel/task.h"
 #include "include/kernel/tty.h"
 #include "../libc/include/stdio.h"
 
@@ -204,6 +205,66 @@ static int handle_demand_fault(uintptr_t fault_addr, uint32_t err_code) {
     return 1;
 }
 
+static int handle_elf_lazy_fault(uintptr_t fault_addr, uint32_t err_code) {
+    if (err_code & 0x1u) return 0; /* present/protection fault */
+
+    task_t* cur = task_current();
+    if (!cur || !cur->elf_backing || cur->elf_backing_size == 0) return 0;
+
+    uintptr_t page = fault_addr & ~0xFFFu;
+    int matched = 0;
+    int writable = 0;
+    for (uint32_t i = 0; i < cur->elf_region_count && i < TASK_ELF_LAZY_MAX; ++i) {
+        const task_elf_lazy_region_t* reg = &cur->elf_regions[i];
+        if (!reg->in_use) continue;
+        if (page < reg->start || page >= reg->end) continue;
+        matched = 1;
+        if (reg->flags & PAGING_FLAG_WRITE) writable = 1;
+    }
+    if (!matched) return 0;
+
+    uintptr_t pa = phys_alloc_frame();
+    if (!pa) return -1;
+
+    if (map_page(page, pa, PTE_P | PTE_W | PTE_U) < 0) {
+        phys_free_frame(pa);
+        return -1;
+    }
+
+    memset((void*)page, 0, PAGE_SIZE);
+
+    for (uint32_t i = 0; i < cur->elf_region_count && i < TASK_ELF_LAZY_MAX; ++i) {
+        const task_elf_lazy_region_t* reg = &cur->elf_regions[i];
+        if (!reg->in_use) continue;
+        if (page < reg->start || page >= reg->end) continue;
+
+        uintptr_t copy_start = page;
+        if (copy_start < reg->file_start) copy_start = reg->file_start;
+        uintptr_t copy_end = page + PAGE_SIZE;
+        if (copy_end > reg->file_end) copy_end = reg->file_end;
+
+        if (copy_end > copy_start) {
+            uint32_t copy_len = (uint32_t)(copy_end - copy_start);
+            uint32_t file_off = reg->file_offset + (uint32_t)(copy_start - reg->file_start);
+            if (file_off + copy_len > cur->elf_backing_size) return -1;
+            memcpy((void*)copy_start, cur->elf_backing + file_off, copy_len);
+        }
+    }
+
+    if (!writable) {
+        uint32_t pd = (page >> 22) & 0x3FFu;
+        uint32_t ti = (page >> 12) & 0x3FFu;
+        uint32_t* cur_pd = pd_from_phys(g_current_cr3);
+        uint32_t* pt = get_pt_from_pd(cur_pd, pd);
+        if (!pt) return -1;
+        pt[ti] &= ~PTE_W;
+        invlpg((void*)page);
+    }
+
+    g_demand_fault_count++;
+    return 1;
+}
+
 static int handle_cow_fault(uintptr_t fault_addr, uint32_t err_code) {
     if ((err_code & 0x1u) == 0u) return 0;  /* not-present faults are not COW */
     if ((err_code & 0x2u) == 0u) return 0;  /* COW triggers on write faults */
@@ -249,6 +310,7 @@ static int handle_cow_fault(uintptr_t fault_addr, uint32_t err_code) {
 static void page_fault_handler(struct registers* r) {
     uint32_t fault_addr;
     __asm__ __volatile__("mov %%cr2, %0" : "=r"(fault_addr));
+    if (handle_elf_lazy_fault(fault_addr, r->err_code) > 0) return;
     if (handle_demand_fault(fault_addr, r->err_code) > 0) return;
     if (handle_cow_fault(fault_addr, r->err_code) > 0) return;
 

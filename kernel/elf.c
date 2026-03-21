@@ -54,28 +54,36 @@ int elf_validate(const uint8_t* data, uint32_t size) {
     if (eh->e_phnum  == 0)                    return -7;
     return 0;
 }
-static int elf_load_segments(const uint8_t* data, uint32_t size,
-                             const Elf32_Ehdr* eh)
-{
+static int elf_collect_lazy_regions(const uint8_t* data,
+                                    uint32_t size,
+                                    const Elf32_Ehdr* eh,
+                                    task_elf_lazy_region_t* regions,
+                                    uint32_t* out_count) {
+    if (!data || !eh || !regions || !out_count) return -1;
+    *out_count = 0;
+
     uint32_t ph_off = eh->e_phoff;
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
-        if (ph_off + sizeof(Elf32_Phdr) > size) return -1;
+        if (ph_off + sizeof(Elf32_Phdr) > size) return -2;
         const Elf32_Phdr* ph = (const Elf32_Phdr*)(data + ph_off);
         if (ph->p_type == PT_LOAD && ph->p_memsz > 0) {
-            uintptr_t seg_start = ph->p_vaddr & ~0xFFFu;
-            uintptr_t seg_end   = (ph->p_vaddr + ph->p_memsz + 0xFFF) & ~0xFFFu;
-            for (uintptr_t va = seg_start; va < seg_end; va += 4096) {
-                if (paging_map_user(va) < 0) return -2;
-            }
-            if (ph->p_filesz > 0) {
-                if (ph->p_offset + ph->p_filesz > size) return -3;
-                memcpy((void*)(uintptr_t)ph->p_vaddr,
-                       data + ph->p_offset, ph->p_filesz);
-            }
-            if (ph->p_memsz > ph->p_filesz) {
-                memset((void*)(uintptr_t)(ph->p_vaddr + ph->p_filesz),
-                       0, ph->p_memsz - ph->p_filesz);
-            }
+            if (ph->p_filesz > ph->p_memsz) return -3;
+            if (ph->p_offset + ph->p_filesz > size) return -4;
+            if (*out_count >= TASK_ELF_LAZY_MAX) return -5;
+
+            uintptr_t vaddr = (uintptr_t)ph->p_vaddr;
+            uintptr_t seg_start = vaddr & ~0xFFFu;
+            uintptr_t seg_end = (vaddr + (uintptr_t)ph->p_memsz + 0xFFFu) & ~0xFFFu;
+
+            task_elf_lazy_region_t* reg = &regions[*out_count];
+            reg->start = seg_start;
+            reg->end = seg_end;
+            reg->file_start = vaddr;
+            reg->file_end = vaddr + (uintptr_t)ph->p_filesz;
+            reg->file_offset = (uint32_t)ph->p_offset;
+            reg->flags = PAGING_FLAG_USER | ((ph->p_flags & PF_W) ? PAGING_FLAG_WRITE : 0u);
+            reg->in_use = 1;
+            (*out_count)++;
         }
         ph_off += eh->e_phentsize;
     }
@@ -174,6 +182,12 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd)
 
     const Elf32_Ehdr* eh = (const Elf32_Ehdr*)buf;
     uint32_t entry = eh->e_entry;
+    task_elf_lazy_region_t lazy_regions[TASK_ELF_LAZY_MAX];
+    uint32_t lazy_region_count = 0;
+    if (elf_collect_lazy_regions(buf, size, eh, lazy_regions, &lazy_region_count) < 0) {
+        kfree(buf);
+        return -6;
+    }
     const char* name = path_basename(path);
     int tid = task_create_named(elf_task_wrapper, 0, TASK_DEFAULT_QUANTUM, name);
     if (tid < 0) { kfree(buf); return tid; }
@@ -188,14 +202,6 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd)
     uint32_t old_mm = paging_current_cr3();
     paging_switch_mm(new_mm);
 
-    if (elf_load_segments(buf, size, eh) < 0) {
-        paging_switch_mm(old_mm);
-        paging_release_mm(new_mm);
-        task_kill(tid);
-        kfree(buf);
-        return -6;
-    }
-
     uintptr_t ustk = 0;
     if (elf_map_user_stack(&ustk) < 0) {
         paging_switch_mm(old_mm);
@@ -206,6 +212,12 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd)
     }
 
     paging_switch_mm(old_mm);
+    if (task_adopt_elf_lazy_layout(tid, buf, size, lazy_regions, lazy_region_count) < 0) {
+        paging_release_mm(new_mm);
+        task_kill(tid);
+        kfree(buf);
+        return -11;
+    }
     if (task_assign_mm(tid, new_mm) < 0) {
         paging_release_mm(new_mm);
         task_kill(tid);
@@ -214,7 +226,7 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd)
     }
     /* task_assign_mm retains the MM; drop this local builder reference. */
     paging_release_mm(new_mm);
-    kfree(buf);
+    buf = NULL;
 
     if (elf_launch_slot_set(tid, entry, ustk) < 0) {
         task_kill(tid);
@@ -258,6 +270,12 @@ int elf_execve_current(const char* path, struct registers* r) {
     }
 
     const Elf32_Ehdr* eh = (const Elf32_Ehdr*)buf;
+    task_elf_lazy_region_t lazy_regions[TASK_ELF_LAZY_MAX];
+    uint32_t lazy_region_count = 0;
+    if (elf_collect_lazy_regions(buf, size, eh, lazy_regions, &lazy_region_count) < 0) {
+        kfree(buf);
+        return -6;
+    }
 
     uint32_t new_mm = 0;
     if (paging_create_mm(&new_mm) < 0) {
@@ -267,13 +285,6 @@ int elf_execve_current(const char* path, struct registers* r) {
 
     uint32_t old_mm = paging_current_cr3();
     paging_switch_mm(new_mm);
-
-    if (elf_load_segments(buf, size, eh) < 0) {
-        paging_switch_mm(old_mm);
-        paging_release_mm(new_mm);
-        kfree(buf);
-        return -6;
-    }
 
     uintptr_t ustk = 0;
     if (elf_map_user_stack(&ustk) < 0) {
@@ -295,13 +306,19 @@ int elf_execve_current(const char* path, struct registers* r) {
         return -8;
     }
 
+    int self_id = task_current_id();
+    if (task_adopt_elf_lazy_layout(self_id, buf, size, lazy_regions, lazy_region_count) < 0) {
+        kfree(buf);
+        return -9;
+    }
+
     /* POSIX-like behavior: apply CLOEXEC only on successful image replacement. */
     task_close_cloexec_fds_current();
 
     const char* name = path_basename(path);
     if (name) task_set_current_name(name);
 
-    kfree(buf);
+    buf = NULL;
     return 0;
 }
 /*

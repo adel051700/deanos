@@ -212,9 +212,12 @@ void mouse_initialize(void) {
     }
     outb(PS2_DATA_PORT, config);
 
-    if (!mouse_send_cmd_expect_ack(0xF6)) {
-        klog("mouse: set defaults failed");
-        return;
+    uint32_t set_defaults_retries = 0;
+    while (!mouse_send_cmd_expect_ack(0xF6)) {
+        if (set_defaults_retries == 0 || ((set_defaults_retries + 1u) % 1000u) == 0) {
+            klog("mouse: set defaults failed, retrying");
+        }
+        set_defaults_retries++;
     }
 
     if (!mouse_send_cmd_expect_ack(0xF4)) {

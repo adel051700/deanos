@@ -8,6 +8,7 @@
 #define TASK_WAIT_NOHANG 0x1u
 #define TASK_FD_CLOEXEC 0x1u
 #define TASK_MAX_FDS    64
+#define TASK_ELF_LAZY_MAX 16
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +42,16 @@ typedef struct task_fd {
     uint32_t         fd_flags;
     uint8_t          in_use;
 } task_fd_t;
+
+typedef struct task_elf_lazy_region {
+    uintptr_t start;
+    uintptr_t end;
+    uintptr_t file_start;
+    uintptr_t file_end;
+    uint32_t  file_offset;
+    uint32_t  flags;
+    uint8_t   in_use;
+} task_elf_lazy_region_t;
 
 typedef struct task {
     uint32_t        id;
@@ -81,6 +92,12 @@ typedef struct task {
 
     /* Per-process file descriptor table. */
     task_fd_t       fds[TASK_MAX_FDS];
+
+    /* ELF-backed lazy user mappings (demand-loaded in page-fault handler). */
+    uint8_t*        elf_backing;
+    uint32_t        elf_backing_size;
+    uint32_t        elf_region_count;
+    task_elf_lazy_region_t elf_regions[TASK_ELF_LAZY_MAX];
 
     /* Fork return context for child first run. */
     uint32_t        fork_user_eip;
@@ -140,6 +157,20 @@ void task_close_cloexec_fds_current(void);
 int task_clone_fd_to_task(int task_id, int target_fd, int src_fd);
 int task_assign_mm(int task_id, uint32_t mm_cr3);
 int task_replace_current_mm(uint32_t mm_cr3);
+
+/* Install/replace per-task ELF lazy mappings and backing image copy. */
+int task_set_elf_lazy_layout(int task_id,
+                             const uint8_t* image,
+                             uint32_t image_size,
+                             const task_elf_lazy_region_t* regions,
+                             uint32_t region_count);
+
+/* Same as task_set_elf_lazy_layout, but transfers image ownership to the task. */
+int task_adopt_elf_lazy_layout(int task_id,
+                               uint8_t* image,
+                               uint32_t image_size,
+                               const task_elf_lazy_region_t* regions,
+                               uint32_t region_count);
 
 /* Fork groundwork: clone current task metadata and user return context. */
 int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags);

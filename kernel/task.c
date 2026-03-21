@@ -17,6 +17,7 @@
 #include "include/kernel/tss.h"
 #include "include/kernel/usermode.h"
 #include "include/kernel/vfs.h"
+#include "../libc/include/string.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -100,6 +101,72 @@ static uint32_t init_task_id(void);
 static int find_task_index_by_id(int id);
 static void reparent_children(uint32_t old_parent_id, uint32_t new_parent_id);
 static void release_task_mm(task_t* t);
+
+static void task_lazy_elf_init(task_t* t) {
+    if (!t) return;
+    t->elf_backing = NULL;
+    t->elf_backing_size = 0;
+    t->elf_region_count = 0;
+    for (uint32_t i = 0; i < TASK_ELF_LAZY_MAX; ++i) {
+        t->elf_regions[i].start = 0;
+        t->elf_regions[i].end = 0;
+        t->elf_regions[i].file_start = 0;
+        t->elf_regions[i].file_end = 0;
+        t->elf_regions[i].file_offset = 0;
+        t->elf_regions[i].flags = 0;
+        t->elf_regions[i].in_use = 0;
+    }
+}
+
+static void task_lazy_elf_clear(task_t* t) {
+    if (!t) return;
+    if (t->elf_backing) {
+        kfree(t->elf_backing);
+        t->elf_backing = NULL;
+    }
+    t->elf_backing_size = 0;
+    t->elf_region_count = 0;
+    for (uint32_t i = 0; i < TASK_ELF_LAZY_MAX; ++i) {
+        t->elf_regions[i].in_use = 0;
+    }
+}
+
+static int task_lazy_elf_install(task_t* t,
+                                 const uint8_t* image,
+                                 uint32_t image_size,
+                                 const task_elf_lazy_region_t* regions,
+                                 uint32_t region_count,
+                                 int adopt_image) {
+    if (!t) return -1;
+    if (!regions && region_count > 0) return -1;
+    if (region_count > TASK_ELF_LAZY_MAX) return -1;
+    if (image_size > 0 && !image) return -1;
+
+    uint8_t* backing_copy = NULL;
+    if (image_size > 0) {
+        if (adopt_image) {
+            backing_copy = (uint8_t*)image;
+        } else {
+            backing_copy = (uint8_t*)kmalloc(image_size);
+            if (!backing_copy) return -1;
+            memcpy(backing_copy, image, image_size);
+        }
+    }
+
+    task_lazy_elf_clear(t);
+    t->elf_backing = backing_copy;
+    t->elf_backing_size = image_size;
+    t->elf_region_count = region_count;
+
+    for (uint32_t i = 0; i < TASK_ELF_LAZY_MAX; ++i) {
+        t->elf_regions[i].in_use = 0;
+    }
+    for (uint32_t i = 0; i < region_count; ++i) {
+        t->elf_regions[i] = regions[i];
+        t->elf_regions[i].in_use = 1;
+    }
+    return 0;
+}
 
 static void idle_thread(void) {
     for (;;)
@@ -202,6 +269,7 @@ static void mark_task_dead_index(uint32_t idx, uint32_t status, uint32_t term_si
     uint32_t parent_id = g_tasks[idx].parent_id;
     reparent_children(dying_id, init_task_id());
     task_fd_table_close_all(&g_tasks[idx]);
+    task_lazy_elf_clear(&g_tasks[idx]);
     release_task_mm(&g_tasks[idx]);
 
     g_tasks[idx].wake_tick = 0;
@@ -392,6 +460,7 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->fork_user_eflags = 0;
     t->fork_resume_user = 0;
     task_fd_table_init(t);
+    task_lazy_elf_init(t);
 
     /* Copy name (or generate one). */
     if (name) {
@@ -489,6 +558,17 @@ int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
         release_task_mm(child);
         child->state = TASK_DEAD;
         return -4;
+    }
+    if (task_lazy_elf_install(child,
+                              parent->elf_backing,
+                              parent->elf_backing_size,
+                              parent->elf_regions,
+                              parent->elf_region_count,
+                              0) < 0) {
+        task_fd_table_close_all(child);
+        release_task_mm(child);
+        child->state = TASK_DEAD;
+        return -5;
     }
     child->fork_user_eip = user_eip;
     child->fork_user_esp = user_esp;
@@ -837,5 +917,27 @@ int task_replace_current_mm(uint32_t mm_cr3) {
     paging_switch_mm(self->mm_cr3);
     paging_release_mm(old);
     return 0;
+}
+
+int task_set_elf_lazy_layout(int task_id,
+                             const uint8_t* image,
+                             uint32_t image_size,
+                             const task_elf_lazy_region_t* regions,
+                             uint32_t region_count) {
+    if (task_id <= 0) return -1;
+    int idx = find_task_index_by_id(task_id);
+    if (idx < 0) return -1;
+    return task_lazy_elf_install(&g_tasks[idx], image, image_size, regions, region_count, 0);
+}
+
+int task_adopt_elf_lazy_layout(int task_id,
+                               uint8_t* image,
+                               uint32_t image_size,
+                               const task_elf_lazy_region_t* regions,
+                               uint32_t region_count) {
+    if (task_id <= 0) return -1;
+    int idx = find_task_index_by_id(task_id);
+    if (idx < 0) return -1;
+    return task_lazy_elf_install(&g_tasks[idx], image, image_size, regions, region_count, 1);
 }
 
