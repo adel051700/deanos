@@ -11,10 +11,27 @@ _start:
     je child_path
 
 parent_path:
+    /* waitpid(-1, &status_word, 0) */
+    movl $16, %eax          /* SYS_waitpid */
+    movl $-1, %ebx
+    movl $status_word, %ecx
+    xorl %edx, %edx
+    int $0x80
+    cmpl $0, %eax
+    jle parent_fail
+
+    movl status_word, %eax
+    cmpl $7, %eax
+    jne parent_fail
+
+    movl shared_word, %eax
+    cmpl $0x11111111, %eax
+    jne parent_fail
+
     movl $1, %eax           /* SYS_write */
     movl $1, %ebx           /* stdout */
-    movl $parent_msg, %ecx
-    movl $parent_msg_len, %edx
+    movl $pass_msg, %ecx
+    movl $pass_msg_len, %edx
     int $0x80
 
     movl $3, %eax           /* SYS_exit */
@@ -22,6 +39,13 @@ parent_path:
     int $0x80
 
 child_path:
+    movl shared_word, %eax
+    cmpl $0x11111111, %eax
+    jne child_fail
+
+    /* Child write should fault-copy this page, not alter parent mapping. */
+    movl $0x22222222, shared_word
+
     movl $1, %eax           /* SYS_write */
     movl $1, %ebx           /* stdout */
     movl $child_msg, %ecx
@@ -29,7 +53,23 @@ child_path:
     int $0x80
 
     movl $3, %eax           /* SYS_exit */
-    xorl %ebx, %ebx
+    movl $7, %ebx
+    int $0x80
+
+child_fail:
+    movl $3, %eax
+    movl $9, %ebx
+    int $0x80
+
+parent_fail:
+    movl $1, %eax
+    movl $1, %ebx
+    movl $fail_msg, %ecx
+    movl $fail_msg_len, %edx
+    int $0x80
+
+    movl $3, %eax
+    movl $1, %ebx
     int $0x80
 
 fork_error:
@@ -44,15 +84,25 @@ fork_error:
     int $0x80
 
 .section .rodata
-parent_msg:
-    .ascii "[forktest] parent path\n"
-.set parent_msg_len, . - parent_msg
-
 child_msg:
-    .ascii "[forktest] child path\n"
+    .ascii "[forktest] child wrote private copy\n"
 .set child_msg_len, . - child_msg
+
+pass_msg:
+    .ascii "[forktest] COW PASS parent value preserved\n"
+.set pass_msg_len, . - pass_msg
+
+fail_msg:
+    .ascii "[forktest] COW FAIL\n"
+.set fail_msg_len, . - fail_msg
 
 err_msg:
     .ascii "[forktest] fork failed\n"
 .set err_msg_len, . - err_msg
+
+.section .data
+shared_word:
+    .long 0x11111111
+status_word:
+    .long 0
 

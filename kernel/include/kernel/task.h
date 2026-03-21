@@ -5,7 +5,6 @@
 #include "signal.h"
 #include "interrupt.h"
 
-#define TASK_MM_SHARED 0x1u
 #define TASK_WAIT_NOHANG 0x1u
 #define TASK_FD_CLOEXEC 0x1u
 #define TASK_MAX_FDS    64
@@ -73,9 +72,8 @@ typedef struct task {
     uintptr_t       kstack_base;
     uint32_t        kstack_size;
 
-    /* Address-space metadata (groundwork for fork/COW). */
-    uint32_t        mm_id;
-    uint32_t        mm_flags;
+    /* Per-process page-directory physical address (CR3 value). */
+    uint32_t        mm_cr3;
 
     /* Session / job-control metadata. */
     uint32_t        sid;
@@ -140,6 +138,8 @@ void task_set_current_name(const char* name);
 /* FD lifecycle helpers used by exec/vfs paths. */
 void task_close_cloexec_fds_current(void);
 int task_clone_fd_to_task(int task_id, int target_fd, int src_fd);
+int task_assign_mm(int task_id, uint32_t mm_cr3);
+int task_replace_current_mm(uint32_t mm_cr3);
 
 /* Fork groundwork: clone current task metadata and user return context. */
 int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags);

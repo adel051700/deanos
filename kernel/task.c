@@ -282,8 +282,8 @@ static void reparent_children(uint32_t old_parent_id, uint32_t new_parent_id) {
 
 static void release_task_mm(task_t* t) {
     if (!t) return;
-    paging_release_mm_metadata(t->mm_id, t->mm_flags);
-    t->mm_flags = 0;
+    paging_release_mm(t->mm_cr3);
+    t->mm_cr3 = 0;
 }
 
 static void wake_blocked_tasks(void) {
@@ -326,6 +326,8 @@ static void do_switch(int prev, int next) {
     /* Update TSS so ring-3 → ring-0 transitions use this task's kernel stack. */
     uint32_t kstack_top = g_tasks[next].kstack_base + g_tasks[next].kstack_size;
     tss_set_kernel_stack(kstack_top);
+
+    paging_switch_mm(g_tasks[next].mm_cr3);
 
     g_current = next;
 
@@ -372,8 +374,12 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->signal_active = 0;
     t->term_signal = 0;
     t->wait_collected = 0;
-    t->mm_id = 1;
-    t->mm_flags = 0;
+    if (g_current >= 0) {
+        t->mm_cr3 = g_tasks[g_current].mm_cr3;
+    } else {
+        t->mm_cr3 = paging_current_cr3();
+    }
+    paging_retain_mm(t->mm_cr3);
     if (g_current >= 0) {
         t->sid = g_tasks[g_current].sid;
         t->pgid = g_tasks[g_current].pgid;
@@ -471,15 +477,14 @@ int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
         child->signal_restorers[i] = parent->signal_restorers[i];
     }
 
-    uint32_t child_mm_id = parent->mm_id;
-    uint32_t child_mm_flags = parent->mm_flags;
-    if (paging_clone_current_mm_metadata(&child_mm_id, &child_mm_flags) < 0) {
+    uint32_t child_mm_cr3 = 0;
+    if (paging_fork_current_cow(&child_mm_cr3) < 0) {
         child->state = TASK_DEAD;
         return -3;
     }
 
-    child->mm_id = child_mm_id;
-    child->mm_flags = child_mm_flags;
+    release_task_mm(child);
+    child->mm_cr3 = child_mm_cr3;
     if (task_fd_table_clone(child, parent) < 0) {
         release_task_mm(child);
         child->state = TASK_DEAD;
@@ -809,6 +814,28 @@ int task_clone_fd_to_task(int task_id, int target_fd, int src_fd) {
         return -1;
     }
 
+    return 0;
+}
+
+int task_assign_mm(int task_id, uint32_t mm_cr3) {
+    if (task_id <= 0 || !mm_cr3) return -1;
+    int idx = find_task_index_by_id(task_id);
+    if (idx < 0) return -1;
+
+    task_t* t = &g_tasks[idx];
+    paging_retain_mm(mm_cr3);
+    paging_release_mm(t->mm_cr3);
+    t->mm_cr3 = mm_cr3 & ~0xFFFu;
+    return 0;
+}
+
+int task_replace_current_mm(uint32_t mm_cr3) {
+    if (g_current < 0 || !mm_cr3) return -1;
+    task_t* self = &g_tasks[g_current];
+    uint32_t old = self->mm_cr3;
+    self->mm_cr3 = mm_cr3 & ~0xFFFu;
+    paging_switch_mm(self->mm_cr3);
+    paging_release_mm(old);
     return 0;
 }
 
