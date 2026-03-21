@@ -10,6 +10,7 @@
 #include "include/kernel/usermode.h"
 #include <string.h>
 #define ELF_USER_STACK_SIZE  (8u * 1024u)
+#define ELF_USER_STACK_BASE  0xBFFF8000u
 
 static const char* path_basename(const char* path) {
     if (!path) return NULL;
@@ -78,6 +79,17 @@ static int elf_load_segments(const uint8_t* data, uint32_t size,
         }
         ph_off += eh->e_phentsize;
     }
+    return 0;
+}
+
+static int elf_map_user_stack(uintptr_t* out_base) {
+    if (!out_base) return -1;
+    uintptr_t base = (uintptr_t)ELF_USER_STACK_BASE;
+    uintptr_t end = base + ELF_USER_STACK_SIZE;
+    for (uintptr_t va = base; va < end; va += 4096u) {
+        if (paging_map_user(va) < 0) return -2;
+    }
+    *out_base = base;
     return 0;
 }
 typedef struct {
@@ -159,22 +171,52 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd)
 
     int err = elf_validate(buf, size);
     if (err < 0) { kfree(buf); return err - 10; }
+
     const Elf32_Ehdr* eh = (const Elf32_Ehdr*)buf;
-    if (elf_load_segments(buf, size, eh) < 0) {
-        kfree(buf); return -6;
-    }
-    void* ustk = kmalloc(ELF_USER_STACK_SIZE);
-    if (!ustk) { kfree(buf); return -7; }
     uint32_t entry = eh->e_entry;
     const char* name = path_basename(path);
     int tid = task_create_named(elf_task_wrapper, 0, TASK_DEFAULT_QUANTUM, name);
-    kfree(buf);
-    if (tid < 0) {
-        kfree(ustk);
-        return tid;
+    if (tid < 0) { kfree(buf); return tid; }
+
+    uint32_t new_mm = 0;
+    if (paging_create_mm(&new_mm) < 0) {
+        task_kill(tid);
+        kfree(buf);
+        return -7;
     }
 
-    if (elf_launch_slot_set(tid, entry, (uintptr_t)ustk) < 0) {
+    uint32_t old_mm = paging_current_cr3();
+    paging_switch_mm(new_mm);
+
+    if (elf_load_segments(buf, size, eh) < 0) {
+        paging_switch_mm(old_mm);
+        paging_release_mm(new_mm);
+        task_kill(tid);
+        kfree(buf);
+        return -6;
+    }
+
+    uintptr_t ustk = 0;
+    if (elf_map_user_stack(&ustk) < 0) {
+        paging_switch_mm(old_mm);
+        paging_release_mm(new_mm);
+        task_kill(tid);
+        kfree(buf);
+        return -7;
+    }
+
+    paging_switch_mm(old_mm);
+    if (task_assign_mm(tid, new_mm) < 0) {
+        paging_release_mm(new_mm);
+        task_kill(tid);
+        kfree(buf);
+        return -10;
+    }
+    /* task_assign_mm retains the MM; drop this local builder reference. */
+    paging_release_mm(new_mm);
+    kfree(buf);
+
+    if (elf_launch_slot_set(tid, entry, ustk) < 0) {
         task_kill(tid);
         return -10;
     }
@@ -216,21 +258,42 @@ int elf_execve_current(const char* path, struct registers* r) {
     }
 
     const Elf32_Ehdr* eh = (const Elf32_Ehdr*)buf;
-    if (elf_load_segments(buf, size, eh) < 0) {
-        kfree(buf);
-        return -6;
-    }
 
-    void* ustk = kmalloc(ELF_USER_STACK_SIZE);
-    if (!ustk) {
+    uint32_t new_mm = 0;
+    if (paging_create_mm(&new_mm) < 0) {
         kfree(buf);
         return -7;
     }
 
-    uint32_t user_esp = (uint32_t)((uintptr_t)ustk + ELF_USER_STACK_SIZE) & ~0xFu;
+    uint32_t old_mm = paging_current_cr3();
+    paging_switch_mm(new_mm);
+
+    if (elf_load_segments(buf, size, eh) < 0) {
+        paging_switch_mm(old_mm);
+        paging_release_mm(new_mm);
+        kfree(buf);
+        return -6;
+    }
+
+    uintptr_t ustk = 0;
+    if (elf_map_user_stack(&ustk) < 0) {
+        paging_switch_mm(old_mm);
+        paging_release_mm(new_mm);
+        kfree(buf);
+        return -7;
+    }
+
+    uint32_t user_esp = (uint32_t)(ustk + ELF_USER_STACK_SIZE) & ~0xFu;
     r->eip = eh->e_entry;
     r->useresp = user_esp;
     r->eax = 0;
+
+    if (task_replace_current_mm(new_mm) < 0) {
+        paging_switch_mm(old_mm);
+        paging_release_mm(new_mm);
+        kfree(buf);
+        return -8;
+    }
 
     /* POSIX-like behavior: apply CLOEXEC only on successful image replacement. */
     task_close_cloexec_fds_current();

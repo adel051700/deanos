@@ -3,7 +3,7 @@
  */
 #include "include/kernel/usermode.h"
 #include "include/kernel/task.h"
-#include "include/kernel/kheap.h"
+#include "include/kernel/paging.h"
 #include <stdint.h>
 /* ---- User-space syscall helpers ---------------------------------------- */
 static inline long user_syscall3(uint32_t num, uint32_t a1,
@@ -37,6 +37,7 @@ void user_test_program(void) {
 }
 /* ---- Kernel-side launcher ---------------------------------------------- */
 #define USER_STACK_SIZE  (8u * 1024u)
+#define USER_STACK_BASE  0xBFFF4000u
 static struct { void (*entry)(void); uintptr_t ustk; } g_launch;
 static void user_task_wrapper(void) {
     void (*entry)(void) = g_launch.entry;
@@ -46,10 +47,11 @@ static void user_task_wrapper(void) {
 }
 int user_task_create(void (*entry)(void), const char* name) {
     if (!entry) return -1;
-    void* ustk = kmalloc(USER_STACK_SIZE);
-    if (!ustk) return -2;
+    for (uintptr_t va = USER_STACK_BASE; va < USER_STACK_BASE + USER_STACK_SIZE; va += 4096u) {
+        if (paging_map_user(va) < 0) return -2;
+    }
     g_launch.entry = entry;
-    g_launch.ustk  = (uintptr_t)ustk;
+    g_launch.ustk  = USER_STACK_BASE;
     return task_create_named(user_task_wrapper, 0,
                              TASK_DEFAULT_QUANTUM, name ? name : "user");
 }

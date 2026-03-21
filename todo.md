@@ -49,7 +49,7 @@
 22. ~~Session/job control basics: foreground/background groups and terminal ownership.~~
 23. ~~Signal delivery core: SIGINT/SIGTERM/SIGKILL/SIGCHLD semantics and default handlers.~~
 24. ~~Signal APIs: sigaction/signal-style user API and kernel dispatch hooks.~~
-25. Copy-on-write completion: full fork COW for user pages with verified refcount correctness.
+25. ~~Copy-on-write completion: full fork COW for user pages with verified refcount correctness.~~
 26. Demand paging completion: lazily load ELF text/data pages on first access.
 27. mmap/munmap primitives: map anonymous and file-backed regions.
 28. Shared memory: lightweight shm API for IPC between processes.

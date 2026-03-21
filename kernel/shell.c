@@ -145,7 +145,7 @@ static const struct shell_command commands[] = {
     {"disk",   cmd_disk,   "Disk tools: disk parts | init | mkfs | mount | setup"},
     {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
     {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
-    {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr size pages] | vm cow"},
+    {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr pages] | vm cow | vm refs"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
@@ -2283,7 +2283,27 @@ static void cmd_vm(const char* args) {
         return;
     }
 
-    terminal_writestring("usage: vm stats | vm demand [addr pages] | vm cow\n");
+    if (strcmp(op, "refs") == 0) {
+        task_t* cur = task_current();
+        uint32_t task_cr3 = cur ? (cur->mm_cr3 & ~0xFFFu) : 0;
+        uint32_t active_cr3 = paging_current_cr3() & ~0xFFFu;
+        uint32_t refs = paging_mm_refcount(task_cr3 ? task_cr3 : active_cr3);
+
+        char n[16];
+        terminal_writestring("VM refs:\n  task mm_cr3: 0x");
+        itoa((int)task_cr3, n, 16);
+        terminal_writestring(n);
+        terminal_writestring("\n  active cr3:  0x");
+        itoa((int)active_cr3, n, 16);
+        terminal_writestring(n);
+        terminal_writestring("\n  mm refs:     ");
+        itoa((int)refs, n, 10);
+        terminal_writestring(n);
+        terminal_writestring("\n");
+        return;
+    }
+
+    terminal_writestring("usage: vm stats | vm demand [addr pages] | vm cow | vm refs\n");
 }
 
 
