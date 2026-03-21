@@ -253,6 +253,14 @@ static long sys_munmap(uintptr_t addr, uint32_t length) {
     return (long)task_munmap_current(addr, length);
 }
 
+static long sys_shm_open(int32_t key, uint32_t size, uint32_t flags) {
+    return (long)task_shm_open_current(key, size, flags);
+}
+
+static long sys_shm_unlink(int32_t key) {
+    return (long)task_shm_unlink_current(key);
+}
+
 static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
@@ -283,6 +291,8 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_sigreturn: return sys_sigreturn(r);
         case SYS_mmap: return sys_mmap((const syscall_mmap_args_t*)a1);
         case SYS_munmap: return sys_munmap((uintptr_t)a1, a2);
+        case SYS_shm_open: return sys_shm_open((int32_t)a1, a2, a3);
+        case SYS_shm_unlink: return sys_shm_unlink((int32_t)a1);
         default:        return -38; /* ENOSYS */
     }
 }

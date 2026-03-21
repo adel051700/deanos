@@ -14,6 +14,7 @@
 #include "include/kernel/signal.h"
 #include "include/kernel/kheap.h"
 #include "include/kernel/paging.h"
+#include "include/kernel/pmm.h"
 #include "include/kernel/tss.h"
 #include "include/kernel/usermode.h"
 #include "include/kernel/vfs.h"
@@ -33,6 +34,74 @@ static uint32_t g_task_count = 0;
 static int      g_current    = -1;
 static uint32_t g_next_id    = 1;
 static uint64_t g_sched_ticks = 0;
+
+typedef struct shm_object {
+    int32_t   key;
+    uint32_t  size;
+    uint32_t  page_count;
+    uint32_t  refs;
+    uint8_t   used;
+    uint8_t   unlinked;
+    uintptr_t frames[TASK_SHM_MAX_PAGES];
+} shm_object_t;
+
+static shm_object_t g_shm_objects[TASK_SHM_MAX_OBJECTS];
+
+static void shm_table_init(void) {
+    memset(g_shm_objects, 0, sizeof(g_shm_objects));
+}
+
+static shm_object_t* shm_find_by_key(int32_t key) {
+    if (key <= 0) return NULL;
+    for (uint32_t i = 0; i < TASK_SHM_MAX_OBJECTS; ++i) {
+        shm_object_t* obj = &g_shm_objects[i];
+        if (!obj->used || obj->unlinked) continue;
+        if (obj->key == key) return obj;
+    }
+    return NULL;
+}
+
+static shm_object_t* shm_find_by_id(int32_t shm_id) {
+    if (shm_id <= 0) return NULL;
+    uint32_t idx = (uint32_t)(shm_id - 1);
+    if (idx >= TASK_SHM_MAX_OBJECTS) return NULL;
+    shm_object_t* obj = &g_shm_objects[idx];
+    if (!obj->used) return NULL;
+    return obj;
+}
+
+static int32_t shm_alloc_slot(void) {
+    for (uint32_t i = 0; i < TASK_SHM_MAX_OBJECTS; ++i) {
+        if (!g_shm_objects[i].used) return (int32_t)i;
+    }
+    return -1;
+}
+
+static void shm_destroy(shm_object_t* obj) {
+    if (!obj || !obj->used) return;
+    for (uint32_t i = 0; i < obj->page_count && i < TASK_SHM_MAX_PAGES; ++i) {
+        if (obj->frames[i]) {
+            phys_free_frame(obj->frames[i]);
+            obj->frames[i] = 0;
+        }
+    }
+    memset(obj, 0, sizeof(*obj));
+}
+
+static void shm_ref(int32_t shm_id) {
+    shm_object_t* obj = shm_find_by_id(shm_id);
+    if (!obj) return;
+    obj->refs++;
+}
+
+static void shm_unref(int32_t shm_id) {
+    shm_object_t* obj = shm_find_by_id(shm_id);
+    if (!obj) return;
+    if (obj->refs > 0) obj->refs--;
+    if (obj->refs == 0 && obj->unlinked) {
+        shm_destroy(obj);
+    }
+}
 
 static void task_signal_table_init(task_t* t) {
     if (!t) return;
@@ -104,7 +173,9 @@ static void task_mmap_table_init(task_t* t) {
         t->mmap_regions[i].end = 0;
         t->mmap_regions[i].prot = 0;
         t->mmap_regions[i].flags = 0;
+        t->mmap_regions[i].backing = TASK_MMAP_BACKING_ANON;
         t->mmap_regions[i].file_offset = 0;
+        t->mmap_regions[i].shm_id = 0;
         t->mmap_regions[i].file_node = NULL;
         t->mmap_regions[i].in_use = 0;
     }
@@ -118,11 +189,16 @@ static void task_mmap_table_clear(task_t* t) {
         if (reg->file_node) {
             vfs_close_node(reg->file_node);
         }
+        if (reg->backing == TASK_MMAP_BACKING_SHM && reg->shm_id > 0) {
+            shm_unref(reg->shm_id);
+        }
         reg->start = 0;
         reg->end = 0;
         reg->prot = 0;
         reg->flags = 0;
+        reg->backing = TASK_MMAP_BACKING_ANON;
         reg->file_offset = 0;
+        reg->shm_id = 0;
         reg->file_node = NULL;
         reg->in_use = 0;
     }
@@ -142,6 +218,9 @@ static int task_mmap_table_clone(task_t* dst, const task_t* src) {
                 task_mmap_table_clear(dst);
                 return -1;
             }
+        }
+        if (dst->mmap_regions[i].backing == TASK_MMAP_BACKING_SHM && dst->mmap_regions[i].shm_id > 0) {
+            shm_ref(dst->mmap_regions[i].shm_id);
         }
     }
 
@@ -504,6 +583,7 @@ void tasking_initialize(void) {
     g_current    = -1;
     g_next_id    = 1;
     g_sched_ticks = 0;
+    shm_table_init();
 
     /* Task 0 is the idle thread — always present, lowest priority. */
     task_create_named(idle_thread, DEFAULT_STACK_SIZE, 1, "idle");
@@ -1076,14 +1156,32 @@ int task_mmap_current(const syscall_mmap_args_t* args, uintptr_t* out_addr) {
     }
 
     vfs_node_t* file_node = NULL;
+    int32_t shm_id = 0;
+    uint32_t backing = TASK_MMAP_BACKING_ANON;
     uint32_t file_offset = args->offset;
-    if (!(args->flags & MMAP_MAP_ANONYMOUS)) {
+
+    if (args->flags & MMAP_MAP_SHM) {
+        if (args->flags & MMAP_MAP_ANONYMOUS) return -1;
+        if ((args->flags & MMAP_MAP_SHARED) == 0u) return -1;
+        if ((args->offset & 0xFFFu) != 0u) return -1;
+        if (args->fd <= 0) return -1;
+
+        shm_object_t* obj = shm_find_by_id(args->fd);
+        if (!obj || obj->unlinked) return -1;
+        if (file_offset >= obj->size) return -1;
+        if (length > (uintptr_t)(obj->size - file_offset)) return -1;
+
+        shm_id = args->fd;
+        backing = TASK_MMAP_BACKING_SHM;
+        shm_ref(shm_id);
+    } else if (!(args->flags & MMAP_MAP_ANONYMOUS)) {
         if ((args->offset & 0xFFFu) != 0u) return -1;
         if (args->fd < 0 || args->fd >= TASK_MAX_FDS) return -1;
         if (!self->fds[args->fd].in_use || !self->fds[args->fd].node) return -1;
         if (!(self->fds[args->fd].node->type & VFS_FILE)) return -1;
         file_node = self->fds[args->fd].node;
         if (vfs_open_node(file_node, VFS_O_RDONLY) < 0) return -1;
+        backing = TASK_MMAP_BACKING_FILE;
     }
 
     task_mmap_region_t* reg = &self->mmap_regions[(uint32_t)slot];
@@ -1091,7 +1189,9 @@ int task_mmap_current(const syscall_mmap_args_t* args, uintptr_t* out_addr) {
     reg->end = start + length;
     reg->prot = args->prot;
     reg->flags = args->flags;
+    reg->backing = backing;
     reg->file_offset = file_offset;
+    reg->shm_id = shm_id;
     reg->file_node = file_node;
     reg->in_use = 1;
 
@@ -1139,8 +1239,10 @@ int task_munmap_current(uintptr_t addr, uint32_t length) {
 
         if (start <= reg->start && end >= reg->end) {
             if (reg->file_node) vfs_close_node(reg->file_node);
+            if (reg->backing == TASK_MMAP_BACKING_SHM && reg->shm_id > 0) shm_unref(reg->shm_id);
             reg->in_use = 0;
             reg->file_node = NULL;
+            reg->shm_id = 0;
             continue;
         }
 
@@ -1169,9 +1271,88 @@ int task_munmap_current(uintptr_t addr, uint32_t length) {
                 return -1;
             }
         }
+        if (upper->backing == TASK_MMAP_BACKING_SHM && upper->shm_id > 0) {
+            shm_ref(upper->shm_id);
+        }
         reg->end = overlap_start;
     }
 
+    return 0;
+}
+
+int task_shm_open_current(int32_t key, uint32_t size, uint32_t flags) {
+    if (key <= 0) return -1;
+
+    shm_object_t* existing = shm_find_by_key(key);
+    if (existing) {
+        if ((flags & SHM_OPEN_CREATE) && (flags & SHM_OPEN_EXCL)) return -1;
+        if (size > 0 && size > existing->size) return -1;
+        return (int)((existing - g_shm_objects) + 1);
+    }
+
+    if ((flags & SHM_OPEN_CREATE) == 0u) return -1;
+    if (size == 0) return -1;
+    uint32_t aligned = (size + 0xFFFu) & ~0xFFFu;
+    uint32_t pages = aligned / 0x1000u;
+    if (pages == 0 || pages > TASK_SHM_MAX_PAGES) return -1;
+
+    int32_t slot = shm_alloc_slot();
+    if (slot < 0) return -1;
+
+    shm_object_t* obj = &g_shm_objects[(uint32_t)slot];
+    memset(obj, 0, sizeof(*obj));
+    obj->used = 1;
+    obj->key = key;
+    obj->size = aligned;
+    obj->page_count = pages;
+    obj->refs = 0;
+    obj->unlinked = 0;
+
+    for (uint32_t i = 0; i < pages; ++i) {
+        uintptr_t pa = phys_alloc_frame();
+        if (!pa) {
+            shm_destroy(obj);
+            return -1;
+        }
+        memset((void*)pa, 0, 4096u);
+        obj->frames[i] = pa;
+    }
+
+    return slot + 1;
+}
+
+int task_shm_unlink_current(int32_t key) {
+    shm_object_t* obj = shm_find_by_key(key);
+    if (!obj) return -1;
+    obj->unlinked = 1;
+    if (obj->refs == 0) {
+        shm_destroy(obj);
+    }
+    return 0;
+}
+
+int task_shm_get_frame(int32_t shm_id, uint32_t page_index, uintptr_t* out_frame, uint32_t* out_size) {
+    if (!out_frame) return -1;
+    shm_object_t* obj = shm_find_by_id(shm_id);
+    if (!obj) return -1;
+    if (page_index >= obj->page_count) return -1;
+    if (!obj->frames[page_index]) return -1;
+    *out_frame = obj->frames[page_index];
+    if (out_size) *out_size = obj->size;
+    return 0;
+}
+
+int task_is_shared_page(uintptr_t page) {
+    task_t* self = task_current();
+    if (!self) return 0;
+    uintptr_t aligned = page_align_down(page);
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        const task_mmap_region_t* reg = &self->mmap_regions[i];
+        if (!reg->in_use) continue;
+        if (reg->backing != TASK_MMAP_BACKING_SHM) continue;
+        if ((reg->flags & MMAP_MAP_SHARED) == 0u) continue;
+        if (aligned >= reg->start && aligned < reg->end) return 1;
+    }
     return 0;
 }
 

@@ -3,6 +3,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <sys/mman.h>
+#include <sys/shm.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -160,6 +161,14 @@ void* mmap(void* addr, size_t length, int prot, int flags, int fd, unsigned offs
 
 int munmap(void* addr, size_t length) {
     return (int)syscall2(SYS_munmap, (unsigned)addr, (unsigned)length);
+}
+
+int shm_open(int key, uint32_t size, uint32_t flags) {
+    return (int)syscall3(SYS_shm_open, (unsigned)key, (unsigned)size, (unsigned)flags);
+}
+
+int shm_unlink(int key) {
+    return (int)syscall1(SYS_shm_unlink, (unsigned)key);
 }
 
 unsigned sleep(unsigned seconds) {

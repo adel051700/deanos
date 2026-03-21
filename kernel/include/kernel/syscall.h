@@ -33,6 +33,8 @@ enum {
     SYS_sigreturn = 26,
     SYS_mmap = 27,
     SYS_munmap = 28,
+    SYS_shm_open = 29,
+    SYS_shm_unlink = 30,
 };
 
 /* mmap protection flags */
@@ -45,6 +47,11 @@ enum {
 #define MMAP_MAP_PRIVATE    0x02u
 #define MMAP_MAP_FIXED      0x10u
 #define MMAP_MAP_ANONYMOUS  0x20u
+#define MMAP_MAP_SHM        0x40u
+
+/* shm_open flags */
+#define SHM_OPEN_CREATE     0x1u
+#define SHM_OPEN_EXCL       0x2u
 
 typedef struct syscall_mmap_args {
     uintptr_t addr;
