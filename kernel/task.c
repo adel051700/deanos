@@ -22,6 +22,8 @@
 #include <stdint.h>
 
 #define DEFAULT_STACK_SIZE (16u * 1024u)
+#define TASK_MMAP_BASE  0x90000000u
+#define TASK_MMAP_LIMIT 0xB0000000u
 
 extern void context_switch(task_context_t* old, task_context_t* next);
 extern void task_trampoline(void);   /* in context_switch.s */
@@ -92,6 +94,98 @@ static void task_fd_table_close_cloexec(task_t* t) {
         t->fds[i].open_flags = 0;
         t->fds[i].fd_flags = 0;
         t->fds[i].in_use = 0;
+    }
+}
+
+static void task_mmap_table_init(task_t* t) {
+    if (!t) return;
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        t->mmap_regions[i].start = 0;
+        t->mmap_regions[i].end = 0;
+        t->mmap_regions[i].prot = 0;
+        t->mmap_regions[i].flags = 0;
+        t->mmap_regions[i].file_offset = 0;
+        t->mmap_regions[i].file_node = NULL;
+        t->mmap_regions[i].in_use = 0;
+    }
+}
+
+static void task_mmap_table_clear(task_t* t) {
+    if (!t) return;
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        task_mmap_region_t* reg = &t->mmap_regions[i];
+        if (!reg->in_use) continue;
+        if (reg->file_node) {
+            vfs_close_node(reg->file_node);
+        }
+        reg->start = 0;
+        reg->end = 0;
+        reg->prot = 0;
+        reg->flags = 0;
+        reg->file_offset = 0;
+        reg->file_node = NULL;
+        reg->in_use = 0;
+    }
+}
+
+static int task_mmap_table_clone(task_t* dst, const task_t* src) {
+    if (!dst || !src) return -1;
+    task_mmap_table_init(dst);
+
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        const task_mmap_region_t* src_reg = &src->mmap_regions[i];
+        if (!src_reg->in_use) continue;
+
+        dst->mmap_regions[i] = *src_reg;
+        if (dst->mmap_regions[i].file_node) {
+            if (vfs_open_node(dst->mmap_regions[i].file_node, VFS_O_RDONLY) < 0) {
+                task_mmap_table_clear(dst);
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int task_mmap_alloc_slot(task_t* t) {
+    if (!t) return -1;
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        if (!t->mmap_regions[i].in_use) return (int)i;
+    }
+    return -1;
+}
+
+static uintptr_t page_align_down(uintptr_t v) {
+    return v & ~0xFFFu;
+}
+
+static uintptr_t page_align_up(uintptr_t v) {
+    return (v + 0xFFFu) & ~0xFFFu;
+}
+
+static int task_mmap_find_gap(task_t* t, uintptr_t length, uintptr_t* out_addr) {
+    if (!t || !out_addr || length == 0) return -1;
+    uintptr_t cur = TASK_MMAP_BASE;
+
+    while (1) {
+        uintptr_t end = cur + length;
+        if (end < cur || end > TASK_MMAP_LIMIT) return -1;
+
+        int overlap = 0;
+        for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+            const task_mmap_region_t* reg = &t->mmap_regions[i];
+            if (!reg->in_use) continue;
+            if (end <= reg->start || cur >= reg->end) continue;
+            cur = page_align_up(reg->end);
+            overlap = 1;
+            break;
+        }
+
+        if (!overlap) {
+            *out_addr = cur;
+            return 0;
+        }
     }
 }
 
@@ -269,6 +363,7 @@ static void mark_task_dead_index(uint32_t idx, uint32_t status, uint32_t term_si
     uint32_t parent_id = g_tasks[idx].parent_id;
     reparent_children(dying_id, init_task_id());
     task_fd_table_close_all(&g_tasks[idx]);
+    task_mmap_table_clear(&g_tasks[idx]);
     task_lazy_elf_clear(&g_tasks[idx]);
     release_task_mm(&g_tasks[idx]);
 
@@ -460,6 +555,7 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     t->fork_user_eflags = 0;
     t->fork_resume_user = 0;
     task_fd_table_init(t);
+    task_mmap_table_init(t);
     task_lazy_elf_init(t);
 
     /* Copy name (or generate one). */
@@ -559,16 +655,23 @@ int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
         child->state = TASK_DEAD;
         return -4;
     }
+    if (task_mmap_table_clone(child, parent) < 0) {
+        task_fd_table_close_all(child);
+        release_task_mm(child);
+        child->state = TASK_DEAD;
+        return -5;
+    }
     if (task_lazy_elf_install(child,
                               parent->elf_backing,
                               parent->elf_backing_size,
                               parent->elf_regions,
                               parent->elf_region_count,
                               0) < 0) {
+        task_mmap_table_clear(child);
         task_fd_table_close_all(child);
         release_task_mm(child);
         child->state = TASK_DEAD;
-        return -5;
+        return -6;
     }
     child->fork_user_eip = user_eip;
     child->fork_user_esp = user_esp;
@@ -913,6 +1016,8 @@ int task_replace_current_mm(uint32_t mm_cr3) {
     if (g_current < 0 || !mm_cr3) return -1;
     task_t* self = &g_tasks[g_current];
     uint32_t old = self->mm_cr3;
+    task_mmap_table_clear(self);
+    task_lazy_elf_clear(self);
     self->mm_cr3 = mm_cr3 & ~0xFFFu;
     paging_switch_mm(self->mm_cr3);
     paging_release_mm(old);
@@ -939,5 +1044,134 @@ int task_adopt_elf_lazy_layout(int task_id,
     int idx = find_task_index_by_id(task_id);
     if (idx < 0) return -1;
     return task_lazy_elf_install(&g_tasks[idx], image, image_size, regions, region_count, 1);
+}
+
+int task_mmap_current(const syscall_mmap_args_t* args, uintptr_t* out_addr) {
+    if (!args || !out_addr || g_current < 0) return -1;
+
+    task_t* self = &g_tasks[g_current];
+    uintptr_t length = page_align_up((uintptr_t)args->length);
+    if (length == 0) return -1;
+    if (args->flags & MMAP_MAP_FIXED) return -1;
+
+    uint32_t map_kind = args->flags & (MMAP_MAP_PRIVATE | MMAP_MAP_SHARED);
+    if (map_kind == 0 || map_kind == (MMAP_MAP_PRIVATE | MMAP_MAP_SHARED)) return -1;
+
+    int slot = task_mmap_alloc_slot(self);
+    if (slot < 0) return -1;
+
+    uintptr_t start = 0;
+    if (args->addr != 0) {
+        start = page_align_down(args->addr);
+        if (start < TASK_MMAP_BASE) return -1;
+        if (start + length < start || start + length > TASK_MMAP_LIMIT) return -1;
+        for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+            task_mmap_region_t* reg = &self->mmap_regions[i];
+            if (!reg->in_use) continue;
+            if (start + length <= reg->start || start >= reg->end) continue;
+            return -1;
+        }
+    } else {
+        if (task_mmap_find_gap(self, length, &start) < 0) return -1;
+    }
+
+    vfs_node_t* file_node = NULL;
+    uint32_t file_offset = args->offset;
+    if (!(args->flags & MMAP_MAP_ANONYMOUS)) {
+        if ((args->offset & 0xFFFu) != 0u) return -1;
+        if (args->fd < 0 || args->fd >= TASK_MAX_FDS) return -1;
+        if (!self->fds[args->fd].in_use || !self->fds[args->fd].node) return -1;
+        if (!(self->fds[args->fd].node->type & VFS_FILE)) return -1;
+        file_node = self->fds[args->fd].node;
+        if (vfs_open_node(file_node, VFS_O_RDONLY) < 0) return -1;
+    }
+
+    task_mmap_region_t* reg = &self->mmap_regions[(uint32_t)slot];
+    reg->start = start;
+    reg->end = start + length;
+    reg->prot = args->prot;
+    reg->flags = args->flags;
+    reg->file_offset = file_offset;
+    reg->file_node = file_node;
+    reg->in_use = 1;
+
+    *out_addr = start;
+    return 0;
+}
+
+int task_munmap_current(uintptr_t addr, uint32_t length) {
+    if (g_current < 0) return -1;
+    if (length == 0) return -1;
+
+    task_t* self = &g_tasks[g_current];
+    uintptr_t start = page_align_down(addr);
+    uintptr_t end = page_align_up(addr + (uintptr_t)length);
+    if (end <= start) return -1;
+
+    int split_needed = 0;
+    int free_slots = 0;
+    int touched = 0;
+
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        task_mmap_region_t* reg = &self->mmap_regions[i];
+        if (!reg->in_use) {
+            free_slots++;
+            continue;
+        }
+        if (end <= reg->start || start >= reg->end) continue;
+        touched = 1;
+        if (start > reg->start && end < reg->end) split_needed++;
+    }
+
+    if (!touched) return -1;
+    if (split_needed > free_slots) return -1;
+
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        task_mmap_region_t* reg = &self->mmap_regions[i];
+        if (!reg->in_use) continue;
+        if (end <= reg->start || start >= reg->end) continue;
+
+        uintptr_t overlap_start = (start > reg->start) ? start : reg->start;
+        uintptr_t overlap_end = (end < reg->end) ? end : reg->end;
+        if (overlap_end > overlap_start) {
+            (void)paging_unmap_user_range(overlap_start, overlap_end - overlap_start);
+        }
+
+        if (start <= reg->start && end >= reg->end) {
+            if (reg->file_node) vfs_close_node(reg->file_node);
+            reg->in_use = 0;
+            reg->file_node = NULL;
+            continue;
+        }
+
+        if (start <= reg->start) {
+            uint32_t delta = (uint32_t)(overlap_end - reg->start);
+            reg->start = overlap_end;
+            reg->file_offset += delta;
+            continue;
+        }
+
+        if (end >= reg->end) {
+            reg->end = overlap_start;
+            continue;
+        }
+
+        int split_slot = task_mmap_alloc_slot(self);
+        if (split_slot < 0) return -1;
+
+        task_mmap_region_t* upper = &self->mmap_regions[(uint32_t)split_slot];
+        *upper = *reg;
+        upper->start = overlap_end;
+        upper->file_offset += (uint32_t)(upper->start - reg->start);
+        if (upper->file_node) {
+            if (vfs_open_node(upper->file_node, VFS_O_RDONLY) < 0) {
+                upper->in_use = 0;
+                return -1;
+            }
+        }
+        reg->end = overlap_start;
+    }
+
+    return 0;
 }
 

@@ -51,7 +51,7 @@
 24. ~~Signal APIs: sigaction/signal-style user API and kernel dispatch hooks.~~
 25. ~~Copy-on-write completion: full fork COW for user pages with verified refcount correctness.~~
 26. ~~Demand paging completion: lazily load ELF text/data pages on first access.~~
-27. mmap/munmap primitives: map anonymous and file-backed regions.
+27. ~~mmap/munmap primitives: map anonymous and file-backed regions.~~
 28. Shared memory: lightweight shm API for IPC between processes.
 29. Swap design pass: plan paging-to-disk layout and eviction policy.
 30. Swap implementation: page-out/page-in path with fault retry logic.

@@ -2,6 +2,7 @@
 #include <kernel/syscall.h>
 #include <signal.h>
 #include <stddef.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -141,6 +142,24 @@ int tcsetpgrp(int fd, int pgrp) {
 
 int tcgetpgrp(int fd) {
     return (int)syscall1(SYS_tcgetpgrp, (unsigned)fd);
+}
+
+void* mmap(void* addr, size_t length, int prot, int flags, int fd, unsigned offset) {
+    syscall_mmap_args_t args;
+    args.addr = (uintptr_t)addr;
+    args.length = (uint32_t)length;
+    args.prot = (uint32_t)prot;
+    args.flags = (uint32_t)flags;
+    args.fd = fd;
+    args.offset = offset;
+
+    long ret = syscall1(SYS_mmap, (unsigned)&args);
+    if (ret < 0) return MAP_FAILED;
+    return (void*)(uintptr_t)ret;
+}
+
+int munmap(void* addr, size_t length) {
+    return (int)syscall2(SYS_munmap, (unsigned)addr, (unsigned)length);
 }
 
 unsigned sleep(unsigned seconds) {

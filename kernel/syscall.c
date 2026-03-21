@@ -243,6 +243,16 @@ static long sys_mkdir(const char* path) {
     return (long)vfs_create(parent, dir_name, VFS_DIRECTORY);
 }
 
+static long sys_mmap(const syscall_mmap_args_t* args) {
+    uintptr_t out = 0;
+    if (task_mmap_current(args, &out) < 0) return -1;
+    return (long)out;
+}
+
+static long sys_munmap(uintptr_t addr, uint32_t length) {
+    return (long)task_munmap_current(addr, length);
+}
+
 static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
@@ -271,6 +281,8 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_sigaction: return sys_sigaction((int32_t)a1, (const ksigaction_t*)a2, (ksigaction_t*)a3);
         case SYS_signal: return sys_signal((int32_t)a1, (uintptr_t)a2, (uintptr_t)a3);
         case SYS_sigreturn: return sys_sigreturn(r);
+        case SYS_mmap: return sys_mmap((const syscall_mmap_args_t*)a1);
+        case SYS_munmap: return sys_munmap((uintptr_t)a1, a2);
         default:        return -38; /* ENOSYS */
     }
 }

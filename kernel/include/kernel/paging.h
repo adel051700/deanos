@@ -27,6 +27,9 @@ uintptr_t paging_heap_size(void);
  */
 int paging_map_user(uintptr_t vaddr);
 
+/* Unmap and release user pages in [start, start+size). */
+int paging_unmap_user_range(uintptr_t start, uintptr_t size);
+
 /* Register a lazily populated region. Pages are allocated on first fault. */
 int paging_register_demand_region(uintptr_t start, uintptr_t size, uint32_t flags);
 
