@@ -4,6 +4,7 @@
 #include "include/kernel/interrupt.h"
 #include "include/kernel/task.h"
 #include "include/kernel/tty.h"
+#include "include/kernel/vfs.h"
 #include "../libc/include/stdio.h"
 
 #define PAGE_SIZE 4096
@@ -120,6 +121,26 @@ static int map_page_in_pd(uint32_t* pd, uintptr_t virt, uintptr_t phys, uint32_t
 static int map_page(uintptr_t virt, uintptr_t phys, uint32_t flags) {
     uint32_t* pd = pd_from_phys(g_current_cr3);
     return map_page_in_pd(pd, virt, phys, flags);
+}
+
+static int unmap_page_current(uintptr_t virt) {
+    uint32_t* pd = pd_from_phys(g_current_cr3);
+    if (!pd) return -1;
+
+    uint32_t dir_idx = (virt >> 22) & 0x3FFu;
+    uint32_t pt_idx = (virt >> 12) & 0x3FFu;
+    uint32_t* pt = get_pt_from_pd(pd, dir_idx);
+    if (!pt) return 0;
+
+    uint32_t pte = pt[pt_idx];
+    if ((pte & PTE_P) == 0u) return 0;
+    if ((pte & PTE_U) == 0u) return 0;
+
+    uintptr_t pa = (uintptr_t)(pte & ~0xFFFu);
+    pt[pt_idx] = 0;
+    invlpg((void*)(virt & ~0xFFFu));
+    pmm_frame_unref(pa);
+    return 1;
 }
 
 static void identity_map_range(uint32_t* pd, uintptr_t start, uintptr_t size, uint32_t flags) {
@@ -265,6 +286,68 @@ static int handle_elf_lazy_fault(uintptr_t fault_addr, uint32_t err_code) {
     return 1;
 }
 
+static int handle_mmap_fault(uintptr_t fault_addr, uint32_t err_code) {
+    if (err_code & 0x1u) return 0; /* protection faults are not lazy-map faults */
+
+    task_t* cur = task_current();
+    if (!cur) return 0;
+
+    uintptr_t page = fault_addr & ~0xFFFu;
+    const task_mmap_region_t* reg = NULL;
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        const task_mmap_region_t* cand = &cur->mmap_regions[i];
+        if (!cand->in_use) continue;
+        if (page < cand->start || page >= cand->end) continue;
+        reg = cand;
+        break;
+    }
+    if (!reg) return 0;
+
+    uintptr_t pa = phys_alloc_frame();
+    if (!pa) return -1;
+
+    uint32_t map_flags = PTE_P | PTE_U | PTE_W;
+    if (map_page(page, pa, map_flags) < 0) {
+        phys_free_frame(pa);
+        return -1;
+    }
+
+    memset((void*)page, 0, PAGE_SIZE);
+
+    if (!(reg->flags & MMAP_MAP_ANONYMOUS) && reg->file_node) {
+        uint32_t page_off = (uint32_t)(page - reg->start);
+        uint32_t file_off = reg->file_offset + page_off;
+        uint32_t max_in_region = (uint32_t)(reg->end - page);
+        uint32_t to_read = PAGE_SIZE;
+        if (max_in_region < to_read) to_read = max_in_region;
+
+        if (file_off < reg->file_node->size) {
+            uint32_t file_avail = reg->file_node->size - file_off;
+            if (file_avail < to_read) to_read = file_avail;
+        } else {
+            to_read = 0;
+        }
+
+        if (to_read > 0) {
+            int32_t nread = vfs_read(reg->file_node, file_off, to_read, (uint8_t*)page);
+            if (nread < 0) return -1;
+        }
+    }
+
+    if ((reg->prot & MMAP_PROT_WRITE) == 0u) {
+        uint32_t pd = (page >> 22) & 0x3FFu;
+        uint32_t ti = (page >> 12) & 0x3FFu;
+        uint32_t* cur_pd = pd_from_phys(g_current_cr3);
+        uint32_t* pt = get_pt_from_pd(cur_pd, pd);
+        if (!pt) return -1;
+        pt[ti] &= ~PTE_W;
+        invlpg((void*)page);
+    }
+
+    g_demand_fault_count++;
+    return 1;
+}
+
 static int handle_cow_fault(uintptr_t fault_addr, uint32_t err_code) {
     if ((err_code & 0x1u) == 0u) return 0;  /* not-present faults are not COW */
     if ((err_code & 0x2u) == 0u) return 0;  /* COW triggers on write faults */
@@ -311,6 +394,7 @@ static void page_fault_handler(struct registers* r) {
     uint32_t fault_addr;
     __asm__ __volatile__("mov %%cr2, %0" : "=r"(fault_addr));
     if (handle_elf_lazy_fault(fault_addr, r->err_code) > 0) return;
+    if (handle_mmap_fault(fault_addr, r->err_code) > 0) return;
     if (handle_demand_fault(fault_addr, r->err_code) > 0) return;
     if (handle_cow_fault(fault_addr, r->err_code) > 0) return;
 
@@ -349,6 +433,21 @@ int paging_map_user(uintptr_t vaddr) {
     /* Zero the freshly mapped page. */
     memset((void*)(vaddr & ~0xFFFu), 0, PAGE_SIZE);
     return 0;
+}
+
+int paging_unmap_user_range(uintptr_t start, uintptr_t size) {
+    if (size == 0) return -1;
+    uintptr_t s = start & ~0xFFFu;
+    uintptr_t e = (start + size + PAGE_SIZE - 1) & ~0xFFFu;
+    if (e <= s) return -1;
+
+    int changed = 0;
+    for (uintptr_t va = s; va < e; va += PAGE_SIZE) {
+        int rc = unmap_page_current(va);
+        if (rc < 0) return rc;
+        if (rc > 0) changed = 1;
+    }
+    return changed;
 }
 
 int paging_register_demand_region(uintptr_t start, uintptr_t size, uint32_t flags) {

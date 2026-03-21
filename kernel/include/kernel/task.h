@@ -4,11 +4,13 @@
 #include <stdint.h>
 #include "signal.h"
 #include "interrupt.h"
+#include "syscall.h"
 
 #define TASK_WAIT_NOHANG 0x1u
 #define TASK_FD_CLOEXEC 0x1u
 #define TASK_MAX_FDS    64
 #define TASK_ELF_LAZY_MAX 16
+#define TASK_MMAP_MAX   32
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,6 +54,16 @@ typedef struct task_elf_lazy_region {
     uint32_t  flags;
     uint8_t   in_use;
 } task_elf_lazy_region_t;
+
+typedef struct task_mmap_region {
+    uintptr_t        start;
+    uintptr_t        end;
+    uint32_t         prot;
+    uint32_t         flags;
+    uint32_t         file_offset;
+    struct vfs_node* file_node;
+    uint8_t          in_use;
+} task_mmap_region_t;
 
 typedef struct task {
     uint32_t        id;
@@ -98,6 +110,9 @@ typedef struct task {
     uint32_t        elf_backing_size;
     uint32_t        elf_region_count;
     task_elf_lazy_region_t elf_regions[TASK_ELF_LAZY_MAX];
+
+    /* User mmap()/munmap() regions populated lazily by page-fault handler. */
+    task_mmap_region_t mmap_regions[TASK_MMAP_MAX];
 
     /* Fork return context for child first run. */
     uint32_t        fork_user_eip;
@@ -171,6 +186,10 @@ int task_adopt_elf_lazy_layout(int task_id,
                                uint32_t image_size,
                                const task_elf_lazy_region_t* regions,
                                uint32_t region_count);
+
+/* mmap()/munmap() primitives for current task. */
+int task_mmap_current(const syscall_mmap_args_t* args, uintptr_t* out_addr);
+int task_munmap_current(uintptr_t addr, uint32_t length);
 
 /* Fork groundwork: clone current task metadata and user return context. */
 int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags);

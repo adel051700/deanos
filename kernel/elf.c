@@ -156,6 +156,8 @@ extern const uint8_t _binary_build_user_catfd_elf_start[];
 extern const uint8_t _binary_build_user_catfd_elf_end[];
 extern const uint8_t _binary_build_user_sigtest_elf_start[];
 extern const uint8_t _binary_build_user_sigtest_elf_end[];
+extern const uint8_t _binary_build_user_mmaptest_elf_start[];
+extern const uint8_t _binary_build_user_mmaptest_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -411,4 +413,10 @@ void elf_install_test_programs(void) {
     if (!sigtest) return;
     uint32_t sigtest_size = (uint32_t)(_binary_build_user_sigtest_elf_end - _binary_build_user_sigtest_elf_start);
     vfs_write(sigtest, 0, sigtest_size, _binary_build_user_sigtest_elf_start);
+
+    vfs_create(bin, "mmaptest", VFS_FILE);
+    vfs_node_t* mmaptest = vfs_finddir(bin, "mmaptest");
+    if (!mmaptest) return;
+    uint32_t mmaptest_size = (uint32_t)(_binary_build_user_mmaptest_elf_end - _binary_build_user_mmaptest_elf_start);
+    vfs_write(mmaptest, 0, mmaptest_size, _binary_build_user_mmaptest_elf_start);
 }

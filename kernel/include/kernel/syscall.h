@@ -31,7 +31,29 @@ enum {
     SYS_sigaction = 24,
     SYS_signal = 25,
     SYS_sigreturn = 26,
+    SYS_mmap = 27,
+    SYS_munmap = 28,
 };
+
+/* mmap protection flags */
+#define MMAP_PROT_READ   0x1u
+#define MMAP_PROT_WRITE  0x2u
+#define MMAP_PROT_EXEC   0x4u
+
+/* mmap mapping flags */
+#define MMAP_MAP_SHARED     0x01u
+#define MMAP_MAP_PRIVATE    0x02u
+#define MMAP_MAP_FIXED      0x10u
+#define MMAP_MAP_ANONYMOUS  0x20u
+
+typedef struct syscall_mmap_args {
+    uintptr_t addr;
+    uint32_t  length;
+    uint32_t  prot;
+    uint32_t  flags;
+    int32_t   fd;
+    uint32_t  offset;
+} syscall_mmap_args_t;
 
 /* Install syscall handlers on vectors 0x80 and 0x81 */
 void syscall_initialize(void);
