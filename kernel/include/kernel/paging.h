@@ -12,9 +12,18 @@ typedef struct paging_stats {
 	uint32_t demand_regions;
 	uint32_t demand_faults;
 	uint32_t cow_faults;
+	uint32_t swap_slots_total;
+	uint32_t swap_slots_used;
+	uint32_t swap_pageouts;
+	uint32_t swap_pageins;
+	uint32_t swap_faults;
+	uint32_t swap_enabled;
 } paging_stats_t;
 
 void paging_initialize(struct multiboot_tag_framebuffer* fb_tag);
+
+/* Late init after block devices/partitions are available. */
+int paging_swap_initialize(void);
 
 uintptr_t paging_heap_base(void);
 uintptr_t paging_heap_size(void);

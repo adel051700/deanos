@@ -17,6 +17,7 @@
 #include "include/kernel/blockdev.h"
 #include "include/kernel/ata.h"
 #include "include/kernel/mbr.h"
+#include "include/kernel/paging.h"
 
 static void shell_task(void) {
     while (1) {
@@ -48,6 +49,7 @@ void kernel_main(void) {
     mbr_initialize();
     ata_initialize();
     mbr_scan_all();
+    (void)paging_swap_initialize();
 
     /* Filesystem: must come after kheap (initialized in constructor) */
     vfs_initialize();
