@@ -48,6 +48,7 @@ static vfs_node_t* ramfs_alloc_node(const char* name, uint32_t type) {
     n->type  = type;
     n->size  = 0;
     n->inode = next_inode++;
+    n->mode  = (type & VFS_DIRECTORY) ? VFS_MODE_DIR_DEFAULT : VFS_MODE_FILE_DEFAULT;
 
     /* Wire up the vtable */
     n->read     = ramfs_read;

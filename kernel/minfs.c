@@ -317,6 +317,7 @@ static void minfs_wire_vnode(minfs_t* fs, uint32_t index, vfs_node_t* node, int 
     node->type = fs->nodes[index].type;
     node->size = fs->nodes[index].size;
     node->inode = (fs->dev_index << 16) | index;
+    node->mode = (node->type & VFS_DIRECTORY) ? VFS_MODE_DIR_DEFAULT : VFS_MODE_FILE_DEFAULT;
     node->read = minfs_read;
     node->write = minfs_write;
     node->open = minfs_open;
@@ -738,6 +739,13 @@ int minfs_mount(uint32_t dev_index, const char* mount_name) {
     }
 
     minfs_refresh_directory_sizes(fs);
+    {
+        char mount_path[VFS_PATH_MAX];
+        mount_path[0] = '\0';
+        strncat(mount_path, "/mnt/", sizeof(mount_path) - strlen(mount_path) - 1);
+        strncat(mount_path, mp_name, sizeof(mount_path) - strlen(mount_path) - 1);
+        (void)vfs_mount(mount_path, mountpoint);
+    }
     g_mounts[g_mount_count++] = fs;
     klog("minfs: mounted bitmap-backed filesystem");
     return 0;

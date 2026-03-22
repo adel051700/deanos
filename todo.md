@@ -55,7 +55,7 @@
 28. ~~Shared memory: lightweight shm API for IPC between processes.~~
 29. ~~Swap design pass: plan paging-to-disk layout and eviction policy.~~
 30. ~~Swap implementation: page-out/page-in path with fault retry logic.~~
-31. VFS cleanup: unify mount points, path normalization, and permission checks.
+31. ~~VFS cleanup: unify mount points, path normalization, and permission checks.~~
 32. Real filesystem phase 1: FAT32 read-only mount support for disk partitions.
 33. Real filesystem phase 2: FAT32 write support with crash-safe metadata updates.
 34. Filesystem cache: block cache with LRU/clock eviction and dirty writeback.
