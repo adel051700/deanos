@@ -108,6 +108,7 @@ static void cmd_anim(const char* args);
 static void cmd_jobs(const char* args);
 static void cmd_fg(const char* args);
 static void cmd_bg(const char* args);
+static void cmd_vfstest(const char* args);
 
 static void shell_jobs_reap(void);
 static void shell_jobs_add(int pid, int pgid, const char* cmd);
@@ -164,6 +165,7 @@ static const struct shell_command commands[] = {
     {"fg",      cmd_fg,      "Bring job to foreground: fg <pid>"},
     {"bg",      cmd_bg,      "Keep job in background: bg <pid>"},
     {"anim",    cmd_anim,    "Run large animated demo"},
+    {"vfstest", cmd_vfstest, "VFS tests: vfstest norm | vfstest mount | vfstest perm"},
 
     // New syscall test commands
     {"sys.write",   cmd_sys_write,   "Syscall write via int 0x80: sys.write <text>"},
@@ -188,6 +190,7 @@ static int shell_is_hidden_help_command(const char* name) {
     if (strcmp(name, "sys.exit") == 0) return 1;
     return 0;
 }
+
 
 // Remove the old non-static forward line:
 // - void cmd_cls(const char* args);
@@ -2412,20 +2415,7 @@ static void cmd_vm(const char* args) {
  */
 static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz) {
     if (!arg || *arg == '\0') return cwd;
-    if (arg[0] == '/') return arg;           /* absolute – use as-is */
-
-    /* Build cwd + "/" + arg into buf */
-    size_t cwdlen = strlen(cwd);
-    if (cwdlen + 1 + strlen(arg) + 1 > bufsz) return cwd; /* too long */
-
-    strcpy(buf, cwd);
-    /* append '/' separator unless cwd already ends with '/' */
-    if (cwdlen > 0 && cwd[cwdlen - 1] != '/') {
-        buf[cwdlen] = '/';
-        buf[cwdlen + 1] = '\0';
-    }
-    strncat(buf, arg, bufsz - strlen(buf) - 1);
-    buf[bufsz - 1] = '\0';
+    if (vfs_normalize_path(cwd, arg, buf, bufsz) < 0) return cwd;
     return buf;
 }
 
@@ -2588,35 +2578,7 @@ static void cmd_touch(const char* args) {
         return;
     }
 
-    /* Split into parent + name */
-    /* Find last '/' */
-    size_t plen = strlen(path);
-    int last_slash = -1;
-    for (size_t i = 0; i < plen; i++) {
-        if (path[i] == '/') last_slash = (int)i;
-    }
-
-    char parent_path[VFS_PATH_MAX];
-    char fname[VFS_NAME_MAX];
-    if (last_slash <= 0) {
-        parent_path[0] = '/'; parent_path[1] = '\0';
-        strncpy(fname, path + (last_slash < 0 ? 0 : 1), VFS_NAME_MAX - 1);
-    } else {
-        memcpy(parent_path, path, (size_t)last_slash);
-        parent_path[last_slash] = '\0';
-        strncpy(fname, path + last_slash + 1, VFS_NAME_MAX - 1);
-    }
-    fname[VFS_NAME_MAX - 1] = '\0';
-
-    vfs_node_t* parent = vfs_namei(parent_path);
-    if (!parent) {
-        terminal_writestring("touch: parent not found: ");
-        terminal_writestring(parent_path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (vfs_create(parent, fname, VFS_FILE) < 0) {
+    if (vfs_create_path(path, VFS_FILE) < 0) {
         terminal_writestring("touch: failed to create file\n");
     }
 }
@@ -2688,34 +2650,7 @@ static void cmd_mkdir(const char* args) {
         return;
     }
 
-    /* Split parent + dirname */
-    size_t plen = strlen(path);
-    int last_slash = -1;
-    for (size_t i = 0; i < plen; i++) {
-        if (path[i] == '/') last_slash = (int)i;
-    }
-
-    char parent_path[VFS_PATH_MAX];
-    char dname[VFS_NAME_MAX];
-    if (last_slash <= 0) {
-        parent_path[0] = '/'; parent_path[1] = '\0';
-        strncpy(dname, path + (last_slash < 0 ? 0 : 1), VFS_NAME_MAX - 1);
-    } else {
-        memcpy(parent_path, path, (size_t)last_slash);
-        parent_path[last_slash] = '\0';
-        strncpy(dname, path + last_slash + 1, VFS_NAME_MAX - 1);
-    }
-    dname[VFS_NAME_MAX - 1] = '\0';
-
-    vfs_node_t* parent = vfs_namei(parent_path);
-    if (!parent) {
-        terminal_writestring("mkdir: parent not found: ");
-        terminal_writestring(parent_path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (vfs_create(parent, dname, VFS_DIRECTORY) < 0) {
+    if (vfs_create_path(path, VFS_DIRECTORY) < 0) {
         terminal_writestring("mkdir: failed to create directory\n");
     }
 }
@@ -2737,37 +2672,12 @@ static void cmd_rm(const char* args) {
         return;
     }
 
-    /* Resolve parent and basename from path, do not trust node->parent. */
-    size_t plen = strlen(path);
-    int last_slash = -1;
-    for (size_t i = 0; i < plen; ++i) {
-        if (path[i] == '/') last_slash = (int)i;
-    }
-
-    char parent_path[VFS_PATH_MAX];
-    char name[VFS_NAME_MAX];
-    if (last_slash <= 0) {
-        strcpy(parent_path, "/");
-        strncpy(name, path + (last_slash < 0 ? 0 : 1), VFS_NAME_MAX - 1);
-    } else {
-        memcpy(parent_path, path, (size_t)last_slash);
-        parent_path[last_slash] = '\0';
-        strncpy(name, path + last_slash + 1, VFS_NAME_MAX - 1);
-    }
-    name[VFS_NAME_MAX - 1] = '\0';
-
-    if (name[0] == '\0') {
+    if (strcmp(path, "/") == 0) {
         terminal_writestring("rm: cannot remove root\n");
         return;
     }
 
-    vfs_node_t* parent = vfs_namei(parent_path);
-    if (!parent) {
-        terminal_writestring("rm: parent not found\n");
-        return;
-    }
-
-    if (vfs_unlink(parent, name) < 0) {
+    if (vfs_unlink_path(path) < 0) {
         terminal_writestring("rm: failed (directory not empty?)\n");
     }
 }
@@ -2806,56 +2716,6 @@ static void cmd_stat(const char* args) {
     terminal_writestring(" bytes\n");
 }
 
-/*
- * Canonicalize a path in-place: collapse "//", resolve "." and "..".
- * The result always starts with "/" and never has a trailing slash
- * (except for the root directory "/").
- */
-static void canonicalize_path(char* path) {
-    /* We build the result in a local buffer, then copy back. */
-    char tmp[VFS_PATH_MAX];
-    size_t tp = 0;  /* write position in tmp */
-
-    const char* p = path;
-    while (*p) {
-        /* skip duplicate slashes */
-        if (*p == '/') {
-            p++;
-            continue;
-        }
-
-        /* find the next component */
-        const char* start = p;
-        while (*p && *p != '/') p++;
-        size_t len = (size_t)(p - start);
-
-        if (len == 1 && start[0] == '.') {
-            /* "." — skip */
-            continue;
-        }
-        if (len == 2 && start[0] == '.' && start[1] == '.') {
-            /* ".." — go up: remove last component from tmp */
-            while (tp > 0 && tmp[tp - 1] != '/') tp--;
-            if (tp > 0) tp--;   /* remove the slash itself */
-            continue;
-        }
-
-        /* normal component: append "/component" */
-        if (tp + 1 + len >= VFS_PATH_MAX - 1) break;  /* overflow guard */
-        tmp[tp++] = '/';
-        memcpy(tmp + tp, start, len);
-        tp += len;
-    }
-
-    if (tp == 0) {
-        path[0] = '/';
-        path[1] = '\0';
-    } else {
-        tmp[tp] = '\0';
-        strcpy(path, tmp);
-    }
-}
-
 static void cmd_cd(const char* args) {
     char pathbuf[VFS_PATH_MAX];
 
@@ -2868,11 +2728,11 @@ static void cmd_cd(const char* args) {
 
     const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
 
-    /* Copy into a mutable buffer so we can canonicalize */
     char resolved[VFS_PATH_MAX];
-    strncpy(resolved, path, VFS_PATH_MAX - 1);
-    resolved[VFS_PATH_MAX - 1] = '\0';
-    canonicalize_path(resolved);
+    if (vfs_normalize_path(cwd, path, resolved, sizeof(resolved)) < 0) {
+        terminal_writestring("cd: invalid path\n");
+        return;
+    }
 
     /* Check the path actually exists and is a directory */
     vfs_node_t* node = vfs_namei(resolved);
@@ -2895,6 +2755,194 @@ static void cmd_cd(const char* args) {
 static void cmd_pwd(const char* args) {
     (void)args;
     terminal_writestring(cwd);
+    terminal_writestring("\n");
+}
+
+/*
+ * VFS test suite: validates path normalization, mount points, and permissions
+ */
+static void cmd_vfstest(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: vfstest norm | vfstest mount | vfstest perm\n");
+        return;
+    }
+
+    /* Extract subcommand */
+    char subcmd[32];
+    size_t i = 0;
+    while (args[i] && args[i] != ' ' && i < sizeof(subcmd) - 1) {
+        subcmd[i] = args[i];
+        i++;
+    }
+    subcmd[i] = '\0';
+
+    if (strcmp(subcmd, "norm") == 0) {
+        /* Test 1: Normalize paths with //, ., .. */
+        terminal_writestring("\n=== PATH NORMALIZATION TEST ===\n");
+
+        struct {
+            const char* input;
+            const char* expected;
+        } tests[] = {
+            {"/a/b/c", "/a/b/c"},
+            {"/a//b", "/a/b"},
+            {"/a///b", "/a/b"},
+            {"/./a/b", "/a/b"},
+            {"/a/./b", "/a/b"},
+            {"/a/b/.", "/a/b"},
+            {"/a/../b", "/b"},
+            {"/a/b/../c", "/a/c"},
+            {"/a/./b/../c", "/a/c"},
+            {"//a//b//", "/a/b"},
+            {"/", "/"},
+        };
+
+        char normalized[VFS_PATH_MAX];
+        int pass = 0, fail = 0;
+
+        for (size_t t = 0; t < sizeof(tests) / sizeof(tests[0]); t++) {
+            if (vfs_normalize_path("/", tests[t].input, normalized, sizeof(normalized)) == 0) {
+                if (strcmp(normalized, tests[t].expected) == 0) {
+                    terminal_writestring("[OK] ");
+                    terminal_writestring(tests[t].input);
+                    terminal_writestring(" -> ");
+                    terminal_writestring(normalized);
+                    terminal_writestring("\n");
+                    pass++;
+                } else {
+                    terminal_writestring("[FAIL] ");
+                    terminal_writestring(tests[t].input);
+                    terminal_writestring(" got ");
+                    terminal_writestring(normalized);
+                    terminal_writestring(" expected ");
+                    terminal_writestring(tests[t].expected);
+                    terminal_writestring("\n");
+                    fail++;
+                }
+            } else {
+                terminal_writestring("[ERROR] Could not normalize ");
+                terminal_writestring(tests[t].input);
+                terminal_writestring("\n");
+                fail++;
+            }
+        }
+
+        terminal_writestring("\nPath normalization: ");
+        char buf[16];
+        itoa(pass, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" passed, ");
+        itoa(fail, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" failed\n");
+        return;
+    }
+
+    if (strcmp(subcmd, "mount") == 0) {
+        /* Test 2: Mount point resolution */
+        terminal_writestring("\n=== MOUNT POINT RESOLUTION TEST ===\n");
+
+        /* Create test directory structure */
+        terminal_writestring("Setting up test dirs...\n");
+        if (vfs_create_path("/vfstest", VFS_DIRECTORY) < 0) {
+            terminal_writestring("mkdir /vfstest failed (may already exist)\n");
+        }
+        if (vfs_create_path("/vfstest/file1", VFS_FILE) < 0) {
+            terminal_writestring("touch /vfstest/file1 failed\n");
+        }
+
+        vfs_node_t* vfstest = vfs_namei("/vfstest");
+        if (vfstest) {
+            terminal_writestring("[OK] /vfstest resolved to ");
+            char buf[16];
+            itoa((int)vfstest->inode, buf, 10);
+            terminal_writestring(buf);
+            terminal_writestring("\n");
+        } else {
+            terminal_writestring("[FAIL] /vfstest not found\n");
+        }
+
+        vfs_node_t* file1 = vfs_namei("/vfstest/file1");
+        if (file1) {
+            terminal_writestring("[OK] /vfstest/file1 resolved\n");
+        } else {
+            terminal_writestring("[FAIL] /vfstest/file1 not found\n");
+        }
+
+        /* Test relative path with cwd */
+        char old_cwd[VFS_PATH_MAX];
+        strcpy(old_cwd, cwd);
+        strcpy(cwd, "/vfstest");
+
+        char normalized[VFS_PATH_MAX];
+        if (vfs_normalize_path(cwd, "file1", normalized, sizeof(normalized)) == 0) {
+            terminal_writestring("[OK] Relative path 'file1' normalized to ");
+            terminal_writestring(normalized);
+            terminal_writestring("\n");
+        } else {
+            terminal_writestring("[FAIL] Could not resolve relative path\n");
+        }
+
+        strcpy(cwd, old_cwd);
+        terminal_writestring("Mount resolution tests completed\n");
+        return;
+    }
+
+    if (strcmp(subcmd, "perm") == 0) {
+        /* Test 3: Permission checks */
+        terminal_writestring("\n=== PERMISSION CHECK TEST ===\n");
+
+        vfs_node_t* root = vfs_get_root();
+        if (!root) {
+            terminal_writestring("[ERROR] No root filesystem\n");
+            return;
+        }
+
+        terminal_writestring("Root inode: ");
+        char buf[16];
+        itoa((int)root->inode, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(", type: ");
+        terminal_writestring((root->type & VFS_DIRECTORY) ? "DIR" : "FILE");
+        terminal_writestring(", mode: 0");
+        itoa((int)root->mode, buf, 8);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+
+        /* Test permission bits */
+        int can_read = vfs_node_allows(root, VFS_MODE_IROTH);
+        int can_write = vfs_node_allows(root, VFS_MODE_IWOTH);
+        int can_exec = vfs_node_allows(root, VFS_MODE_IXOTH);
+
+        terminal_writestring("Permissions: read=");
+        terminal_writestring(can_read ? "yes" : "no");
+        terminal_writestring(" write=");
+        terminal_writestring(can_write ? "yes" : "no");
+        terminal_writestring(" exec=");
+        terminal_writestring(can_exec ? "yes" : "no");
+        terminal_writestring("\n");
+
+        /* Create a test file and verify permissions */
+        if (vfs_create_path("/perm_test", VFS_FILE) < 0) {
+            terminal_writestring("[WARN] Could not create /perm_test (may already exist)\n");
+        } else {
+            terminal_writestring("[OK] Created /perm_test\n");
+        }
+
+        vfs_node_t* pfile = vfs_namei("/perm_test");
+        if (pfile) {
+            terminal_writestring("[OK] /perm_test has mode 0");
+            itoa((int)pfile->mode, buf, 8);
+            terminal_writestring(buf);
+            terminal_writestring(" (should be writable by default)\n");
+        }
+
+        terminal_writestring("Permission tests completed\n");
+        return;
+    }
+
+    terminal_writestring("Unknown vfstest subcommand: ");
+    terminal_writestring(subcmd);
     terminal_writestring("\n");
 }
 

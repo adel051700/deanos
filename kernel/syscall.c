@@ -205,42 +205,7 @@ static long sys_tcgetpgrp(uint32_t fd) {
 
 static long sys_mkdir(const char* path) {
     if (!path) return -1;
-    /* Resolve parent, create directory child */
-    /* Find the last '/' to split parent and name */
-    size_t plen = 0;
-    while (path[plen]) plen++;
-    if (plen == 0) return -1;
-
-    /* Find last slash */
-    int last_slash = -1;
-    for (size_t i = 0; i < plen; i++) {
-        if (path[i] == '/') last_slash = (int)i;
-    }
-
-    char parent_path[VFS_PATH_MAX];
-    char dir_name[VFS_NAME_MAX];
-
-    if (last_slash < 0) {
-        parent_path[0] = '/'; parent_path[1] = '\0';
-        strncpy(dir_name, path, VFS_NAME_MAX - 1);
-        dir_name[VFS_NAME_MAX - 1] = '\0';
-    } else if (last_slash == 0) {
-        parent_path[0] = '/'; parent_path[1] = '\0';
-        strncpy(dir_name, path + 1, VFS_NAME_MAX - 1);
-        dir_name[VFS_NAME_MAX - 1] = '\0';
-    } else {
-        size_t dlen = (size_t)last_slash;
-        if (dlen >= VFS_PATH_MAX) dlen = VFS_PATH_MAX - 1;
-        memcpy(parent_path, path, dlen);
-        parent_path[dlen] = '\0';
-        strncpy(dir_name, path + last_slash + 1, VFS_NAME_MAX - 1);
-        dir_name[VFS_NAME_MAX - 1] = '\0';
-    }
-
-    vfs_node_t* parent = vfs_namei(parent_path);
-    if (!parent) return -1;
-
-    return (long)vfs_create(parent, dir_name, VFS_DIRECTORY);
+    return (long)vfs_create_path(path, VFS_DIRECTORY);
 }
 
 static long sys_mmap(const syscall_mmap_args_t* args) {

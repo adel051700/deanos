@@ -18,6 +18,21 @@ extern "C" {
 #define VFS_FILE        0x01
 #define VFS_DIRECTORY   0x02
 
+/* Basic POSIX-like permission bits */
+#define VFS_MODE_IRUSR  0400u
+#define VFS_MODE_IWUSR  0200u
+#define VFS_MODE_IXUSR  0100u
+#define VFS_MODE_IRGRP  0040u
+#define VFS_MODE_IWGRP  0020u
+#define VFS_MODE_IXGRP  0010u
+#define VFS_MODE_IROTH  0004u
+#define VFS_MODE_IWOTH  0002u
+#define VFS_MODE_IXOTH  0001u
+
+#define VFS_MODE_FILE_DEFAULT (VFS_MODE_IRUSR | VFS_MODE_IWUSR | VFS_MODE_IRGRP | VFS_MODE_IROTH)
+#define VFS_MODE_DIR_DEFAULT  (VFS_MODE_IRUSR | VFS_MODE_IWUSR | VFS_MODE_IXUSR | \
+                               VFS_MODE_IRGRP | VFS_MODE_IXGRP | VFS_MODE_IROTH | VFS_MODE_IXOTH)
+
 /* Open flags */
 #define VFS_O_RDONLY    0x00
 #define VFS_O_WRONLY    0x01
@@ -66,6 +81,7 @@ typedef struct vfs_node {
     uint32_t     type;         /* VFS_FILE or VFS_DIRECTORY */
     uint32_t     size;         /* file: byte count; dir: child count */
     uint32_t     inode;        /* unique id */
+    uint16_t     mode;         /* permission bits */
 
     /* Operations vtable — set by the filesystem driver */
     vfs_read_fn    read;
@@ -102,6 +118,15 @@ void         vfs_set_root(vfs_node_t* root);
 
 /* Path resolution */
 vfs_node_t*  vfs_namei(const char* path);
+int          vfs_normalize_path(const char* cwd, const char* path, char* out, size_t out_size);
+int          vfs_split_path(const char* path, char* parent_path, size_t parent_size,
+                            char* basename, size_t base_size);
+
+/* Mount registration */
+int          vfs_mount(const char* mount_path, vfs_node_t* root_node);
+
+/* Permission checking (for testing/diagnostics) */
+int          vfs_node_allows(const struct vfs_node* node, uint8_t perm);
 
 /* Node-level operations (call through vtable) */
 int32_t      vfs_read(vfs_node_t* node, uint32_t offset, uint32_t size, uint8_t* buffer);
@@ -112,6 +137,8 @@ int          vfs_readdir(vfs_node_t* node, uint32_t index, vfs_dirent_t* out);
 vfs_node_t*  vfs_finddir(vfs_node_t* node, const char* name);
 int          vfs_create(vfs_node_t* parent, const char* name, uint32_t type);
 int          vfs_unlink(vfs_node_t* parent, const char* name);
+int          vfs_create_path(const char* path, uint32_t type);
+int          vfs_unlink_path(const char* path);
 int          vfs_stat(vfs_node_t* node, vfs_stat_t* st);
 
 /* FD-based API (uses the current task's fd table) */

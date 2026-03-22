@@ -16,10 +16,80 @@
 
 static vfs_node_t* vfs_root = NULL;
 
+#define VFS_MAX_MOUNTS 8
+
+typedef struct {
+    char path[VFS_PATH_MAX];
+    vfs_node_t* root;
+    uint8_t in_use;
+} vfs_mount_entry_t;
+
+static vfs_mount_entry_t vfs_mounts[VFS_MAX_MOUNTS];
+
+int vfs_node_allows(const vfs_node_t* node, uint8_t perm) {
+    if (!node) return 0;
+    if (node->mode == 0) return 1; /* backwards-compatible default */
+
+    if (perm == VFS_MODE_IROTH) {
+        return (node->mode & (VFS_MODE_IRUSR | VFS_MODE_IRGRP | VFS_MODE_IROTH)) != 0;
+    }
+    if (perm == VFS_MODE_IWOTH) {
+        return (node->mode & (VFS_MODE_IWUSR | VFS_MODE_IWGRP | VFS_MODE_IWOTH)) != 0;
+    }
+    if (perm == VFS_MODE_IXOTH) {
+        return (node->mode & (VFS_MODE_IXUSR | VFS_MODE_IXGRP | VFS_MODE_IXOTH)) != 0;
+    }
+
+    return 0;
+}
+
+static int vfs_name_is_valid(const char* name) {
+    if (!name || *name == '\0') return 0;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
+    for (size_t i = 0; name[i]; ++i) {
+        if (name[i] == '/') return 0;
+    }
+    return 1;
+}
+
+static vfs_node_t* vfs_mount_lookup_start(const char* path, const char** out_rest) {
+    size_t best_len = 0;
+    vfs_node_t* best = NULL;
+
+    for (size_t i = 0; i < VFS_MAX_MOUNTS; ++i) {
+        if (!vfs_mounts[i].in_use || !vfs_mounts[i].root) continue;
+        const char* mpath = vfs_mounts[i].path;
+        size_t mlen = strlen(mpath);
+        if (mlen == 0) continue;
+
+        if (strcmp(path, mpath) == 0 ||
+            (strncmp(path, mpath, mlen) == 0 && path[mlen] == '/')) {
+            if (mlen > best_len) {
+                best_len = mlen;
+                best = vfs_mounts[i].root;
+            }
+        }
+    }
+
+    if (best) {
+        if (out_rest) {
+            if (path[best_len] == '\0') *out_rest = "";
+            else *out_rest = path + best_len + 1;
+        }
+        return best;
+    }
+
+    if (out_rest) {
+        *out_rest = (*path == '/') ? path + 1 : path;
+    }
+    return vfs_root;
+}
+
 /* ---- Initialisation ---------------------------------------------------- */
 
 void vfs_initialize(void) {
     vfs_root = NULL;
+    memset(vfs_mounts, 0, sizeof(vfs_mounts));
 }
 
 vfs_node_t* vfs_get_root(void) {
@@ -41,32 +111,106 @@ void vfs_set_root(vfs_node_t* root) {
  *   • Each component is looked up via the current node's finddir callback.
  *   • Returns NULL if any component is not found or root is unset.
  */
+int vfs_normalize_path(const char* cwd, const char* path, char* out, size_t out_size) {
+    if (!out || out_size < 2) return -1;
+
+    char input[VFS_PATH_MAX];
+    const char* src = path;
+
+    if (!src || *src == '\0') {
+        src = (cwd && *cwd) ? cwd : "/";
+    }
+
+    if (src[0] == '/') {
+        strncpy(input, src, sizeof(input) - 1);
+        input[sizeof(input) - 1] = '\0';
+    } else {
+        const char* base = (cwd && cwd[0] == '/') ? cwd : "/";
+        size_t base_len = strlen(base);
+        size_t src_len = strlen(src);
+        if (base_len + 1 + src_len + 1 > sizeof(input)) return -1;
+        strcpy(input, base);
+        if (base_len == 0 || input[base_len - 1] != '/') {
+            input[base_len] = '/';
+            input[base_len + 1] = '\0';
+        }
+        strncat(input, src, sizeof(input) - strlen(input) - 1);
+    }
+
+    size_t out_len = 1;
+    out[0] = '/';
+    out[1] = '\0';
+
+    size_t i = 0;
+    while (input[i]) {
+        while (input[i] == '/') i++;
+        if (!input[i]) break;
+
+        size_t start = i;
+        while (input[i] && input[i] != '/') i++;
+        size_t len = i - start;
+        if (len == 0) continue;
+
+        if (len == 1 && input[start] == '.') {
+            continue;
+        }
+
+        if (len == 2 && input[start] == '.' && input[start + 1] == '.') {
+            if (out_len > 1) {
+                while (out_len > 1 && out[out_len - 1] != '/') out_len--;
+                if (out_len > 1) out_len--;
+            }
+            out[out_len] = '\0';
+            continue;
+        }
+
+        if (len >= VFS_NAME_MAX) return -1;
+        if (out_len + len + 1 >= out_size) return -1;
+
+        if (out_len > 1) out[out_len++] = '/';
+        memcpy(out + out_len, input + start, len);
+        out_len += len;
+        out[out_len] = '\0';
+    }
+
+    if (out_len == 0) {
+        out[0] = '/';
+        out[1] = '\0';
+    }
+    return 0;
+}
+
 vfs_node_t* vfs_namei(const char* path) {
     if (!path || !vfs_root) return NULL;
 
-    /* "/" alone → root */
-    while (*path == '/') path++;
-    if (*path == '\0') return vfs_root;
+    char normalized[VFS_PATH_MAX];
+    if (vfs_normalize_path("/", path, normalized, sizeof(normalized)) < 0) return NULL;
+    if (strcmp(normalized, "/") == 0) return vfs_root;
 
-    vfs_node_t* cur = vfs_root;
+    const char* remainder = NULL;
+    vfs_node_t* cur = vfs_mount_lookup_start(normalized, &remainder);
+    if (!cur) return NULL;
+    if (!remainder || *remainder == '\0') return cur;
+
     char component[VFS_NAME_MAX];
 
-    while (*path) {
+    while (*remainder) {
         /* Skip slashes */
-        while (*path == '/') path++;
-        if (*path == '\0') break;
+        while (*remainder == '/') remainder++;
+        if (*remainder == '\0') break;
 
         /* Extract next component */
         size_t len = 0;
-        while (path[len] && path[len] != '/' && len < VFS_NAME_MAX - 1) {
-            component[len] = path[len];
+        while (remainder[len] && remainder[len] != '/' && len < VFS_NAME_MAX - 1) {
+            component[len] = remainder[len];
             len++;
         }
         component[len] = '\0';
-        path += len;
+        remainder += len;
 
-        /* Current node must be a directory with finddir */
+        /* Traversal requires search/execute permission on each directory. */
         if (!(cur->type & VFS_DIRECTORY) || !cur->finddir) return NULL;
+        if (!vfs_node_allows(cur, VFS_MODE_IXOTH)) return NULL;
 
         cur = cur->finddir(cur, component);
         if (!cur) return NULL;
@@ -81,39 +225,63 @@ vfs_node_t* vfs_namei(const char* path) {
  * Given "/foo/bar/baz", sets parent_path="/foo/bar" and basename="baz".
  * Given "/file", sets parent_path="/" and basename="file".
  */
-static int split_path(const char* path, char* parent_path, size_t pp_size,
-                      char* basename, size_t bn_size)
-{
-    if (!path || !parent_path || !basename) return -1;
+int vfs_split_path(const char* path, char* parent_path, size_t pp_size,
+                   char* basename, size_t bn_size) {
+    if (!path || !parent_path || !basename || pp_size == 0 || bn_size == 0) return -1;
 
-    size_t plen = strlen(path);
-    if (plen == 0) return -1;
+    char normalized[VFS_PATH_MAX];
+    if (vfs_normalize_path("/", path, normalized, sizeof(normalized)) < 0) return -1;
+    if (strcmp(normalized, "/") == 0) return -1;
 
-    /* Find last '/' */
-    const char* last_slash = NULL;
-    for (size_t i = 0; i < plen; ++i) {
-        if (path[i] == '/') last_slash = &path[i];
-    }
+    const char* last_slash = strrchr(normalized, '/');
+    if (!last_slash || !last_slash[1]) return -1;
 
-    if (!last_slash) {
-        /* No slash → parent is root */
-        strncpy(parent_path, "/", pp_size);
-        strncpy(basename, path, bn_size);
-    } else if (last_slash == path) {
-        /* Slash is at position 0, e.g. "/file" */
-        strncpy(parent_path, "/", pp_size);
-        strncpy(basename, last_slash + 1, bn_size);
-    } else {
-        size_t dir_len = (size_t)(last_slash - path);
-        if (dir_len >= pp_size) dir_len = pp_size - 1;
-        memcpy(parent_path, path, dir_len);
-        parent_path[dir_len] = '\0';
-        strncpy(basename, last_slash + 1, bn_size);
-    }
-
+    strncpy(basename, last_slash + 1, bn_size - 1);
     basename[bn_size - 1] = '\0';
-    parent_path[pp_size - 1] = '\0';
+    if (!vfs_name_is_valid(basename)) return -1;
+
+    if (last_slash == normalized) {
+        strncpy(parent_path, "/", pp_size - 1);
+        parent_path[pp_size - 1] = '\0';
+        return 0;
+    }
+
+    size_t plen = (size_t)(last_slash - normalized);
+    if (plen >= pp_size) return -1;
+    memcpy(parent_path, normalized, plen);
+    parent_path[plen] = '\0';
     return 0;
+}
+
+int vfs_mount(const char* mount_path, vfs_node_t* root_node) {
+    if (!mount_path || !root_node) return -1;
+
+    char normalized[VFS_PATH_MAX];
+    if (vfs_normalize_path("/", mount_path, normalized, sizeof(normalized)) < 0) return -1;
+
+    if (strcmp(normalized, "/") == 0) {
+        vfs_set_root(root_node);
+        return 0;
+    }
+
+    for (size_t i = 0; i < VFS_MAX_MOUNTS; ++i) {
+        if (!vfs_mounts[i].in_use) continue;
+        if (strcmp(vfs_mounts[i].path, normalized) == 0) {
+            vfs_mounts[i].root = root_node;
+            return 0;
+        }
+    }
+
+    for (size_t i = 0; i < VFS_MAX_MOUNTS; ++i) {
+        if (vfs_mounts[i].in_use) continue;
+        strncpy(vfs_mounts[i].path, normalized, sizeof(vfs_mounts[i].path) - 1);
+        vfs_mounts[i].path[sizeof(vfs_mounts[i].path) - 1] = '\0';
+        vfs_mounts[i].root = root_node;
+        vfs_mounts[i].in_use = 1;
+        return 0;
+    }
+
+    return -1;
 }
 
 /* ---- Anonymous pipes ---------------------------------------------------- */
@@ -235,6 +403,7 @@ static vfs_node_t* pipe_make_end_node(vfs_pipe_t* pipe, uint8_t is_writer) {
     memset(end, 0, sizeof(vfs_pipe_end_t));
     strncpy(node->name, is_writer ? "pipew" : "piper", VFS_NAME_MAX - 1);
     node->type = VFS_FILE;
+    node->mode = VFS_MODE_FILE_DEFAULT;
     node->read = pipe_read;
     node->write = pipe_write;
     node->open = pipe_open;
@@ -260,6 +429,14 @@ int32_t vfs_write(vfs_node_t* node, uint32_t offset, uint32_t size, const uint8_
 
 int vfs_open_node(vfs_node_t* node, uint32_t flags) {
     if (!node) return -1;
+
+    uint32_t access = flags & (VFS_O_WRONLY | VFS_O_RDWR);
+    int wants_read = (access != VFS_O_WRONLY);
+    int wants_write = (access == VFS_O_WRONLY || access == VFS_O_RDWR);
+
+    if (wants_read && !vfs_node_allows(node, VFS_MODE_IROTH)) return -1;
+    if (wants_write && !vfs_node_allows(node, VFS_MODE_IWOTH)) return -1;
+
     if (node->open) return node->open(node, flags);
     return 0; /* success by default */
 }
@@ -280,13 +457,39 @@ vfs_node_t* vfs_finddir(vfs_node_t* node, const char* name) {
 }
 
 int vfs_create(vfs_node_t* parent, const char* name, uint32_t type) {
+    if (!vfs_name_is_valid(name)) return -1;
     if (!parent || !parent->create) return -1;
+    if (!(parent->type & VFS_DIRECTORY)) return -1;
+    if (!vfs_node_allows(parent, VFS_MODE_IWOTH) || !vfs_node_allows(parent, VFS_MODE_IXOTH)) return -1;
     return parent->create(parent, name, type);
 }
 
 int vfs_unlink(vfs_node_t* parent, const char* name) {
+    if (!vfs_name_is_valid(name)) return -1;
     if (!parent || !parent->unlink) return -1;
+    if (!(parent->type & VFS_DIRECTORY)) return -1;
+    if (!vfs_node_allows(parent, VFS_MODE_IWOTH) || !vfs_node_allows(parent, VFS_MODE_IXOTH)) return -1;
     return parent->unlink(parent, name);
+}
+
+int vfs_create_path(const char* path, uint32_t type) {
+    char parent_path[VFS_PATH_MAX];
+    char base_name[VFS_NAME_MAX];
+    if (vfs_split_path(path, parent_path, sizeof(parent_path), base_name, sizeof(base_name)) < 0) return -1;
+
+    vfs_node_t* parent = vfs_namei(parent_path);
+    if (!parent) return -1;
+    return vfs_create(parent, base_name, type);
+}
+
+int vfs_unlink_path(const char* path) {
+    char parent_path[VFS_PATH_MAX];
+    char base_name[VFS_NAME_MAX];
+    if (vfs_split_path(path, parent_path, sizeof(parent_path), base_name, sizeof(base_name)) < 0) return -1;
+
+    vfs_node_t* parent = vfs_namei(parent_path);
+    if (!parent) return -1;
+    return vfs_unlink(parent, base_name);
 }
 
 int vfs_stat(vfs_node_t* node, vfs_stat_t* st) {
@@ -315,27 +518,19 @@ int vfs_fd_open(const char* path, uint32_t flags) {
     task_t* t = task_current();
     if (!t) return -1;
 
+    char normalized[VFS_PATH_MAX];
+    if (vfs_normalize_path("/", path, normalized, sizeof(normalized)) < 0) return -1;
+
     uint32_t open_flags = flags & (VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREATE |
                                    VFS_O_TRUNC | VFS_O_APPEND);
     uint32_t fd_flags = (flags & VFS_O_CLOEXEC) ? VFS_FD_CLOEXEC : 0;
 
-    vfs_node_t* node = vfs_namei(path);
+    vfs_node_t* node = vfs_namei(normalized);
 
     /* Create if requested and doesn't exist */
     if (!node && (open_flags & VFS_O_CREATE)) {
-        char parent_path[VFS_PATH_MAX];
-        char base_name[VFS_NAME_MAX];
-        if (split_path(path, parent_path, sizeof(parent_path),
-                        base_name, sizeof(base_name)) < 0)
-            return -1;
-
-        vfs_node_t* parent = vfs_namei(parent_path);
-        if (!parent) return -1;
-
-        if (vfs_create(parent, base_name, VFS_FILE) < 0)
-            return -1;
-
-        node = vfs_finddir(parent, base_name);
+        if (vfs_create_path(normalized, VFS_FILE) < 0) return -1;
+        node = vfs_namei(normalized);
         if (!node) return -1;
     }
 
@@ -370,6 +565,8 @@ int32_t vfs_fd_read(int fd, uint8_t* buffer, uint32_t size) {
     if (fd < 0 || fd >= TASK_MAX_FDS || !t->fds[fd].in_use) return -1;
 
     task_fd_t* f = &t->fds[fd];
+    if ((f->open_flags & VFS_O_WRONLY) == VFS_O_WRONLY) return -1;
+    if (!vfs_node_allows(f->node, VFS_MODE_IROTH)) return -1;
     int32_t n = vfs_read(f->node, f->offset, size, buffer);
     if (n > 0) f->offset += (uint32_t)n;
     return n;
@@ -381,6 +578,9 @@ int32_t vfs_fd_write(int fd, const uint8_t* buffer, uint32_t size) {
     if (fd < 0 || fd >= TASK_MAX_FDS || !t->fds[fd].in_use) return -1;
 
     task_fd_t* f = &t->fds[fd];
+    uint32_t access = f->open_flags & (VFS_O_WRONLY | VFS_O_RDWR);
+    if (!(access == VFS_O_WRONLY || access == VFS_O_RDWR)) return -1;
+    if (!vfs_node_allows(f->node, VFS_MODE_IWOTH)) return -1;
     int32_t n = vfs_write(f->node, f->offset, size, buffer);
     if (n > 0) f->offset += (uint32_t)n;
     return n;
