@@ -52,7 +52,7 @@ static int vfs_name_is_valid(const char* name) {
     return 1;
 }
 
-static vfs_node_t* vfs_mount_lookup_start(const char* path, const char** out_rest) {
+static vfs_node_t* vfs_mount_lookup_by_path(const char* path, const char** out_rest) {
     size_t best_len = 0;
     vfs_node_t* best = NULL;
 
@@ -77,6 +77,18 @@ static vfs_node_t* vfs_mount_lookup_start(const char* path, const char** out_res
             else *out_rest = path + best_len + 1;
         }
         return best;
+    }
+
+    if (out_rest) {
+        *out_rest = NULL;
+    }
+    return NULL;
+}
+
+static vfs_node_t* vfs_mount_lookup_start(const char* path, const char** out_rest) {
+    vfs_node_t* mounted = vfs_mount_lookup_by_path(path, out_rest);
+    if (mounted) {
+        return mounted;
     }
 
     if (out_rest) {
@@ -193,6 +205,8 @@ vfs_node_t* vfs_namei(const char* path) {
     if (!remainder || *remainder == '\0') return cur;
 
     char component[VFS_NAME_MAX];
+    char built_path[VFS_PATH_MAX];
+    built_path[0] = '\0';
 
     while (*remainder) {
         /* Skip slashes */
@@ -208,12 +222,35 @@ vfs_node_t* vfs_namei(const char* path) {
         component[len] = '\0';
         remainder += len;
 
+        /* Build the path as we traverse */
+        if (strlen(built_path) + 1 + len < sizeof(built_path)) {
+            if (strlen(built_path) == 0) {
+                strcpy(built_path, "/");
+            }
+            if (built_path[strlen(built_path) - 1] != '/') {
+                strcat(built_path, "/");
+            }
+            strncat(built_path, component, sizeof(built_path) - strlen(built_path) - 1);
+        }
+
         /* Traversal requires search/execute permission on each directory. */
         if (!(cur->type & VFS_DIRECTORY) || !cur->finddir) return NULL;
         if (!vfs_node_allows(cur, VFS_MODE_IXOTH)) return NULL;
 
         cur = cur->finddir(cur, component);
         if (!cur) return NULL;
+
+        /* Check if we've hit a mount point */
+        const char* mount_remainder = NULL;
+        vfs_node_t* mounted = vfs_mount_lookup_by_path(built_path, &mount_remainder);
+        if (mounted) {
+            cur = mounted;
+            if (mount_remainder && *mount_remainder != '\0') {
+                remainder = mount_remainder;
+            } else {
+                remainder = (remainder && *remainder == '/') ? remainder + 1 : "";
+            }
+        }
     }
 
     return cur;
@@ -434,6 +471,11 @@ int vfs_open_node(vfs_node_t* node, uint32_t flags) {
     int wants_read = (access != VFS_O_WRONLY);
     int wants_write = (access == VFS_O_WRONLY || access == VFS_O_RDWR);
 
+    if ((node->type & VFS_DIRECTORY) &&
+        (wants_write || (flags & (VFS_O_TRUNC | VFS_O_APPEND)))) {
+        return -1;
+    }
+
     if (wants_read && !vfs_node_allows(node, VFS_MODE_IROTH)) return -1;
     if (wants_write && !vfs_node_allows(node, VFS_MODE_IWOTH)) return -1;
 
@@ -551,10 +593,6 @@ int vfs_fd_open(const char* path, uint32_t flags) {
     t->fds[fd].fd_flags = fd_flags;
     t->fds[fd].in_use = 1;
 
-    /* Truncate if requested */
-    if ((open_flags & VFS_O_TRUNC) && node->write) {
-        node->size = 0;
-    }
 
     return fd;
 }
