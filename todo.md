@@ -53,8 +53,8 @@
 26. ~~Demand paging completion: lazily load ELF text/data pages on first access.~~
 27. ~~mmap/munmap primitives: map anonymous and file-backed regions.~~
 28. ~~Shared memory: lightweight shm API for IPC between processes.~~
-29. Swap design pass: plan paging-to-disk layout and eviction policy.
-30. Swap implementation: page-out/page-in path with fault retry logic.
+29. ~~Swap design pass: plan paging-to-disk layout and eviction policy.~~
+30. ~~Swap implementation: page-out/page-in path with fault retry logic.~~
 31. VFS cleanup: unify mount points, path normalization, and permission checks.
 32. Real filesystem phase 1: FAT32 read-only mount support for disk partitions.
 33. Real filesystem phase 2: FAT32 write support with crash-safe metadata updates.

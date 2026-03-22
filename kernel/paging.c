@@ -5,6 +5,9 @@
 #include "include/kernel/task.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/vfs.h"
+#include "include/kernel/blockdev.h"
+#include "include/kernel/mbr.h"
+#include "include/kernel/kheap.h"
 #include "../libc/include/stdio.h"
 
 #define PAGE_SIZE 4096
@@ -13,7 +16,9 @@
 #define PTE_P  0x001
 #define PTE_W  0x002
 #define PTE_U  0x004
+#define PTE_A  0x020
 #define PTE_COW 0x200
+#define PTE_SWAPPED 0x400
 
 // Simple kernel heap mapping (virtual)
 #define KHEAP_BASE 0x40000000u
@@ -44,6 +49,45 @@ static uint32_t g_demand_region_count = 0;
 static uint32_t g_demand_fault_count = 0;
 static uint32_t g_cow_fault_count = 0;
 static uint8_t g_cow_scratch[PAGE_SIZE];
+
+typedef struct swap_state {
+    /* On-disk layout: one slot == one 4 KiB page (N contiguous device blocks). */
+    uint8_t enabled;
+    uint32_t dev_index;
+    uint64_t base_lba;
+    uint32_t blocks_per_page;
+    uint32_t slot_count;
+    uint32_t slots_used;
+    uint32_t pageouts;
+    uint32_t pageins;
+    uint32_t faults;
+    uint32_t hand_mm;
+    uint32_t hand_page;
+    uint16_t* slot_refs;
+} swap_state_t;
+
+typedef struct swap_victim {
+    uint32_t* pt;
+    uint32_t pt_index;
+    uint32_t cr3;
+    uintptr_t vaddr;
+    uintptr_t phys;
+    uint32_t pte;
+} swap_victim_t;
+
+static swap_state_t g_swap;
+
+static inline int pte_is_swapped(uint32_t pte) {
+    return ((pte & PTE_P) == 0u) && ((pte & PTE_SWAPPED) != 0u);
+}
+
+static inline uint32_t pte_swap_slot(uint32_t pte) {
+    return pte >> 12;
+}
+
+static inline uint32_t pte_swap_flags(uint32_t pte) {
+    return pte & (PTE_W | PTE_U | PTE_COW);
+}
 
 // Helpers
 static inline void load_cr3(uint32_t phys) { __asm__ __volatile__("mov %0, %%cr3" : : "r"(phys) : "memory"); }
@@ -82,6 +126,41 @@ static int mm_alloc_slot(uint32_t cr3, uint32_t refs) {
     }
     return -1;
 }
+
+static int swap_alloc_slot(uint32_t* out_slot) {
+    if (!out_slot || !g_swap.enabled || !g_swap.slot_refs) return -1;
+    for (uint32_t i = 0; i < g_swap.slot_count; ++i) {
+        if (g_swap.slot_refs[i] != 0) continue;
+        g_swap.slot_refs[i] = 1;
+        g_swap.slots_used++;
+        *out_slot = i;
+        return 0;
+    }
+    return -2;
+}
+
+static void swap_slot_ref(uint32_t slot) {
+    if (!g_swap.enabled || !g_swap.slot_refs || slot >= g_swap.slot_count) return;
+    if (g_swap.slot_refs[slot] == 0) {
+        g_swap.slot_refs[slot] = 1;
+        g_swap.slots_used++;
+        return;
+    }
+    if (g_swap.slot_refs[slot] != 0xFFFFu) g_swap.slot_refs[slot]++;
+}
+
+static void swap_slot_unref(uint32_t slot) {
+    if (!g_swap.enabled || !g_swap.slot_refs || slot >= g_swap.slot_count) return;
+    if (g_swap.slot_refs[slot] == 0) return;
+    if (g_swap.slot_refs[slot] > 1) {
+        g_swap.slot_refs[slot]--;
+        return;
+    }
+    g_swap.slot_refs[slot] = 0;
+    if (g_swap.slots_used > 0) g_swap.slots_used--;
+}
+
+static uintptr_t alloc_frame_for_paging(void);
 
 static uintptr_t alloc_zeroed_frame(void) {
     uintptr_t pa = phys_alloc_frame();
@@ -133,7 +212,15 @@ static int unmap_page_current(uintptr_t virt) {
     if (!pt) return 0;
 
     uint32_t pte = pt[pt_idx];
-    if ((pte & PTE_P) == 0u) return 0;
+    if ((pte & PTE_P) == 0u) {
+        if (pte_is_swapped(pte)) {
+            pt[pt_idx] = 0;
+            invlpg((void*)(virt & ~0xFFFu));
+            swap_slot_unref(pte_swap_slot(pte));
+            return 1;
+        }
+        return 0;
+    }
     if ((pte & PTE_U) == 0u) return 0;
 
     uintptr_t pa = (uintptr_t)(pte & ~0xFFFu);
@@ -187,15 +274,147 @@ static void destroy_mm(uint32_t cr3_phys) {
         uint32_t* pt = (uint32_t*)(uintptr_t)(pde & ~0xFFFu);
         for (uint32_t j = 0; j < 1024; ++j) {
             uint32_t pte = pt[j];
-            if ((pte & PTE_P) == 0u) continue;
-            uintptr_t pa = (uintptr_t)(pte & ~0xFFFu);
-            pmm_frame_unref(pa);
+            if ((pte & PTE_P) != 0u) {
+                uintptr_t pa = (uintptr_t)(pte & ~0xFFFu);
+                pmm_frame_unref(pa);
+            } else if (pte_is_swapped(pte)) {
+                swap_slot_unref(pte_swap_slot(pte));
+            }
         }
 
         phys_free_frame((uintptr_t)(pde & ~0xFFFu));
     }
 
     phys_free_frame((uintptr_t)(cr3_phys & ~0xFFFu));
+}
+
+static int find_swap_victim(int second_chance, swap_victim_t* out) {
+    /* Eviction policy: global second-chance clock over user-present PTEs. */
+    if (!out) return -1;
+
+    const uint32_t pages_per_pd = 1024u * 1024u;
+    uint32_t start_mm = g_swap.hand_mm;
+    uint32_t start_page = g_swap.hand_page;
+
+    for (uint32_t mm_step = 0; mm_step < MM_SLOT_MAX; ++mm_step) {
+        uint32_t mm_index = (start_mm + mm_step) % MM_SLOT_MAX;
+        mm_slot_t* slot = &g_mm_slots[mm_index];
+        if (!slot->used) continue;
+        if ((slot->cr3 & ~0xFFFu) == g_kernel_cr3) continue;
+
+        uint32_t* pd = pd_from_phys(slot->cr3);
+        if (!pd) continue;
+
+        uint32_t page_start = (mm_step == 0) ? start_page : 0u;
+        for (uint32_t page_step = 0; page_step < pages_per_pd; ++page_step) {
+            uint32_t page_index = (page_start + page_step) % pages_per_pd;
+            uint32_t dir = (page_index >> 10) & 0x3FFu;
+            uint32_t ti = page_index & 0x3FFu;
+            uint32_t pde = pd[dir];
+            if ((pde & PTE_P) == 0u) continue;
+            if ((pde & PTE_U) == 0u) continue;
+
+            uint32_t* pt = (uint32_t*)(uintptr_t)(pde & ~0xFFFu);
+            uint32_t pte = pt[ti];
+            if ((pte & PTE_P) == 0u) continue;
+            if ((pte & PTE_U) == 0u) continue;
+            if (pte & PTE_COW) continue;
+
+            uintptr_t pa = (uintptr_t)(pte & ~0xFFFu);
+            if (pmm_frame_refcount(pa) != 1u) continue;
+
+            uintptr_t va = ((uintptr_t)dir << 22) | ((uintptr_t)ti << 12);
+            if (second_chance && (pte & PTE_A)) {
+                pt[ti] = pte & ~PTE_A;
+                if ((slot->cr3 & ~0xFFFu) == g_current_cr3) invlpg((void*)va);
+                continue;
+            }
+
+            out->pt = pt;
+            out->pt_index = ti;
+            out->cr3 = slot->cr3 & ~0xFFFu;
+            out->vaddr = va;
+            out->phys = pa;
+            out->pte = pte;
+
+            g_swap.hand_mm = mm_index;
+            g_swap.hand_page = (page_index + 1u) % pages_per_pd;
+            return 0;
+        }
+    }
+
+    return -2;
+}
+
+static int swap_page_out_one(void) {
+    if (!g_swap.enabled) return -1;
+
+    swap_victim_t victim;
+    if (find_swap_victim(1, &victim) < 0 && find_swap_victim(0, &victim) < 0) {
+        return -2;
+    }
+
+    uint32_t slot = 0;
+    if (swap_alloc_slot(&slot) < 0) return -3;
+
+    uint64_t lba = g_swap.base_lba + ((uint64_t)slot * (uint64_t)g_swap.blocks_per_page);
+    if (blockdev_write(g_swap.dev_index, lba, g_swap.blocks_per_page, (const void*)victim.phys) < 0) {
+        swap_slot_unref(slot);
+        return -4;
+    }
+
+    victim.pt[victim.pt_index] = (slot << 12) | PTE_SWAPPED | pte_swap_flags(victim.pte);
+    if (victim.cr3 == g_current_cr3) invlpg((void*)victim.vaddr);
+    pmm_frame_unref(victim.phys);
+    g_swap.pageouts++;
+    return 0;
+}
+
+static uintptr_t alloc_frame_for_paging(void) {
+    uintptr_t pa = phys_alloc_frame();
+    if (pa) return pa;
+    if (!g_swap.enabled) return 0;
+    if (swap_page_out_one() < 0) return 0;
+    pa = phys_alloc_frame();
+    return pa;
+}
+
+static int handle_swap_fault(uintptr_t fault_addr, uint32_t err_code) {
+    if ((err_code & 0x1u) != 0u) return 0;
+    if (!g_swap.enabled) return 0;
+
+    uintptr_t page = fault_addr & ~0xFFFu;
+    uint32_t pd = (page >> 22) & 0x3FFu;
+    uint32_t ti = (page >> 12) & 0x3FFu;
+    uint32_t* cur_pd = pd_from_phys(g_current_cr3);
+    uint32_t* pt = get_pt_from_pd(cur_pd, pd);
+    if (!pt) return 0;
+
+    uint32_t pte = pt[ti];
+    if (!pte_is_swapped(pte)) return 0;
+    uint32_t slot = pte_swap_slot(pte);
+    if (slot >= g_swap.slot_count) return -1;
+
+    uintptr_t pa = alloc_frame_for_paging();
+    if (!pa) return -1;
+
+    if (map_page(page, pa, PTE_P | PTE_W | PTE_U) < 0) {
+        phys_free_frame(pa);
+        return -1;
+    }
+
+    uint64_t lba = g_swap.base_lba + ((uint64_t)slot * (uint64_t)g_swap.blocks_per_page);
+    if (blockdev_read(g_swap.dev_index, lba, g_swap.blocks_per_page, (void*)page) < 0) {
+        unmap_page_current(page);
+        return -1;
+    }
+
+    pt[ti] = (uint32_t)(pa & ~0xFFFu) | PTE_P | pte_swap_flags(pte);
+    invlpg((void*)page);
+    swap_slot_unref(slot);
+    g_swap.pageins++;
+    g_swap.faults++;
+    return 1;
 }
 
 static demand_region_t* find_demand_region(uintptr_t addr) {
@@ -213,7 +432,7 @@ static int handle_demand_fault(uintptr_t fault_addr, uint32_t err_code) {
     if (!region) return 0;
 
     uintptr_t page = fault_addr & ~0xFFFu;
-    uintptr_t pa = phys_alloc_frame();
+    uintptr_t pa = alloc_frame_for_paging();
     if (!pa) return -1;
 
     uint32_t map_flags = PTE_P | (region->flags & (PTE_W | PTE_U));
@@ -244,7 +463,7 @@ static int handle_elf_lazy_fault(uintptr_t fault_addr, uint32_t err_code) {
     }
     if (!matched) return 0;
 
-    uintptr_t pa = phys_alloc_frame();
+    uintptr_t pa = alloc_frame_for_paging();
     if (!pa) return -1;
 
     if (map_page(page, pa, PTE_P | PTE_W | PTE_U) < 0) {
@@ -313,7 +532,7 @@ static int handle_mmap_fault(uintptr_t fault_addr, uint32_t err_code) {
         pmm_frame_ref(pa);
         shared_frame = 1;
     } else {
-        pa = phys_alloc_frame();
+        pa = alloc_frame_for_paging();
         if (!pa) return -1;
     }
 
@@ -392,7 +611,7 @@ static int handle_cow_fault(uintptr_t fault_addr, uint32_t err_code) {
 
     memcpy(g_cow_scratch, (const void*)page, PAGE_SIZE);
 
-    uintptr_t new_pa = phys_alloc_frame();
+    uintptr_t new_pa = alloc_frame_for_paging();
     if (!new_pa) return -1;
 
     uint32_t new_flags = (pte & PTE_U) | PTE_P | PTE_W;
@@ -410,6 +629,7 @@ static int handle_cow_fault(uintptr_t fault_addr, uint32_t err_code) {
 static void page_fault_handler(struct registers* r) {
     uint32_t fault_addr;
     __asm__ __volatile__("mov %%cr2, %0" : "=r"(fault_addr));
+    if (handle_swap_fault(fault_addr, r->err_code) > 0) return;
     if (handle_elf_lazy_fault(fault_addr, r->err_code) > 0) return;
     if (handle_mmap_fault(fault_addr, r->err_code) > 0) return;
     if (handle_demand_fault(fault_addr, r->err_code) > 0) return;
@@ -441,7 +661,7 @@ int paging_map_user(uintptr_t vaddr) {
     /* Already mapped → nothing to do. */
     if (pt[pt_idx] & PTE_P) return 0;
 
-    uintptr_t pa = phys_alloc_frame();
+    uintptr_t pa = alloc_frame_for_paging();
     if (!pa) return -2;
 
     pt[pt_idx] = (pa & ~0xFFFu) | (PTE_P | PTE_W | PTE_U);
@@ -512,6 +732,12 @@ void paging_get_stats(paging_stats_t* out) {
     out->demand_regions = g_demand_region_count;
     out->demand_faults = g_demand_fault_count;
     out->cow_faults = g_cow_fault_count;
+    out->swap_slots_total = g_swap.slot_count;
+    out->swap_slots_used = g_swap.slots_used;
+    out->swap_pageouts = g_swap.pageouts;
+    out->swap_pageins = g_swap.pageins;
+    out->swap_faults = g_swap.faults;
+    out->swap_enabled = g_swap.enabled;
 }
 
 uint32_t paging_current_cr3(void) {
@@ -612,7 +838,13 @@ int paging_fork_current_cow(uint32_t* out_child_cr3_phys) {
 
         for (uint32_t j = 0; j < 1024; ++j) {
             uint32_t pte = parent_pt[j];
-            if ((pte & PTE_P) == 0u) continue;
+            if ((pte & PTE_P) == 0u) {
+                if (pte_is_swapped(pte)) {
+                    child_pt[j] = pte;
+                    swap_slot_ref(pte_swap_slot(pte));
+                }
+                continue;
+            }
             if ((pte & PTE_U) == 0u) continue;
 
             uintptr_t vaddr = ((uintptr_t)i << 22) | ((uintptr_t)j << 12);
@@ -642,6 +874,7 @@ void paging_initialize(struct multiboot_tag_framebuffer* fb_tag) {
     g_demand_region_count = 0;
     g_demand_fault_count = 0;
     g_cow_fault_count = 0;
+    memset(&g_swap, 0, sizeof(g_swap));
 
     uintptr_t pd_pa = alloc_zeroed_frame();
     if (!pd_pa) {
@@ -673,4 +906,44 @@ void paging_initialize(struct multiboot_tag_framebuffer* fb_tag) {
     register_interrupt_handler(14, page_fault_handler);
     load_cr3(g_kernel_cr3);
     enable_paging();
+}
+
+int paging_swap_initialize(void) {
+    memset(&g_swap, 0, sizeof(g_swap));
+
+    uint32_t part_count = mbr_partition_count();
+    const mbr_partition_info_t* part = NULL;
+    for (uint32_t i = 0; i < part_count; ++i) {
+        const mbr_partition_info_t* info = mbr_partition_get(i);
+        if (!info) continue;
+        if (info->partition_type != 0x82u) continue;
+        part = info;
+        break;
+    }
+    if (!part) return -1;
+
+    const block_device_t* dev = blockdev_get(part->dev_index);
+    if (!dev) return -2;
+    if (dev->flags & BLOCKDEV_FLAG_READONLY) return -3;
+    if (dev->block_size == 0 || (PAGE_SIZE % dev->block_size) != 0u) return -4;
+
+    uint32_t blocks_per_page = PAGE_SIZE / dev->block_size;
+    if (blocks_per_page == 0) return -5;
+
+    uint64_t max_slots_u64 = dev->block_count / (uint64_t)blocks_per_page;
+    if (max_slots_u64 == 0 || max_slots_u64 > 0xFFFFFFFFu) return -6;
+
+    uint32_t slot_count = (uint32_t)max_slots_u64;
+    uint16_t* slot_refs = (uint16_t*)kcalloc(slot_count, sizeof(uint16_t));
+    if (!slot_refs) return -7;
+
+    g_swap.enabled = 1;
+    g_swap.dev_index = dev->id;
+    g_swap.base_lba = 0;
+    g_swap.blocks_per_page = blocks_per_page;
+    g_swap.slot_count = slot_count;
+    g_swap.slot_refs = slot_refs;
+    g_swap.hand_mm = 0;
+    g_swap.hand_page = 0;
+    return 0;
 }

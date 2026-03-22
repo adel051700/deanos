@@ -2304,6 +2304,23 @@ static void cmd_vm(const char* args) {
         terminal_writestring("\n  COW faults:     ");
         itoa((int)st.cow_faults, n, 10);
         terminal_writestring(n);
+        terminal_writestring("\n  swap enabled:   ");
+        terminal_writestring(st.swap_enabled ? "yes" : "no");
+        terminal_writestring("\n  swap slots:     ");
+        itoa((int)st.swap_slots_used, n, 10);
+        terminal_writestring(n);
+        terminal_writestring("/");
+        itoa((int)st.swap_slots_total, n, 10);
+        terminal_writestring(n);
+        terminal_writestring("\n  swap page-outs: ");
+        itoa((int)st.swap_pageouts, n, 10);
+        terminal_writestring(n);
+        terminal_writestring("\n  swap page-ins:  ");
+        itoa((int)st.swap_pageins, n, 10);
+        terminal_writestring(n);
+        terminal_writestring("\n  swap faults:    ");
+        itoa((int)st.swap_faults, n, 10);
+        terminal_writestring(n);
         terminal_writestring("\n");
         return;
     }
