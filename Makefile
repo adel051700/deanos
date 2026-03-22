@@ -65,6 +65,7 @@ kernel/usermode.c \
 kernel/vfs.c \
 kernel/ramfs.c \
 kernel/minfs.c \
+kernel/fat32.c \
 kernel/elf.c \
 kernel/context_switch.s
 

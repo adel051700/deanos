@@ -13,6 +13,7 @@
 #include "include/kernel/vfs.h"
 #include "include/kernel/ramfs.h"
 #include "include/kernel/minfs.h"
+#include "include/kernel/fat32.h"
 #include "include/kernel/elf.h"
 #include "include/kernel/blockdev.h"
 #include "include/kernel/ata.h"
@@ -55,6 +56,7 @@ void kernel_main(void) {
     vfs_initialize();
     ramfs_initialize();
     minfs_auto_mount();
+    fat32_auto_mount(0);  /* TODO: Try auto-mount on all block devices */
     elf_install_test_programs();
 
     shell_initialize();

@@ -14,6 +14,7 @@
 #include "include/kernel/blockdev.h"
 #include "include/kernel/mbr.h"
 #include "include/kernel/minfs.h"
+#include "include/kernel/fat32.h"
 #include "include/kernel/paging.h"
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -109,6 +110,7 @@ static void cmd_jobs(const char* args);
 static void cmd_fg(const char* args);
 static void cmd_bg(const char* args);
 static void cmd_vfstest(const char* args);
+static void cmd_fat32test(const char* args);
 
 static void shell_jobs_reap(void);
 static void shell_jobs_add(int pid, int pgid, const char* cmd);
@@ -166,6 +168,7 @@ static const struct shell_command commands[] = {
     {"bg",      cmd_bg,      "Keep job in background: bg <pid>"},
     {"anim",    cmd_anim,    "Run large animated demo"},
     {"vfstest", cmd_vfstest, "VFS tests: vfstest norm | vfstest mount | vfstest perm"},
+    {"fat32test", cmd_fat32test, "FAT32 write regression test: fat32test <existing-file-path>"},
 
     // New syscall test commands
     {"sys.write",   cmd_sys_write,   "Syscall write via int 0x80: sys.write <text>"},
@@ -184,6 +187,7 @@ static int shell_is_hidden_help_command(const char* name) {
     if (strcmp(name, "fsverify") == 0) return 1;
     if (strcmp(name, "vm") == 0) return 1;
     if (strcmp(name, "libctest") == 0) return 1;
+    if (strcmp(name, "fat32test") == 0) return 1;
     if (strcmp(name, "sys.write") == 0) return 1;
     if (strcmp(name, "sys.time") == 0) return 1;
     if (strcmp(name, "sys81.time") == 0) return 1;
@@ -1917,9 +1921,13 @@ static void cmd_disk(const char* args) {
         terminal_writestring("usage:\n");
         terminal_writestring("  disk parts\n");
         terminal_writestring("  disk init <disk>\n");
+        terminal_writestring("  disk initfat32 <disk>\n");
         terminal_writestring("  disk mkfs <partition>\n");
+        terminal_writestring("  disk mkfsfat32 <partition>\n");
         terminal_writestring("  disk mount <partition>\n");
         terminal_writestring("  disk setup <disk>\n");
+        terminal_writestring("  disk mountfat32 <partition>\n");
+        terminal_writestring("  disk setupfat32 <disk>\n");
         return;
     }
 
@@ -1958,13 +1966,25 @@ static void cmd_disk(const char* args) {
         return;
     }
 
-    if (strncmp(args, "init ", 5) == 0 || strncmp(args, "mkfs ", 5) == 0 ||
-        strncmp(args, "mount ", 6) == 0 || strncmp(args, "setup ", 6) == 0) {
+    if (strncmp(args, "init ", 5) == 0 || strncmp(args, "initfat32 ", 10) == 0 ||
+        strncmp(args, "mkfs ", 5) == 0 || strncmp(args, "mkfsfat32 ", 10) == 0 ||
+        strncmp(args, "mount ", 6) == 0 ||
+        strncmp(args, "setup ", 6) == 0 || strncmp(args, "mountfat32 ", 11) == 0 ||
+        strncmp(args, "setupfat32 ", 11) == 0) {
         int is_init = strncmp(args, "init ", 5) == 0;
+        int is_initfat32 = strncmp(args, "initfat32 ", 10) == 0;
         int is_mkfs = strncmp(args, "mkfs ", 5) == 0;
+        int is_mkfsfat32 = strncmp(args, "mkfsfat32 ", 10) == 0;
         int is_mount = strncmp(args, "mount ", 6) == 0;
         int is_setup = strncmp(args, "setup ", 6) == 0;
-        const char* p = args + (is_init || is_mkfs ? 5 : 6);
+        int is_mountfat32 = strncmp(args, "mountfat32 ", 11) == 0;
+        int is_setupfat32 = strncmp(args, "setupfat32 ", 11) == 0;
+        const char* p = args + (is_init ? 5 :
+                                is_initfat32 ? 10 :
+                                is_mkfs ? 5 :
+                                is_mkfsfat32 ? 10 :
+                                is_mount ? 6 :
+                                is_setup ? 6 : 11);
         char devtok[16];
         const block_device_t* dev = resolve_blockdev_token(p, devtok, sizeof(devtok));
         if (!dev) {
@@ -1972,16 +1992,19 @@ static void cmd_disk(const char* args) {
             return;
         }
 
-        if (is_init) {
-            int rc = mbr_create_single_partition(dev->id, 0x83);
+        if (is_init || is_initfat32) {
+            uint8_t ptype = is_initfat32 ? FAT32_PARTITION_TYPE_FAT32_LBA : 0x83u;
+            int rc = mbr_create_single_partition(dev->id, ptype);
             if (rc < 0) {
                 terminal_writestring("disk: failed to write MBR\n");
                 return;
             }
             mbr_scan_all();
-            terminal_writestring("disk: created single partition table on ");
+            terminal_writestring("disk: created single ");
+            terminal_writestring(is_initfat32 ? "FAT32" : "Linux");
+            terminal_writestring(" partition on ");
             terminal_writestring(dev->name);
-            terminal_writestring("\n");
+            terminal_writestring(" (not formatted)\n");
             return;
         }
 
@@ -1992,6 +2015,18 @@ static void cmd_disk(const char* args) {
                 return;
             }
             terminal_writestring("disk: minfs formatted on ");
+            terminal_writestring(dev->name);
+            terminal_writestring("\n");
+            return;
+        }
+
+        if (is_mkfsfat32) {
+            int rc = fat32_format(dev->id);
+            if (rc < 0) {
+                terminal_writestring("disk: mkfsfat32 failed\n");
+                return;
+            }
+            terminal_writestring("disk: FAT32 formatted on ");
             terminal_writestring(dev->name);
             terminal_writestring("\n");
             return;
@@ -2040,9 +2075,62 @@ static void cmd_disk(const char* args) {
             terminal_writestring("\n");
             return;
         }
+
+        if (is_mountfat32) {
+            char mount_path[VFS_PATH_MAX];
+            strcpy(mount_path, "/mnt/");
+            strncat(mount_path, dev->name, VFS_PATH_MAX - strlen(mount_path) - 1);
+            int rc = fat32_mount(dev->id, 0, mount_path);
+            if (rc < 0) {
+                terminal_writestring("disk: FAT32 mount failed\n");
+                return;
+            }
+            terminal_writestring("disk: mounted FAT32 at ");
+            terminal_writestring(mount_path);
+            terminal_writestring("\n");
+            return;
+        }
+
+        if (is_setupfat32) {
+            int rc = mbr_create_single_partition(dev->id, FAT32_PARTITION_TYPE_FAT32_LBA);
+            if (rc < 0) {
+                terminal_writestring("disk: setupfat32 failed while creating MBR\n");
+                return;
+            }
+            mbr_scan_all();
+
+            char pname[16];
+            strncpy(pname, dev->name, sizeof(pname) - 3);
+            pname[sizeof(pname) - 3] = '\0';
+            strcat(pname, "p1");
+
+            const block_device_t* part = blockdev_find_by_name(pname);
+            if (!part) {
+                terminal_writestring("disk: setupfat32 could not find new partition\n");
+                return;
+            }
+
+            if (fat32_format(part->id) < 0) {
+                terminal_writestring("disk: setupfat32 format failed\n");
+                return;
+            }
+
+            char mount_path[VFS_PATH_MAX];
+            strcpy(mount_path, "/mnt/");
+            strncat(mount_path, pname, VFS_PATH_MAX - strlen(mount_path) - 1);
+            if (fat32_mount(part->id, 0, mount_path) < 0) {
+                terminal_writestring("disk: setupfat32 mount failed\n");
+                return;
+            }
+
+            terminal_writestring("disk: FAT32 ready at ");
+            terminal_writestring(mount_path);
+            terminal_writestring("\n");
+            return;
+        }
     }
 
-    terminal_writestring("usage: disk parts | disk init <disk> | disk mkfs <partition> | disk mount <partition> | disk setup <disk>\n");
+    terminal_writestring("usage: disk parts | disk init <disk> | disk initfat32 <disk> | disk mkfs <partition> | disk mkfsfat32 <partition> | disk mount <partition> | disk setup <disk> | disk mountfat32 <partition> | disk setupfat32 <disk>\n");
 }
 
 static void cmd_fsfill(const char* args) {
@@ -2184,6 +2272,193 @@ static void cmd_fsverify(const char* args) {
 
     vfs_fd_close(fd);
     terminal_writestring("fsverify: ok\n");
+}
+
+static void cmd_fat32test(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: fat32test <existing-file-path>\n");
+        terminal_writestring("note: file must already exist on a FAT32 mount\n");
+        return;
+    }
+
+    char path_arg[VFS_PATH_MAX];
+    copy_token(args, path_arg, sizeof(path_arg));
+    if (!*path_arg) {
+        terminal_writestring("usage: fat32test <existing-file-path>\n");
+        return;
+    }
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
+    vfs_node_t* node = vfs_namei(path);
+    if (!node || !(node->type & VFS_FILE)) {
+        terminal_writestring("fat32test: file not found: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    int pass = 0;
+    int fail = 0;
+
+    terminal_writestring("[fat32test] begin ");
+    terminal_writestring(path);
+    terminal_writestring("\n");
+
+    /* Test 1: truncate to zero via open flags. */
+    {
+        int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_TRUNC);
+        if (fd < 0) {
+            terminal_writestring("[fat32test] FAIL truncate open\n");
+            fail++;
+        } else {
+            vfs_fd_close(fd);
+            node = vfs_namei(path);
+            if (node && node->size == 0) {
+                terminal_writestring("[fat32test] PASS truncate size=0\n");
+                pass++;
+            } else {
+                terminal_writestring("[fat32test] FAIL truncate size check\n");
+                fail++;
+            }
+        }
+    }
+
+    /* Test 2: write deterministic bytes and read back. */
+    {
+        uint8_t wbuf[256];
+        uint8_t rbuf[256];
+        for (uint32_t i = 0; i < sizeof(wbuf); ++i) wbuf[i] = (uint8_t)((0x11u + i) & 0xFFu);
+
+        int fd = vfs_fd_open(path, VFS_O_RDWR);
+        int ok = 1;
+        if (fd < 0) ok = 0;
+        if (ok && vfs_fd_write(fd, wbuf, sizeof(wbuf)) != (int32_t)sizeof(wbuf)) ok = 0;
+        if (fd >= 0) vfs_fd_close(fd);
+
+        node = vfs_namei(path);
+        if (!node || vfs_read(node, 0, sizeof(rbuf), rbuf) != (int32_t)sizeof(rbuf)) ok = 0;
+        if (ok && memcmp(wbuf, rbuf, sizeof(wbuf)) != 0) ok = 0;
+
+        if (ok) {
+            terminal_writestring("[fat32test] PASS write/read 256\n");
+            pass++;
+        } else {
+            terminal_writestring("[fat32test] FAIL write/read 256\n");
+            fail++;
+        }
+    }
+
+    /* Test 3: in-place overwrite at non-zero offset. */
+    {
+        uint8_t patch[64];
+        uint8_t check[64];
+        for (uint32_t i = 0; i < sizeof(patch); ++i) patch[i] = (uint8_t)((0xA0u + i) & 0xFFu);
+
+        int ok = 1;
+        node = vfs_namei(path);
+        if (!node) ok = 0;
+        if (ok && vfs_write(node, 96, sizeof(patch), patch) != (int32_t)sizeof(patch)) ok = 0;
+        if (ok && vfs_read(node, 96, sizeof(check), check) != (int32_t)sizeof(check)) ok = 0;
+        if (ok && memcmp(patch, check, sizeof(patch)) != 0) ok = 0;
+
+        if (ok) {
+            terminal_writestring("[fat32test] PASS overwrite@96\n");
+            pass++;
+        } else {
+            terminal_writestring("[fat32test] FAIL overwrite@96\n");
+            fail++;
+        }
+    }
+
+    /* Test 4: append semantics and appended region integrity. */
+    {
+        uint8_t app[73];
+        uint8_t chk[73];
+        for (uint32_t i = 0; i < sizeof(app); ++i) app[i] = (uint8_t)((0x55u + i) & 0xFFu);
+
+        int ok = 1;
+        node = vfs_namei(path);
+        uint32_t old_size = node ? node->size : 0;
+        int fd = vfs_fd_open(path, VFS_O_WRONLY | VFS_O_APPEND);
+        if (fd < 0) ok = 0;
+        if (ok && vfs_fd_write(fd, app, sizeof(app)) != (int32_t)sizeof(app)) ok = 0;
+        if (fd >= 0) vfs_fd_close(fd);
+
+        node = vfs_namei(path);
+        if (!node || node->size != old_size + (uint32_t)sizeof(app)) ok = 0;
+        if (ok && vfs_read(node, old_size, sizeof(chk), chk) != (int32_t)sizeof(chk)) ok = 0;
+        if (ok && memcmp(app, chk, sizeof(app)) != 0) ok = 0;
+
+        if (ok) {
+            terminal_writestring("[fat32test] PASS append\n");
+            pass++;
+        } else {
+            terminal_writestring("[fat32test] FAIL append\n");
+            fail++;
+        }
+    }
+
+    /* Test 5: large write/read crossing cluster boundaries. */
+    {
+        const uint32_t total = 70000u;
+        uint8_t chunk[257];
+        uint8_t readback[257];
+        uint32_t done = 0;
+        int ok = 1;
+
+        int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_TRUNC);
+        if (fd < 0) ok = 0;
+
+        while (ok && done < total) {
+            uint32_t n = total - done;
+            if (n > sizeof(chunk)) n = sizeof(chunk);
+            for (uint32_t i = 0; i < n; ++i) {
+                chunk[i] = (uint8_t)((0x3Cu + done + i) & 0xFFu);
+            }
+            if (vfs_fd_write(fd, chunk, n) != (int32_t)n) ok = 0;
+            done += n;
+        }
+        if (fd >= 0) vfs_fd_close(fd);
+
+        node = vfs_namei(path);
+        if (!node || node->size != total) ok = 0;
+
+        done = 0;
+        fd = vfs_fd_open(path, VFS_O_RDONLY);
+        if (fd < 0) ok = 0;
+        while (ok && done < total) {
+            uint32_t n = total - done;
+            if (n > sizeof(readback)) n = sizeof(readback);
+            if (vfs_fd_read(fd, readback, n) != (int32_t)n) {
+                ok = 0;
+                break;
+            }
+            for (uint32_t i = 0; i < n; ++i) {
+                uint8_t expect = (uint8_t)((0x3Cu + done + i) & 0xFFu);
+                if (readback[i] != expect) {
+                    ok = 0;
+                    break;
+                }
+            }
+            done += n;
+        }
+        if (fd >= 0) vfs_fd_close(fd);
+
+        if (ok) {
+            terminal_writestring("[fat32test] PASS large-io\n");
+            pass++;
+        } else {
+            terminal_writestring("[fat32test] FAIL large-io\n");
+            fail++;
+        }
+    }
+
+    terminal_writestring("[fat32test] result: ");
+    term_write_u32((uint32_t)pass);
+    terminal_writestring(" pass, ");
+    term_write_u32((uint32_t)fail);
+    terminal_writestring(" fail\n");
 }
 
 static void cmd_libctest(const char* args) {
@@ -2464,7 +2739,7 @@ static void ls_print_prefix(int depth, int is_last) {
 }
 
 /* Recursively list directory contents up to LS_MAX_DEPTH levels */
-static void ls_recursive(vfs_node_t* dir, int depth) {
+static void ls_recursive(vfs_node_t* dir, const char* dir_path, int depth) {
     if (depth > LS_MAX_DEPTH) return;
 
     uint32_t total = count_children(dir);
@@ -2486,9 +2761,21 @@ static void ls_recursive(vfs_node_t* dir, int depth) {
             terminal_writestring(ent.name);
             terminal_writestring("\n");
 
-            vfs_node_t* sub = vfs_finddir(dir, ent.name);
+            char child_path[VFS_PATH_MAX];
+            if (strcmp(dir_path, "/") == 0) {
+                strcpy(child_path, "/");
+                strncat(child_path, ent.name, sizeof(child_path) - strlen(child_path) - 1);
+            } else {
+                strncpy(child_path, dir_path, sizeof(child_path) - 1);
+                child_path[sizeof(child_path) - 1] = '\0';
+                strncat(child_path, "/", sizeof(child_path) - strlen(child_path) - 1);
+                strncat(child_path, ent.name, sizeof(child_path) - strlen(child_path) - 1);
+            }
+
+            /* Use path resolution so mount points traverse into mounted roots. */
+            vfs_node_t* sub = vfs_namei(child_path);
             if (sub && (sub->type & VFS_DIRECTORY)) {
-                ls_recursive(sub, depth + 1);
+                ls_recursive(sub, child_path, depth + 1);
             }
         } else {
             ls_print_file_info(dir, ent.name);
@@ -2515,7 +2802,7 @@ static void cmd_ls(const char* args) {
         return;
     }
 
-    ls_recursive(dir, 0);
+    ls_recursive(dir, path, 0);
 }
 
 static void cmd_cat(const char* args) {
@@ -2612,6 +2899,15 @@ static void cmd_writef(const char* args) {
     char pathbuf[VFS_PATH_MAX];
     const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
 
+    vfs_node_t* existing = vfs_namei(path);
+    if (existing && (existing->type & VFS_DIRECTORY)) {
+        terminal_writestring("write: target is a directory: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        terminal_writestring("hint: use a file path, e.g. /mnt/hd0p1/test.txt\n");
+        return;
+    }
+
     /* Open with create + truncate */
     int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_CREATE | VFS_O_TRUNC);
     if (fd < 0) {
@@ -2624,6 +2920,13 @@ static void cmd_writef(const char* args) {
     size_t tlen = strlen(text);
     int32_t written = vfs_fd_write(fd, (const uint8_t*)text, (uint32_t)tlen);
     vfs_fd_close(fd);
+
+    if (written < 0) {
+        terminal_writestring("write: write failed: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
 
     char buf[16];
     terminal_writestring("Wrote ");
@@ -2678,7 +2981,11 @@ static void cmd_rm(const char* args) {
     }
 
     if (vfs_unlink_path(path) < 0) {
-        terminal_writestring("rm: failed (directory not empty?)\n");
+        if (node->type & VFS_DIRECTORY) {
+            terminal_writestring("rm: failed (directory not empty?)\n");
+        } else {
+            terminal_writestring("rm: failed\n");
+        }
     }
 }
 
