@@ -1913,7 +1913,50 @@ static void cmd_blk(const char* args) {
         return;
     }
 
-    terminal_writestring("usage: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed-byte>\n");
+    if (strcmp(args, "cache") == 0) {
+        blockdev_cache_stats_t st = {0};
+        blockdev_cache_stats(&st);
+        char buf[24];
+
+        terminal_writestring("blk cache: entries=");
+        itoa((int)st.entries, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" hits=");
+        itoa((int)st.hits, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" misses=");
+        itoa((int)st.misses, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" evictions=");
+        itoa((int)st.evictions, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" writebacks=");
+        itoa((int)st.writebacks, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (strcmp(args, "flush") == 0) {
+        if (blockdev_flush_all() < 0) {
+            terminal_writestring("blk: flush failed\n");
+            return;
+        }
+        terminal_writestring("blk: all cached blocks flushed\n");
+        return;
+    }
+
+    if (strncmp(args, "flush ", 6) == 0) {
+        uint32_t dev = parse_uint(args + 6);
+        if (blockdev_flush(dev) < 0) {
+            terminal_writestring("blk: device flush failed\n");
+            return;
+        }
+        terminal_writestring("blk: device cache flushed\n");
+        return;
+    }
+
+    terminal_writestring("usage: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed-byte> | blk cache | blk flush [dev]\n");
 }
 
 static void cmd_disk(const char* args) {
