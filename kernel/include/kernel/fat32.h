@@ -138,8 +138,8 @@ int fat32_mount(uint32_t dev_index, uint64_t partition_lba, const char* mount_pa
 int fat32_format(uint32_t dev_index);
 
 /**
- * Scan a block device for FAT32 partitions and auto-mount them
- * @param dev_index Block device index
+ * Scan partitions and auto-mount FAT32 filesystems.
+ * @param dev_index Parent block device index, or UINT32_MAX to scan all parents
  * @return Number of FAT32 partitions mounted, <0 on error
  */
 int fat32_auto_mount(uint32_t dev_index);

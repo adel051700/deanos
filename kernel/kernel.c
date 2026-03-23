@@ -20,6 +20,8 @@
 #include "include/kernel/mbr.h"
 #include "include/kernel/paging.h"
 
+#include <stdint.h>
+
 static void shell_task(void) {
     while (1) {
         /* Drain all pending keystrokes so commands run immediately. */
@@ -49,14 +51,32 @@ void kernel_main(void) {
     blockdev_initialize();
     mbr_initialize();
     ata_initialize();
-    mbr_scan_all();
+
+    ata_probe_summary_t ata_summary = {0};
+    ata_probe_get_summary(&ata_summary);
+    if (ata_summary.devices_registered == 0) {
+        klog("storage: no ATA/ATAPI block devices registered");
+    } else {
+        klog("storage: ATA/ATAPI probing complete");
+    }
+
+    int partitions_found = mbr_scan_all();
+    mbr_scan_stats_t mbr_stats = {0};
+    mbr_get_scan_stats(&mbr_stats);
+    if (partitions_found == 0 && ata_summary.devices_registered > 0) {
+        klog("storage: no MBR partitions discovered");
+    }
+    if (mbr_stats.invalid_mbr_signature > 0) {
+        klog("storage: one or more disks had no valid MBR signature");
+    }
+
     (void)paging_swap_initialize();
 
     /* Filesystem: must come after kheap (initialized in constructor) */
     vfs_initialize();
     ramfs_initialize();
     minfs_auto_mount();
-    fat32_auto_mount(0);  /* TODO: Try auto-mount on all block devices */
+    (void)fat32_auto_mount((uint32_t)-1);
     elf_install_test_programs();
 
     shell_initialize();
