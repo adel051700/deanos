@@ -17,6 +17,14 @@ typedef struct block_device {
     blockdev_write_fn write;
 } block_device_t;
 
+typedef struct blockdev_cache_stats {
+    uint32_t entries;
+    uint32_t hits;
+    uint32_t misses;
+    uint32_t evictions;
+    uint32_t writebacks;
+} blockdev_cache_stats_t;
+
 #define BLOCKDEV_FLAG_READONLY 0x1u
 #define BLOCKDEV_FLAG_ATAPI    0x2u
 #define BLOCKDEV_FLAG_PARTITION 0x4u
@@ -28,6 +36,9 @@ const block_device_t* blockdev_get(uint32_t index);
 const block_device_t* blockdev_find_by_name(const char* name);
 int blockdev_read(uint32_t index, uint64_t lba, uint32_t count, void* buffer);
 int blockdev_write(uint32_t index, uint64_t lba, uint32_t count, const void* buffer);
+int blockdev_flush(uint32_t index);
+int blockdev_flush_all(void);
+void blockdev_cache_stats(blockdev_cache_stats_t* out);
 
 #endif
 
