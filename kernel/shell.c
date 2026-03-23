@@ -1968,6 +1968,7 @@ static void cmd_disk(const char* args) {
         terminal_writestring("  disk mkfs <partition>\n");
         terminal_writestring("  disk mkfsfat32 <partition>\n");
         terminal_writestring("  disk mount <partition>\n");
+        terminal_writestring("  disk markdirty <partition>\n");
         terminal_writestring("  disk setup <disk>\n");
         terminal_writestring("  disk mountfat32 <partition>\n");
         terminal_writestring("  disk setupfat32 <disk>\n");
@@ -2011,7 +2012,7 @@ static void cmd_disk(const char* args) {
 
     if (strncmp(args, "init ", 5) == 0 || strncmp(args, "initfat32 ", 10) == 0 ||
         strncmp(args, "mkfs ", 5) == 0 || strncmp(args, "mkfsfat32 ", 10) == 0 ||
-        strncmp(args, "mount ", 6) == 0 ||
+        strncmp(args, "mount ", 6) == 0 || strncmp(args, "markdirty ", 10) == 0 ||
         strncmp(args, "setup ", 6) == 0 || strncmp(args, "mountfat32 ", 11) == 0 ||
         strncmp(args, "setupfat32 ", 11) == 0) {
         int is_init = strncmp(args, "init ", 5) == 0;
@@ -2019,6 +2020,7 @@ static void cmd_disk(const char* args) {
         int is_mkfs = strncmp(args, "mkfs ", 5) == 0;
         int is_mkfsfat32 = strncmp(args, "mkfsfat32 ", 10) == 0;
         int is_mount = strncmp(args, "mount ", 6) == 0;
+        int is_markdirty = strncmp(args, "markdirty ", 10) == 0;
         int is_setup = strncmp(args, "setup ", 6) == 0;
         int is_mountfat32 = strncmp(args, "mountfat32 ", 11) == 0;
         int is_setupfat32 = strncmp(args, "setupfat32 ", 11) == 0;
@@ -2027,6 +2029,7 @@ static void cmd_disk(const char* args) {
                                 is_mkfs ? 5 :
                                 is_mkfsfat32 ? 10 :
                                 is_mount ? 6 :
+                                is_markdirty ? 10 :
                                 is_setup ? 6 : 11);
         char devtok[16];
         const block_device_t* dev = resolve_blockdev_token(p, devtok, sizeof(devtok));
@@ -2082,6 +2085,18 @@ static void cmd_disk(const char* args) {
                 return;
             }
             terminal_writestring("disk: mounted /mnt/");
+            terminal_writestring(dev->name);
+            terminal_writestring("\n");
+            return;
+        }
+
+        if (is_markdirty) {
+            int rc = minfs_test_mark_dirty(dev->id);
+            if (rc < 0) {
+                terminal_writestring("disk: markdirty failed (mount minfs first)\n");
+                return;
+            }
+            terminal_writestring("disk: recovery marker set DIRTY on ");
             terminal_writestring(dev->name);
             terminal_writestring("\n");
             return;
@@ -2173,7 +2188,7 @@ static void cmd_disk(const char* args) {
         }
     }
 
-    terminal_writestring("usage: disk parts | disk init <disk> | disk initfat32 <disk> | disk mkfs <partition> | disk mkfsfat32 <partition> | disk mount <partition> | disk setup <disk> | disk mountfat32 <partition> | disk setupfat32 <disk>\n");
+    terminal_writestring("usage: disk parts | disk init <disk> | disk initfat32 <disk> | disk mkfs <partition> | disk mkfsfat32 <partition> | disk mount <partition> | disk markdirty <partition> | disk setup <disk> | disk mountfat32 <partition> | disk setupfat32 <disk>\n");
 }
 
 static void cmd_fsfill(const char* args) {

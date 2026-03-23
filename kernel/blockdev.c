@@ -1,4 +1,5 @@
 #include "include/kernel/blockdev.h"
+#include "include/kernel/mbr.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -211,9 +212,19 @@ int blockdev_write(uint32_t index, uint64_t lba, uint32_t count, const void* buf
 int blockdev_flush(uint32_t index) {
     if (index >= g_count) return -1;
 
+    uint32_t target_a = index;
+    uint32_t target_b = UINT32_MAX;
+    const block_device_t* d = &g_devs[index];
+    if (d->flags & BLOCKDEV_FLAG_PARTITION) {
+        uint32_t parent = 0;
+        if (mbr_partition_parent_index(index, &parent) == 0) {
+            target_b = parent;
+        }
+    }
+
     for (uint32_t i = 0; i < BLOCK_CACHE_ENTRIES; ++i) {
         if (!g_cache[i].valid || !g_cache[i].dirty) continue;
-        if (g_cache[i].dev_index != index) continue;
+        if (g_cache[i].dev_index != target_a && g_cache[i].dev_index != target_b) continue;
         int rc = block_cache_writeback_entry(i);
         if (rc < 0) return rc;
     }
