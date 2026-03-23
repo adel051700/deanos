@@ -54,6 +54,28 @@ typedef struct ata_device {
 } ata_device_t;
 
 static ata_device_t g_ata[ATA_MAX_DEVICES];
+static ata_probe_summary_t g_probe_summary;
+
+static void ata_log_device_event(const char* prefix, uint32_t index, const char* suffix) {
+    char msg[64];
+    uint32_t pos = 0;
+
+    while (prefix[pos] && pos < sizeof(msg) - 1u) {
+        msg[pos] = prefix[pos];
+        pos++;
+    }
+
+    if (pos < sizeof(msg) - 2u) {
+        msg[pos++] = '0' + (char)index;
+    }
+
+    while (*suffix && pos < sizeof(msg) - 1u) {
+        msg[pos++] = *suffix++;
+    }
+
+    msg[pos] = '\0';
+    klog(msg);
+}
 
 static void ata_io_wait(void) {
     io_wait();
@@ -118,6 +140,11 @@ static void ata_identify_model(char out[41], const uint16_t* id) {
 static int ata_probe_device(ata_device_t* d) {
     uint16_t identify[256];
 
+    d->present = 0;
+    d->atapi = 0;
+    d->sectors_28 = 0;
+    d->model[0] = '\0';
+
     ata_select(d);
     outb((uint16_t)(d->io_base + ATA_REG_SECCOUNT0), 0);
     outb((uint16_t)(d->io_base + ATA_REG_LBA0), 0);
@@ -132,8 +159,11 @@ static int ata_probe_device(ata_device_t* d) {
 
     uint8_t lba1 = inb((uint16_t)(d->io_base + ATA_REG_LBA1));
     uint8_t lba2 = inb((uint16_t)(d->io_base + ATA_REG_LBA2));
-    if (lba1 == 0x14 && lba2 == 0xEB) {
+    if ((lba1 == 0x14 && lba2 == 0xEB) ||
+        (lba1 == 0x69 && lba2 == 0x96)) {
         d->atapi = 1;
+    } else if (lba1 != 0 || lba2 != 0) {
+        return 0;
     }
 
     if (d->atapi) {
@@ -147,6 +177,7 @@ static int ata_probe_device(ata_device_t* d) {
     d->present = 1;
     d->sectors_28 = ((uint32_t)identify[61] << 16) | identify[60];
     ata_identify_model(d->model, identify);
+    if (!d->atapi && d->sectors_28 == 0) return 0;
     return 1;
 }
 
@@ -309,6 +340,8 @@ static int ata_atapi_read_blocks(void* ctx, uint64_t lba, uint32_t count, void* 
 }
 
 void ata_initialize(void) {
+    g_probe_summary = (ata_probe_summary_t){0};
+
     g_ata[0] = (ata_device_t){ .io_base = ATA_PRIMARY_IO,   .ctrl_base = ATA_PRIMARY_CTRL,   .slave = 0 };
     g_ata[1] = (ata_device_t){ .io_base = ATA_PRIMARY_IO,   .ctrl_base = ATA_PRIMARY_CTRL,   .slave = 1 };
     g_ata[2] = (ata_device_t){ .io_base = ATA_SECONDARY_IO, .ctrl_base = ATA_SECONDARY_CTRL, .slave = 0 };
@@ -317,9 +350,14 @@ void ata_initialize(void) {
     int found = 0;
     for (uint32_t i = 0; i < ATA_MAX_DEVICES; ++i) {
         ata_device_t* d = &g_ata[i];
+        g_probe_summary.slots_tested++;
         if (!ata_probe_device(d)) continue;
 
         found++;
+        g_probe_summary.devices_present++;
+        if (d->atapi) g_probe_summary.atapi_devices++;
+        else g_probe_summary.ata_devices++;
+
         block_device_t b = {0};
         b.ctx = d;
         if (d->atapi) {
@@ -350,15 +388,22 @@ void ata_initialize(void) {
         b.name[3] = '\0';
 
         if (blockdev_register(&b) >= 0) {
-            if (d->atapi) {}
-            else {};
+            g_probe_summary.devices_registered++;
+            if (d->atapi) ata_log_device_event("ata: detected ", i, " (ATAPI)");
+            else ata_log_device_event("ata: detected ", i, " (ATA)");
         } else {
-            klog("ata: failed to register disk");
+            g_probe_summary.register_failures++;
+            ata_log_device_event("ata: failed to register ", i, "");
         }
     }
 
     if (!found) {
         klog("ata: no devices detected");
     }
+}
+
+void ata_probe_get_summary(ata_probe_summary_t* out_summary) {
+    if (!out_summary) return;
+    *out_summary = g_probe_summary;
 }
 

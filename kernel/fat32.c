@@ -1229,12 +1229,13 @@ int fat32_mount(uint32_t dev_index, uint64_t partition_lba, const char* mount_pa
  */
 int fat32_auto_mount(uint32_t dev_index) {
     uint32_t mounted = 0;
+    int scan_all = (dev_index == UINT32_MAX);
 
     uint32_t total_parts = mbr_partition_count();
     for (uint32_t i = 0; i < total_parts; ++i) {
         const mbr_partition_info_t* p = mbr_partition_get(i);
         if (!p) continue;
-        if (p->parent_index != dev_index) continue;
+        if (!scan_all && p->parent_index != dev_index) continue;
         if (p->partition_type != FAT32_PARTITION_TYPE_FAT32_CHS &&
             p->partition_type != FAT32_PARTITION_TYPE_FAT32_LBA) {
             continue;

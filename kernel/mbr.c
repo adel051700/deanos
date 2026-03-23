@@ -30,6 +30,7 @@ typedef struct {
 
 static mbr_partition_info_t g_parts[MBR_INFO_MAX];
 static uint32_t g_part_count = 0;
+static mbr_scan_stats_t g_scan_stats;
 
 static int mbr_partition_read(void* ctx, uint64_t lba, uint32_t count, void* buffer) {
     mbr_partition_ctx_t* p = (mbr_partition_ctx_t*)ctx;
@@ -70,21 +71,46 @@ static void mbr_record_partition(const char* name,
 static int mbr_scan_device(uint32_t dev_index) {
     const block_device_t* dev = blockdev_get(dev_index);
     if (!dev) return 0;
-    if (mbr_is_partition_device(dev)) return 0;
-    if (dev->flags & BLOCKDEV_FLAG_ATAPI) return 0;
-    if (dev->block_size != 512u) return 0;
-    if (dev->block_count < 2u) return 0;
+    if (mbr_is_partition_device(dev)) {
+        g_scan_stats.skipped_partition_devices++;
+        return 0;
+    }
+    if (dev->flags & BLOCKDEV_FLAG_ATAPI) {
+        g_scan_stats.skipped_atapi_devices++;
+        return 0;
+    }
+    if (dev->block_size != 512u) {
+        g_scan_stats.skipped_non_512b_devices++;
+        return 0;
+    }
+    if (dev->block_count < 2u) {
+        g_scan_stats.skipped_too_small_devices++;
+        return 0;
+    }
+
+    g_scan_stats.devices_scanned++;
 
     uint8_t sector[512];
-    if (blockdev_read(dev_index, 0, 1, sector) < 0) return 0;
-    if (sector[MBR_SIGNATURE_OFFSET] != 0x55 || sector[MBR_SIGNATURE_OFFSET + 1] != 0xAA) return 0;
+    if (blockdev_read(dev_index, 0, 1, sector) < 0) {
+        g_scan_stats.read_errors++;
+        return 0;
+    }
+    if (sector[MBR_SIGNATURE_OFFSET] != 0x55 || sector[MBR_SIGNATURE_OFFSET + 1] != 0xAA) {
+        g_scan_stats.invalid_mbr_signature++;
+        return 0;
+    }
 
     int found = 0;
     for (uint32_t i = 0; i < MBR_MAX_PARTITIONS; ++i) {
         mbr_partition_entry_t ent;
         memcpy(&ent, sector + MBR_PARTITION_TABLE_OFFSET + (i * sizeof(mbr_partition_entry_t)), sizeof(ent));
         if (ent.type == 0 || ent.lba_count == 0) continue;
-        if ((uint64_t)ent.lba_start + (uint64_t)ent.lba_count > dev->block_count) continue;
+        if ((uint64_t)ent.lba_start + (uint64_t)ent.lba_count > dev->block_count) {
+            g_scan_stats.partitions_out_of_bounds++;
+            continue;
+        }
+
+        g_scan_stats.partitions_found++;
 
         char pname[16];
         memset(pname, 0, sizeof(pname));
@@ -101,7 +127,15 @@ static int mbr_scan_device(uint32_t dev_index) {
         const block_device_t* existing = blockdev_find_by_name(pname);
         uint32_t part_dev_index;
         if (existing) {
+            if ((existing->flags & BLOCKDEV_FLAG_PARTITION) && existing->ctx) {
+                /* Keep dynamic partition context aligned with latest table view. */
+                mbr_partition_ctx_t* ctx = (mbr_partition_ctx_t*)existing->ctx;
+                ctx->parent_index = dev_index;
+                ctx->start_lba = ent.lba_start;
+                ctx->block_count = ent.lba_count;
+            }
             part_dev_index = existing->id;
+            g_scan_stats.partitions_reused++;
         } else {
             mbr_partition_ctx_t* ctx = (mbr_partition_ctx_t*)kcalloc(1, sizeof(mbr_partition_ctx_t));
             if (!ctx) continue;
@@ -121,9 +155,11 @@ static int mbr_scan_device(uint32_t dev_index) {
             int rc = blockdev_register(&part);
             if (rc < 0) {
                 kfree(ctx);
+                g_scan_stats.partition_register_failures++;
                 continue;
             }
             part_dev_index = (uint32_t)rc;
+            g_scan_stats.partitions_registered++;
             klog("mbr: registered partition");
         }
 
@@ -136,18 +172,26 @@ static int mbr_scan_device(uint32_t dev_index) {
 
 void mbr_initialize(void) {
     g_part_count = 0;
+    g_scan_stats = (mbr_scan_stats_t){0};
 }
 
 int mbr_scan_all(void) {
     g_part_count = 0;
+    g_scan_stats = (mbr_scan_stats_t){0};
     uint32_t snapshot = blockdev_count();
     int found = 0;
 
     for (uint32_t i = 0; i < snapshot; ++i) {
+        g_scan_stats.devices_seen++;
         found += mbr_scan_device(i);
     }
 
     return found;
+}
+
+void mbr_get_scan_stats(mbr_scan_stats_t* out_stats) {
+    if (!out_stats) return;
+    *out_stats = g_scan_stats;
 }
 
 uint32_t mbr_partition_count(void) {
