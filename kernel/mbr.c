@@ -159,6 +159,18 @@ const mbr_partition_info_t* mbr_partition_get(uint32_t index) {
     return &g_parts[index];
 }
 
+int mbr_partition_parent_index(uint32_t dev_index, uint32_t* out_parent_index) {
+    if (!out_parent_index) return -1;
+
+    for (uint32_t i = 0; i < g_part_count; ++i) {
+        if (g_parts[i].dev_index != dev_index) continue;
+        *out_parent_index = g_parts[i].parent_index;
+        return 0;
+    }
+
+    return -2;
+}
+
 int mbr_create_single_partition(uint32_t dev_index, uint8_t partition_type) {
     const block_device_t* dev = blockdev_get(dev_index);
     if (!dev) return -1;

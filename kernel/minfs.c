@@ -17,6 +17,8 @@
 #define MINFS_BLOCK_NONE        0xFFFFFFFFu
 #define MINFS_DIRECT_BLOCKS     (VFS_MAX_FILE / MINFS_BLOCK_SIZE)
 #define MINFS_MAX_FILE_BYTES    (MINFS_DIRECT_BLOCKS * MINFS_BLOCK_SIZE)
+#define MINFS_RECOVERY_CLEAN    0u
+#define MINFS_RECOVERY_DIRTY    1u
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -30,7 +32,9 @@ typedef struct __attribute__((packed)) {
     uint32_t bitmap_sectors;
     uint32_t data_start_sector;
     uint32_t data_block_count;
-    uint32_t reserved[117];
+    uint32_t recovery_state;
+    uint32_t recovery_seq;
+    uint32_t reserved[115];
 } minfs_superblock_disk_t;
 
 typedef struct __attribute__((packed)) {
@@ -64,6 +68,7 @@ typedef struct minfs {
     uint8_t* bitmap_dirty;
     uint32_t data_start_sector;
     uint32_t data_block_count;
+    minfs_superblock_disk_t super;
     minfs_disk_node_t* nodes;
     uint8_t* bitmap;
     minfs_node_impl_t* impls;
@@ -81,6 +86,11 @@ static int minfs_readdir(vfs_node_t* node, uint32_t index, vfs_dirent_t* out);
 static vfs_node_t* minfs_finddir(vfs_node_t* node, const char* name);
 static int minfs_create(vfs_node_t* parent, const char* name, uint32_t type);
 static int minfs_unlink(vfs_node_t* parent, const char* name);
+static int minfs_flush_nodes(minfs_t* fs);
+static int minfs_flush_bitmap(minfs_t* fs);
+static int minfs_refresh_directory_sizes(minfs_t* fs);
+static int minfs_bitmap_is_set(const minfs_t* fs, uint32_t index);
+static void minfs_bitmap_set(minfs_t* fs, uint32_t index);
 
 static void minfs_disk_node_init(minfs_disk_node_t* node) {
     if (!node) return;
@@ -118,6 +128,16 @@ static int minfs_read_super(uint32_t dev_index, minfs_superblock_disk_t* super) 
     return blockdev_read(dev_index, 0, 1, super);
 }
 
+static int minfs_write_super(uint32_t dev_index, const minfs_superblock_disk_t* super) {
+    if (!super) return -1;
+    return blockdev_write(dev_index, 0, 1, super);
+}
+
+static int minfs_flush_super(minfs_t* fs) {
+    if (!fs) return -1;
+    return minfs_write_super(fs->dev_index, &fs->super);
+}
+
 static int minfs_super_is_valid(const minfs_superblock_disk_t* super, const block_device_t* dev) {
     if (!super || !dev) return 0;
     if (super->magic != MINFS_MAGIC) return 0;
@@ -133,8 +153,77 @@ static int minfs_super_is_valid(const minfs_superblock_disk_t* super, const bloc
     if (super->bitmap_sectors == 0) return 0;
     if (super->data_start_sector != super->bitmap_start + super->bitmap_sectors) return 0;
     if (super->data_block_count == 0) return 0;
+    if (super->recovery_state > MINFS_RECOVERY_DIRTY) return 0;
     if ((uint64_t)super->data_start_sector + (uint64_t)super->data_block_count > dev->block_count) return 0;
     return 1;
+}
+
+static int minfs_tx_begin(minfs_t* fs) {
+    if (!fs) return -1;
+    if (fs->super.recovery_state == MINFS_RECOVERY_DIRTY) return 0;
+
+    fs->super.recovery_state = MINFS_RECOVERY_DIRTY;
+    fs->super.recovery_seq++;
+    if (minfs_flush_super(fs) < 0) return -1;
+    if (blockdev_flush(fs->dev_index) < 0) return -1;
+    return 1;
+}
+
+static int minfs_tx_end(minfs_t* fs) {
+    if (!fs) return -1;
+    if (fs->super.recovery_state == MINFS_RECOVERY_CLEAN) return 0;
+
+    fs->super.recovery_state = MINFS_RECOVERY_CLEAN;
+    if (minfs_flush_super(fs) < 0) return -1;
+    return blockdev_flush(fs->dev_index);
+}
+
+static int minfs_rebuild_bitmap_from_nodes(minfs_t* fs) {
+    if (!fs || !fs->nodes || !fs->bitmap) return -1;
+
+    memset(fs->bitmap, 0, fs->bitmap_bytes);
+    if (fs->bitmap_dirty) memset(fs->bitmap_dirty, 1, fs->bitmap_sectors);
+
+    for (uint32_t i = 0; i < fs->total_nodes; ++i) {
+        minfs_disk_node_t* node = &fs->nodes[i];
+        if (!node->used || !(node->type & VFS_FILE)) continue;
+
+        uint32_t valid_blocks = 0;
+        for (uint32_t j = 0; j < MINFS_DIRECT_BLOCKS; ++j) {
+            uint32_t blk = node->direct[j];
+            if (blk == MINFS_BLOCK_NONE) continue;
+            if (blk >= fs->data_block_count || minfs_bitmap_is_set(fs, blk)) {
+                node->direct[j] = MINFS_BLOCK_NONE;
+                continue;
+            }
+
+            minfs_bitmap_set(fs, blk);
+            valid_blocks++;
+        }
+
+        node->block_count = valid_blocks;
+        if (node->size > valid_blocks * MINFS_BLOCK_SIZE) {
+            node->size = valid_blocks * MINFS_BLOCK_SIZE;
+        }
+    }
+
+    return 0;
+}
+
+static int minfs_recover_if_needed(minfs_t* fs) {
+    if (!fs) return -1;
+    if (fs->super.recovery_state != MINFS_RECOVERY_DIRTY) return 0;
+
+    klog("minfs: recovery marker found, rebuilding filesystem metadata");
+    if (minfs_rebuild_bitmap_from_nodes(fs) < 0) return -1;
+    if (minfs_refresh_directory_sizes(fs) < 0) return -1;
+    if (minfs_flush_nodes(fs) < 0) return -1;
+    if (minfs_flush_bitmap(fs) < 0) return -1;
+    if (blockdev_flush(fs->dev_index) < 0) return -1;
+    if (minfs_tx_end(fs) < 0) return -1;
+
+    klog("minfs: recovery complete");
+    return 0;
 }
 
 static uint64_t minfs_block_lba(const minfs_t* fs, uint32_t block_index) {
@@ -435,7 +524,14 @@ static int32_t minfs_write(vfs_node_t* node, uint32_t offset, uint32_t size, con
     uint32_t old_blocks = dnode->block_count;
     uint32_t end = offset + size;
     uint32_t needed_blocks = minfs_blocks_for_size(end);
+    int metadata_change = (needed_blocks > old_blocks) || (end > old_size);
     int bitmap_dirty = 0;
+    int tx_started = 0;
+
+    if (metadata_change) {
+        tx_started = minfs_tx_begin(fs);
+        if (tx_started < 0) return -1;
+    }
 
     if (needed_blocks > dnode->block_count) {
         if (minfs_ensure_file_blocks(fs, dnode, needed_blocks) < 0) return -1;
@@ -474,9 +570,13 @@ static int32_t minfs_write(vfs_node_t* node, uint32_t offset, uint32_t size, con
         node->size = end;
     }
 
-    if (bitmap_dirty && minfs_flush_bitmap(fs) < 0) return -1;
-    if (dnode->size != old_size || dnode->block_count != old_blocks) {
-        if (minfs_flush_node(fs, impl->index) < 0) return -1;
+    if (metadata_change) {
+        if (bitmap_dirty && minfs_flush_bitmap(fs) < 0) return -1;
+        if (dnode->size != old_size || dnode->block_count != old_blocks) {
+            if (minfs_flush_node(fs, impl->index) < 0) return -1;
+        }
+        if (blockdev_flush(fs->dev_index) < 0) return -1;
+        if (tx_started > 0 && minfs_tx_end(fs) < 0) return -1;
     }
 
     return (int32_t)done;
@@ -490,10 +590,15 @@ static int minfs_open(vfs_node_t* node, uint32_t flags) {
     minfs_node_impl_t* impl = (minfs_node_impl_t*)node->impl;
     if (!impl || !impl->fs) return -1;
 
+    int tx_started = minfs_tx_begin(impl->fs);
+    if (tx_started < 0) return -1;
+
     if (minfs_release_file_blocks(impl->fs, &impl->fs->nodes[impl->index]) < 0) return -1;
     node->size = 0;
     if (minfs_flush_bitmap(impl->fs) < 0) return -1;
     if (minfs_flush_node(impl->fs, impl->index) < 0) return -1;
+    if (blockdev_flush(impl->fs->dev_index) < 0) return -1;
+    if (tx_started > 0 && minfs_tx_end(impl->fs) < 0) return -1;
     return 0;
 }
 
@@ -544,6 +649,9 @@ static int minfs_create(vfs_node_t* parent, const char* name, uint32_t type) {
     int free_index = minfs_find_free_index(impl->fs);
     if (free_index < 0) return -1;
 
+    int tx_started = minfs_tx_begin(impl->fs);
+    if (tx_started < 0) return -1;
+
     minfs_disk_node_t* d = &impl->fs->nodes[(uint32_t)free_index];
     minfs_disk_node_init(d);
     d->used = 1;
@@ -558,7 +666,10 @@ static int minfs_create(vfs_node_t* parent, const char* name, uint32_t type) {
     }
 
     minfs_refresh_directory_sizes(impl->fs);
-    return minfs_flush_nodes(impl->fs);
+    if (minfs_flush_nodes(impl->fs) < 0) return -1;
+    if (blockdev_flush(impl->fs->dev_index) < 0) return -1;
+    if (tx_started > 0 && minfs_tx_end(impl->fs) < 0) return -1;
+    return 0;
 }
 
 static int minfs_unlink(vfs_node_t* parent, const char* name) {
@@ -573,6 +684,9 @@ static int minfs_unlink(vfs_node_t* parent, const char* name) {
     if (idx == 0) return -1;
     if ((child->type & VFS_DIRECTORY) && minfs_count_children(impl->fs, idx) != 0) return -1;
 
+    int tx_started = minfs_tx_begin(impl->fs);
+    if (tx_started < 0) return -1;
+
     if (impl->fs->nodes[idx].type & VFS_FILE) {
         if (minfs_release_file_blocks(impl->fs, &impl->fs->nodes[idx]) < 0) return -1;
         if (minfs_flush_bitmap(impl->fs) < 0) return -1;
@@ -585,7 +699,10 @@ static int minfs_unlink(vfs_node_t* parent, const char* name) {
     }
 
     minfs_refresh_directory_sizes(impl->fs);
-    return minfs_flush_nodes(impl->fs);
+    if (minfs_flush_nodes(impl->fs) < 0) return -1;
+    if (blockdev_flush(impl->fs->dev_index) < 0) return -1;
+    if (tx_started > 0 && minfs_tx_end(impl->fs) < 0) return -1;
+    return 0;
 }
 
 int minfs_format(uint32_t dev_index) {
@@ -622,6 +739,8 @@ int minfs_format(uint32_t dev_index) {
     super.bitmap_sectors = bitmap_sectors;
     super.data_start_sector = data_start;
     super.data_block_count = data_blocks;
+    super.recovery_state = MINFS_RECOVERY_CLEAN;
+    super.recovery_seq = 0;
 
     if (blockdev_write(dev_index, 0, 1, &super) < 0) return -6;
 
@@ -678,6 +797,7 @@ int minfs_mount(uint32_t dev_index, const char* mount_name) {
     if (!fs) return -8;
 
     fs->dev_index = dev_index;
+    fs->super = super;
     fs->total_nodes = super.total_nodes;
     fs->block_size = super.block_size;
     fs->max_file_bytes = super.max_file_bytes;
@@ -722,6 +842,11 @@ int minfs_mount(uint32_t dev_index, const char* mount_name) {
         return -13;
     }
 
+    if (minfs_recover_if_needed(fs) < 0) {
+        minfs_free_mount(fs);
+        return -14;
+    }
+
     for (uint32_t i = 0; i < fs->total_nodes; ++i) {
         fs->impls[i].fs = fs;
         fs->impls[i].index = i;
@@ -734,7 +859,7 @@ int minfs_mount(uint32_t dev_index, const char* mount_name) {
         if (!fs->nodes[i].used) continue;
         if (!minfs_alloc_vnode(fs, i)) {
             minfs_free_mount(fs);
-            return -14;
+            return -15;
         }
     }
 
@@ -748,6 +873,19 @@ int minfs_mount(uint32_t dev_index, const char* mount_name) {
     }
     g_mounts[g_mount_count++] = fs;
     klog("minfs: mounted bitmap-backed filesystem");
+    return 0;
+}
+
+int minfs_test_mark_dirty(uint32_t dev_index) {
+    minfs_t* fs = minfs_find_mount(dev_index);
+    if (!fs) return -1;
+
+    fs->super.recovery_state = MINFS_RECOVERY_DIRTY;
+    fs->super.recovery_seq++;
+    if (minfs_flush_super(fs) < 0) return -2;
+    if (blockdev_flush(fs->dev_index) < 0) return -3;
+
+    klog("minfs: test hook marked filesystem recovery state DIRTY");
     return 0;
 }
 
