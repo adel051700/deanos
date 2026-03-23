@@ -8,6 +8,7 @@
 #define BLOCKDEV_MAX 16
 #define BLOCK_CACHE_ENTRIES 128u
 #define BLOCK_CACHE_BLOCK_SIZE 512u
+#define BLOCKDEV_ASYNC_QUEUE_DEPTH 64u
 
 typedef struct {
     uint8_t valid;
@@ -25,10 +26,99 @@ static block_cache_entry_t g_cache[BLOCK_CACHE_ENTRIES];
 static uint32_t g_cache_hand = 0;
 static blockdev_cache_stats_t g_cache_stats = {0};
 
+typedef struct {
+    blockdev_request_t req;
+    int status;
+} blockdev_completion_entry_t;
+
+static blockdev_request_t g_pending[BLOCKDEV_ASYNC_QUEUE_DEPTH];
+static uint32_t g_pending_head = 0;
+static uint32_t g_pending_tail = 0;
+static uint32_t g_pending_count = 0;
+
+static blockdev_completion_entry_t g_completed[BLOCKDEV_ASYNC_QUEUE_DEPTH];
+static uint32_t g_completed_head = 0;
+static uint32_t g_completed_tail = 0;
+static uint32_t g_completed_count = 0;
+static uint32_t g_async_inflight = 0;
+
 static int blockdev_should_cache(const block_device_t* d) {
     if (!d || !d->read) return 0;
     if (d->flags & BLOCKDEV_FLAG_PARTITION) return 0;
     return d->block_size == BLOCK_CACHE_BLOCK_SIZE;
+}
+
+static void blockdev_update_async_pending_stat(void) {
+    g_cache_stats.async_pending = g_pending_count + g_completed_count + g_async_inflight;
+}
+
+static int blockdev_pending_push(const blockdev_request_t* req) {
+    if (!req) return -1;
+    if (g_pending_count >= BLOCKDEV_ASYNC_QUEUE_DEPTH) return -1;
+    g_pending[g_pending_tail] = *req;
+    g_pending_tail = (g_pending_tail + 1u) % BLOCKDEV_ASYNC_QUEUE_DEPTH;
+    g_pending_count++;
+    blockdev_update_async_pending_stat();
+    return 0;
+}
+
+static int blockdev_pending_pop(blockdev_request_t* out) {
+    if (!out) return -1;
+    if (g_pending_count == 0) return -1;
+    *out = g_pending[g_pending_head];
+    g_pending_head = (g_pending_head + 1u) % BLOCKDEV_ASYNC_QUEUE_DEPTH;
+    g_pending_count--;
+    blockdev_update_async_pending_stat();
+    return 0;
+}
+
+static int blockdev_completed_push(const blockdev_request_t* req, int status) {
+    if (!req) return -1;
+    if (g_completed_count >= BLOCKDEV_ASYNC_QUEUE_DEPTH) return -1;
+    g_completed[g_completed_tail].req = *req;
+    g_completed[g_completed_tail].status = status;
+    g_completed_tail = (g_completed_tail + 1u) % BLOCKDEV_ASYNC_QUEUE_DEPTH;
+    g_completed_count++;
+    blockdev_update_async_pending_stat();
+    return 0;
+}
+
+static int blockdev_completed_pop(blockdev_completion_entry_t* out) {
+    if (!out) return -1;
+    if (g_completed_count == 0) return -1;
+    *out = g_completed[g_completed_head];
+    g_completed_head = (g_completed_head + 1u) % BLOCKDEV_ASYNC_QUEUE_DEPTH;
+    g_completed_count--;
+    blockdev_update_async_pending_stat();
+    return 0;
+}
+
+static int blockdev_validate_request(const blockdev_request_t* req) {
+    if (!req) return -1;
+    if (req->dev_index >= g_count) return -2;
+
+    const block_device_t* d = &g_devs[req->dev_index];
+
+    if (req->op == BLOCKDEV_REQ_FLUSH) {
+        return 0;
+    }
+
+    if (req->count == 0 || !req->buffer) return -3;
+    if (req->lba >= d->block_count) return -4;
+    if ((d->block_count - req->lba) < (uint64_t)req->count) return -5;
+
+    if (req->op == BLOCKDEV_REQ_READ) {
+        if (!d->read) return -6;
+        return 0;
+    }
+
+    if (req->op == BLOCKDEV_REQ_WRITE) {
+        if (!d->write) return -6;
+        if (d->flags & BLOCKDEV_FLAG_READONLY) return -7;
+        return 0;
+    }
+
+    return -8;
 }
 
 static int block_cache_find(uint32_t dev_index, uint64_t lba) {
@@ -89,48 +179,7 @@ static int block_cache_load(uint32_t slot, uint32_t dev_index, uint64_t lba) {
     return 0;
 }
 
-void blockdev_initialize(void) {
-    g_count = 0;
-    memset(g_cache, 0, sizeof(g_cache));
-    g_cache_hand = 0;
-    memset(&g_cache_stats, 0, sizeof(g_cache_stats));
-    g_cache_stats.entries = BLOCK_CACHE_ENTRIES;
-}
-
-int blockdev_register(const block_device_t* dev) {
-    if (!dev || !dev->read) return -1;
-    if (g_count >= BLOCKDEV_MAX) return -2;
-
-    for (uint32_t i = 0; i < g_count; ++i) {
-        if (strcmp(g_devs[i].name, dev->name) == 0) return -3;
-    }
-
-    g_devs[g_count] = *dev;
-    g_devs[g_count].id = g_count;
-    g_count++;
-    return (int)(g_count - 1);
-}
-
-uint32_t blockdev_count(void) {
-    return g_count;
-}
-
-const block_device_t* blockdev_get(uint32_t index) {
-    if (index >= g_count) return NULL;
-    return &g_devs[index];
-}
-
-const block_device_t* blockdev_find_by_name(const char* name) {
-    if (!name || *name == '\0') return NULL;
-
-    for (uint32_t i = 0; i < g_count; ++i) {
-        if (strcmp(g_devs[i].name, name) == 0) return &g_devs[i];
-    }
-
-    return NULL;
-}
-
-int blockdev_read(uint32_t index, uint64_t lba, uint32_t count, void* buffer) {
+static int blockdev_read_sync_impl(uint32_t index, uint64_t lba, uint32_t count, void* buffer) {
     if (index >= g_count || !buffer || count == 0) return -1;
 
     const block_device_t* d = &g_devs[index];
@@ -169,7 +218,7 @@ int blockdev_read(uint32_t index, uint64_t lba, uint32_t count, void* buffer) {
     return 0;
 }
 
-int blockdev_write(uint32_t index, uint64_t lba, uint32_t count, const void* buffer) {
+static int blockdev_write_sync_impl(uint32_t index, uint64_t lba, uint32_t count, const void* buffer) {
     if (index >= g_count || !buffer || count == 0) return -1;
 
     const block_device_t* d = &g_devs[index];
@@ -209,7 +258,7 @@ int blockdev_write(uint32_t index, uint64_t lba, uint32_t count, const void* buf
     return 0;
 }
 
-int blockdev_flush(uint32_t index) {
+static int blockdev_flush_sync_impl(uint32_t index) {
     if (index >= g_count) return -1;
 
     uint32_t target_a = index;
@@ -232,7 +281,182 @@ int blockdev_flush(uint32_t index) {
     return 0;
 }
 
+static int blockdev_execute_request(const blockdev_request_t* req) {
+    if (!req) return -1;
+    if (req->op == BLOCKDEV_REQ_READ) {
+        return blockdev_read_sync_impl(req->dev_index, req->lba, req->count, req->buffer);
+    }
+    if (req->op == BLOCKDEV_REQ_WRITE) {
+        return blockdev_write_sync_impl(req->dev_index, req->lba, req->count, req->buffer);
+    }
+    if (req->op == BLOCKDEV_REQ_FLUSH) {
+        return blockdev_flush_sync_impl(req->dev_index);
+    }
+    return -1;
+}
+
+static void blockdev_dispatch_completions(uint32_t budget) {
+    if (budget == 0) budget = 1;
+
+    for (uint32_t dispatched = 0; dispatched < budget; ++dispatched) {
+        blockdev_completion_entry_t event;
+        if (blockdev_completed_pop(&event) < 0) break;
+
+        if (event.req.completion) {
+            event.req.completion(&event.req, event.status, event.req.user_data);
+        }
+    }
+}
+
+static void blockdev_wait_callback(const blockdev_request_t* req, int status, void* user_data) {
+    (void)req;
+    if (!user_data) return;
+    int* waiter = (int*)user_data;
+    waiter[0] = status;
+    waiter[1] = 1;
+}
+
+static int blockdev_submit_and_wait(blockdev_request_t* req) {
+    if (!req) return -1;
+    int waiter[2] = {0, 0};
+    req->completion = blockdev_wait_callback;
+    req->user_data = waiter;
+
+    int src = blockdev_submit_async(req);
+    if (src < 0) return src;
+
+    while (!waiter[1]) {
+        blockdev_pump(1);
+    }
+    return waiter[0];
+}
+
+static void blockdev_drain_async(void) {
+    while (g_pending_count > 0 || g_completed_count > 0 || g_async_inflight > 0) {
+        blockdev_pump(8);
+    }
+}
+
+void blockdev_initialize(void) {
+    g_count = 0;
+    memset(g_cache, 0, sizeof(g_cache));
+    g_cache_hand = 0;
+    memset(&g_cache_stats, 0, sizeof(g_cache_stats));
+    g_cache_stats.entries = BLOCK_CACHE_ENTRIES;
+
+    g_pending_head = 0;
+    g_pending_tail = 0;
+    g_pending_count = 0;
+    g_completed_head = 0;
+    g_completed_tail = 0;
+    g_completed_count = 0;
+    g_async_inflight = 0;
+    blockdev_update_async_pending_stat();
+}
+
+int blockdev_register(const block_device_t* dev) {
+    if (!dev || !dev->read) return -1;
+    if (g_count >= BLOCKDEV_MAX) return -2;
+
+    for (uint32_t i = 0; i < g_count; ++i) {
+        if (strcmp(g_devs[i].name, dev->name) == 0) return -3;
+    }
+
+    g_devs[g_count] = *dev;
+    g_devs[g_count].id = g_count;
+    g_count++;
+    return (int)(g_count - 1);
+}
+
+uint32_t blockdev_count(void) {
+    return g_count;
+}
+
+const block_device_t* blockdev_get(uint32_t index) {
+    if (index >= g_count) return NULL;
+    return &g_devs[index];
+}
+
+const block_device_t* blockdev_find_by_name(const char* name) {
+    if (!name || *name == '\0') return NULL;
+
+    for (uint32_t i = 0; i < g_count; ++i) {
+        if (strcmp(g_devs[i].name, name) == 0) return &g_devs[i];
+    }
+
+    return NULL;
+}
+
+int blockdev_read(uint32_t index, uint64_t lba, uint32_t count, void* buffer) {
+    blockdev_request_t req;
+    memset(&req, 0, sizeof(req));
+    req.op = BLOCKDEV_REQ_READ;
+    req.dev_index = index;
+    req.lba = lba;
+    req.count = count;
+    req.buffer = buffer;
+    return blockdev_submit_and_wait(&req);
+}
+
+int blockdev_write(uint32_t index, uint64_t lba, uint32_t count, const void* buffer) {
+    blockdev_request_t req;
+    memset(&req, 0, sizeof(req));
+    req.op = BLOCKDEV_REQ_WRITE;
+    req.dev_index = index;
+    req.lba = lba;
+    req.count = count;
+    req.buffer = (void*)buffer;
+    return blockdev_submit_and_wait(&req);
+}
+
+int blockdev_submit_async(const blockdev_request_t* req) {
+    int vrc = blockdev_validate_request(req);
+    if (vrc < 0) return vrc;
+
+    if (blockdev_pending_push(req) < 0) return -9;
+    g_cache_stats.async_submitted++;
+    return 0;
+}
+
+void blockdev_pump(uint32_t budget) {
+    if (budget == 0) budget = 1;
+
+    blockdev_dispatch_completions(budget);
+
+    for (uint32_t i = 0; i < budget; ++i) {
+        blockdev_request_t req;
+        if (blockdev_pending_pop(&req) < 0) break;
+
+        g_async_inflight = 1;
+        blockdev_update_async_pending_stat();
+        int status = blockdev_execute_request(&req);
+        g_async_inflight = 0;
+        blockdev_update_async_pending_stat();
+
+        if (status < 0) g_cache_stats.async_failed++;
+        g_cache_stats.async_completed++;
+
+        if (blockdev_completed_push(&req, status) < 0) {
+            if (req.completion) {
+                req.completion(&req, status, req.user_data);
+            }
+        }
+
+        blockdev_dispatch_completions(1);
+    }
+}
+
+int blockdev_flush(uint32_t index) {
+    blockdev_request_t req;
+    memset(&req, 0, sizeof(req));
+    req.op = BLOCKDEV_REQ_FLUSH;
+    req.dev_index = index;
+    return blockdev_submit_and_wait(&req);
+}
+
 int blockdev_flush_all(void) {
+    blockdev_drain_async();
+
     for (uint32_t i = 0; i < BLOCK_CACHE_ENTRIES; ++i) {
         if (!g_cache[i].valid || !g_cache[i].dirty) continue;
         int rc = block_cache_writeback_entry(i);

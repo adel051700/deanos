@@ -18,6 +18,7 @@
 #include "include/kernel/tss.h"
 #include "include/kernel/usermode.h"
 #include "include/kernel/vfs.h"
+#include "include/kernel/blockdev.h"
 #include "../libc/include/string.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -920,6 +921,7 @@ void task_yield(void) {
  */
 void scheduler_tick(void) {
     g_sched_ticks++;
+    blockdev_pump(1);
     wake_blocked_tasks();
 
     /* Decrement remaining slice of current task. */

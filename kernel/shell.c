@@ -144,7 +144,7 @@ static const struct shell_command commands[] = {
     {"kill",   cmd_kill,   "Send signal by parent id: kill [-INT|-TERM|-KILL|-<num>] <ppid>"},
     {"wait",   cmd_wait,   "Wait for child exit: wait [pid|any]"},
     {"mouse",  cmd_mouse,  "Show PS/2 mouse state (mouse clear resets totals)"},
-    {"blk",    cmd_blk,    "Block devices: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed>"},
+    {"blk",    cmd_blk,    "Block devices: blk list/read/write/cache/flush/async"},
     {"disk",   cmd_disk,   "Disk tools: disk parts | init | mkfs | mount | setup"},
     {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
     {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
@@ -1913,7 +1913,7 @@ static void cmd_blk(const char* args) {
         return;
     }
 
-    if (strcmp(args, "cache") == 0) {
+    if (strcmp(args, "cache") == 0 || strcmp(args, "async") == 0) {
         blockdev_cache_stats_t st = {0};
         blockdev_cache_stats(&st);
         char buf[24];
@@ -1932,6 +1932,18 @@ static void cmd_blk(const char* args) {
         terminal_writestring(buf);
         terminal_writestring(" writebacks=");
         itoa((int)st.writebacks, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" async_submitted=");
+        itoa((int)st.async_submitted, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" async_completed=");
+        itoa((int)st.async_completed, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" async_failed=");
+        itoa((int)st.async_failed, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" async_pending=");
+        itoa((int)st.async_pending, buf, 10);
         terminal_writestring(buf);
         terminal_writestring("\n");
         return;
@@ -1956,7 +1968,7 @@ static void cmd_blk(const char* args) {
         return;
     }
 
-    terminal_writestring("usage: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed-byte> | blk cache | blk flush [dev]\n");
+    terminal_writestring("usage: blk list | blk read <dev> <lba> | blk write <dev> <lba> <seed-byte> | blk cache | blk async | blk flush [dev]\n");
 }
 
 static void cmd_disk(const char* args) {
