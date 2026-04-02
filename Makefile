@@ -9,7 +9,7 @@ USER_BUILD_DIR = $(BUILD_DIR)/user
 DESTDIR = isodir
 DATE = $(shell date +%d-%m-%Y)
 MAJOR = 0
-MINOR = 6
+MINOR = 7
 VERSION = $(MAJOR)_$(MINOR)
 ISO_DIR = isos
 ISO_NAME = deanos-$(DATE)-$(VERSION).iso
@@ -58,6 +58,7 @@ kernel/serial.c \
 kernel/blockdev.c \
 kernel/ata.c \
 kernel/mbr.c \
+kernel/net.c \
 kernel/syscall.c \
 kernel/task.c \
 kernel/tss.c \
@@ -67,6 +68,9 @@ kernel/ramfs.c \
 kernel/minfs.c \
 kernel/fat32.c \
 kernel/elf.c \
+kernel/pci.c \
+kernel/e1000.c \
+kernel/rtl8139.c \
 kernel/context_switch.s
 
 ARCH_C_SRCS = \
@@ -105,7 +109,7 @@ USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
 ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
 
-.PHONY: all clean install directories iso run
+.PHONY: all clean install directories iso run run-net run-net-rtl
 .SUFFIXES: .o .c .s
 
 all: deanos.bin
@@ -260,6 +264,12 @@ iso: install
 
 run: iso
 	qemu-system-i386 -cdrom $(ISO_PATH)
+
+run-net: iso
+	qemu-system-i386 -cdrom $(ISO_PATH) -netdev user,id=net0 -device e1000,netdev=net0
+
+run-net-rtl: iso
+	qemu-system-i386 -cdrom $(ISO_PATH) -netdev user,id=net0 -device rtl8139,netdev=net0
 
 # Include dependency files
 -include $(ALL_OBJS:.o=.d)

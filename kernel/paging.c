@@ -908,6 +908,21 @@ void paging_initialize(struct multiboot_tag_framebuffer* fb_tag) {
     enable_paging();
 }
 
+int paging_identity_map_mmio(uintptr_t phys_start, uintptr_t size) {
+    if (size == 0u) return -1;
+
+    uintptr_t start = phys_start & ~(PAGE_SIZE - 1u);
+    uintptr_t end = (phys_start + size + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+
+    for (uintptr_t a = start; a < end; a += PAGE_SIZE) {
+        if (map_page(a, a, PTE_P | PTE_W) < 0) {
+            return -2;
+        }
+    }
+
+    return 0;
+}
+
 int paging_swap_initialize(void) {
     memset(&g_swap, 0, sizeof(g_swap));
 
