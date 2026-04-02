@@ -16,6 +16,7 @@
 #include "include/kernel/minfs.h"
 #include "include/kernel/fat32.h"
 #include "include/kernel/paging.h"
+#include "include/kernel/net.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -93,6 +94,7 @@ static void cmd_disk(const char* args);
 static void cmd_fsfill(const char* args);
 static void cmd_fsverify(const char* args);
 static void cmd_vm(const char* args);
+static void cmd_net(const char* args);
 
 // Filesystem commands
 static void cmd_ls(const char* args);
@@ -149,6 +151,7 @@ static const struct shell_command commands[] = {
     {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
     {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
     {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr pages] | vm cow | vm refs"},
+    {"net",    cmd_net,    "Network: net | net tx | net regs"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
@@ -979,7 +982,7 @@ static void cmd_about(const char* args) {
     
     terminal_writestring("DeanOS - A minimal operating system\n");
     terminal_writestring("Created as a learning project\n");
-    terminal_writestring("Version 0.6\n");
+    terminal_writestring("Version 0.7\n");
 }
 
 static void cmd_dean(const char* args) {
@@ -2750,6 +2753,110 @@ static void cmd_vm(const char* args) {
     terminal_writestring("usage: vm stats | vm demand [addr pages] | vm cow | vm refs\n");
 }
 
+static void cmd_net(const char* args) {
+    if (args && strcmp(args, "regs") == 0) {
+        net_debug_info_t dbg;
+        char buf[24];
+        net_get_debug_info(&dbg);
+
+        terminal_writestring("net regs:\n");
+        terminal_writestring("  pci=");
+        itoa((int)dbg.vendor_id, buf, 16);
+        terminal_writestring(buf);
+        terminal_writestring(":");
+        itoa((int)dbg.device_id, buf, 16);
+        terminal_writestring(buf);
+        terminal_writestring(" io=0x");
+        itoa((int)dbg.io_base, buf, 16);
+        terminal_writestring(buf);
+        terminal_writestring(" irq=");
+        itoa((int)dbg.irq, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+
+        terminal_writestring("  reg_a=0x");
+        itoa((int)dbg.reg_a, buf, 16);
+        terminal_writestring(buf);
+        terminal_writestring(" reg_b=0x");
+        itoa((int)dbg.reg_b, buf, 16);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+
+        terminal_writestring("  reg_c=0x");
+        itoa((int)dbg.reg_c, buf, 16);
+        terminal_writestring(buf);
+        terminal_writestring(" reg_d=0x");
+        itoa((int)dbg.reg_d, buf, 16);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (!args || *args == '\0' || strcmp(args, "stats") == 0) {
+        if (!net_is_ready()) {
+            terminal_writestring("net: no initialized NIC driver\n");
+            return;
+        }
+
+        uint8_t mac[6];
+        net_stats_t st;
+        char buf[24];
+
+        net_get_mac(mac);
+        net_get_stats(&st);
+
+        terminal_writestring("net: driver=");
+        terminal_writestring(net_driver_name());
+        terminal_writestring(" state=");
+        terminal_writestring(net_link_up() ? "link-up\n" : "link-down\n");
+
+        terminal_writestring("mac: ");
+        term_write_hex8(mac[0]); terminal_writestring(":");
+        term_write_hex8(mac[1]); terminal_writestring(":");
+        term_write_hex8(mac[2]); terminal_writestring(":");
+        term_write_hex8(mac[3]); terminal_writestring(":");
+        term_write_hex8(mac[4]); terminal_writestring(":");
+        term_write_hex8(mac[5]); terminal_writestring("\n");
+
+        terminal_writestring("irqs=");
+        itoa((int)st.interrupts, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" rx=");
+        itoa((int)st.rx_packets, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" tx=");
+        itoa((int)st.tx_packets, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" rxirq=");
+        itoa((int)st.rx_irqs, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" txirq=");
+        itoa((int)st.tx_irqs, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" drops=");
+        itoa((int)st.rx_drops, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (strcmp(args, "tx") == 0) {
+        if (!net_is_ready()) {
+            terminal_writestring("net: no initialized NIC driver\n");
+            return;
+        }
+
+        int rc = net_send_test_frame();
+        if (rc == 0) {
+            terminal_writestring("net: queued one test Ethernet frame\n");
+        } else {
+            terminal_writestring("net: tx failed\n");
+        }
+        return;
+    }
+
+    terminal_writestring("usage: net [stats] | net tx | net regs\n");
+}
 
 /* ---- Filesystem commands ----------------------------------------------- */
 

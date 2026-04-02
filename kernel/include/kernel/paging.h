@@ -22,6 +22,9 @@ typedef struct paging_stats {
 
 void paging_initialize(struct multiboot_tag_framebuffer* fb_tag);
 
+/* Identity-map a physical MMIO range into kernel virtual space. */
+int paging_identity_map_mmio(uintptr_t phys_start, uintptr_t size);
+
 /* Late init after block devices/partitions are available. */
 int paging_swap_initialize(void);
 
