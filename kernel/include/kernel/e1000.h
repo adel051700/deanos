@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+typedef void (*e1000_rx_callback_t)(const void* frame, uint16_t len);
+
 typedef struct e1000_stats {
     uint32_t interrupts;
     uint32_t rx_packets;
@@ -27,6 +29,7 @@ typedef struct e1000_debug_info {
 int e1000_initialize(void);
 int e1000_is_ready(void);
 int e1000_link_up(void);
+void e1000_set_rx_callback(e1000_rx_callback_t callback);
 int e1000_send_raw(const void* data, uint16_t len);
 int e1000_send_test_frame(void);
 void e1000_get_mac(uint8_t out_mac[6]);

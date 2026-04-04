@@ -63,7 +63,7 @@
 36. ~~Unified storage probing: robust ATA + ATAPI + partition scan on boot.~~
 37. ~~Better block I/O APIs: async request queue and completion callbacks.~~
 38. ~~Network driver milestone: bring up a basic NIC (e1000 or RTL8139).~~
-39. Network stack phase 1: ARP + IPv4 + ICMP (ping).
+39. ~~Network stack phase 1: ARP + IPv4 + ICMP (ping).~~
 40. Network stack phase 2: UDP sockets and DNS client.
 41. Network stack phase 3: TCP state machine for simple clients.
 42. Userland networking tools: ping, netstat-lite, and DHCP client command.

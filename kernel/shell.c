@@ -151,7 +151,7 @@ static const struct shell_command commands[] = {
     {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
     {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
     {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr pages] | vm cow | vm refs"},
-    {"net",    cmd_net,    "Network: net | net tx | net regs"},
+    {"net",    cmd_net,    "Network: net [stats] | net cfg <ip> <mask> <gw> | net ping [-c N] <ip>"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
@@ -1395,6 +1395,45 @@ static void term_write_hex8(uint8_t v) {
     out[1] = hex[v & 0xF];
     out[2] = '\0';
     terminal_writestring(out);
+}
+
+static void term_write_ipv4(const uint8_t ip[4]) {
+    char buf[16];
+    itoa((int)ip[0], buf, 10); terminal_writestring(buf); terminal_writestring(".");
+    itoa((int)ip[1], buf, 10); terminal_writestring(buf); terminal_writestring(".");
+    itoa((int)ip[2], buf, 10); terminal_writestring(buf); terminal_writestring(".");
+    itoa((int)ip[3], buf, 10); terminal_writestring(buf);
+}
+
+static int parse_ipv4_token(const char* token, uint8_t out_ip[4]) {
+    if (!token || !out_ip) return 0;
+
+    uint32_t octet = 0;
+    uint32_t idx = 0;
+    int saw_digit = 0;
+
+    for (const char* p = token;; ++p) {
+        char c = *p;
+        if (c >= '0' && c <= '9') {
+            saw_digit = 1;
+            octet = octet * 10u + (uint32_t)(c - '0');
+            if (octet > 255u) return 0;
+            continue;
+        }
+
+        if (c == '.' || c == '\0' || c == ' ') {
+            if (!saw_digit || idx >= 4u) return 0;
+            out_ip[idx++] = (uint8_t)octet;
+            octet = 0;
+            saw_digit = 0;
+            if (c == '\0' || c == ' ') break;
+            continue;
+        }
+
+        return 0;
+    }
+
+    return idx == 4u;
 }
 
 static void term_write_wallclock_from_epoch(uint32_t epoch_seconds) {
@@ -2754,6 +2793,9 @@ static void cmd_vm(const char* args) {
 }
 
 static void cmd_net(const char* args) {
+    char token[32];
+    copy_token(args ? args : "", token, sizeof(token));
+
     if (args && strcmp(args, "regs") == 0) {
         net_debug_info_t dbg;
         char buf[24];
@@ -2789,6 +2831,203 @@ static void cmd_net(const char* args) {
         itoa((int)dbg.reg_d, buf, 16);
         terminal_writestring(buf);
         terminal_writestring("\n");
+        return;
+    }
+
+    if (strcmp(token, "cfg") == 0) {
+        const char* p = next_token(args);
+        net_ipv4_config_t cfg;
+        net_get_ipv4_config(&cfg);
+
+        if (!p || *p == '\0') {
+            terminal_writestring("net cfg:\n  addr=");
+            term_write_ipv4(cfg.address);
+            terminal_writestring(" mask=");
+            term_write_ipv4(cfg.netmask);
+            terminal_writestring(" gw=");
+            term_write_ipv4(cfg.gateway);
+            terminal_writestring(cfg.configured ? " (configured)\n" : " (disabled)\n");
+            return;
+        }
+
+        char ip_tok[32], mask_tok[32], gw_tok[32];
+        copy_token(p, ip_tok, sizeof(ip_tok));
+        p = next_token(p);
+        copy_token(p, mask_tok, sizeof(mask_tok));
+        p = next_token(p);
+        copy_token(p, gw_tok, sizeof(gw_tok));
+
+        if (!parse_ipv4_token(ip_tok, cfg.address) ||
+            !parse_ipv4_token(mask_tok, cfg.netmask) ||
+            !parse_ipv4_token(gw_tok, cfg.gateway)) {
+            terminal_writestring("usage: net cfg <ip> <mask> <gateway>\n");
+            return;
+        }
+
+        cfg.configured = 1;
+        if (net_set_ipv4_config(&cfg) != 0) {
+            terminal_writestring("net: failed to apply config\n");
+            return;
+        }
+
+        terminal_writestring("net: IPv4 configured addr=");
+        term_write_ipv4(cfg.address);
+        terminal_writestring(" gw=");
+        term_write_ipv4(cfg.gateway);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (strcmp(token, "ping") == 0) {
+        if (!net_is_ready()) {
+            terminal_writestring("net: no initialized NIC driver\n");
+            return;
+        }
+
+        const char* p = next_token(args);
+        uint8_t target[4] = {0};
+        uint32_t max_count = 0; /* 0 = infinite, stop with Ctrl+C */
+        uint8_t have_target = 0;
+
+        while (p && *p) {
+            char arg0[32];
+            copy_token(p, arg0, sizeof(arg0));
+            if (arg0[0] == '\0') break;
+
+            if (strcmp(arg0, "-c") == 0) {
+                p = next_token(p);
+                if (!p || *p == '\0') {
+                    terminal_writestring("usage: net ping [-c N] <ip>\n");
+                    return;
+                }
+                char cnt_tok[32];
+                copy_token(p, cnt_tok, sizeof(cnt_tok));
+                if (!is_decimal_token(cnt_tok)) {
+                    terminal_writestring("usage: net ping [-c N] <ip>\n");
+                    return;
+                }
+                max_count = parse_uint(cnt_tok);
+                p = next_token(p);
+                continue;
+            }
+
+            if (!have_target && parse_ipv4_token(arg0, target)) {
+                have_target = 1;
+                p = next_token(p);
+                continue;
+            }
+
+            terminal_writestring("usage: net ping [-c N] <ip>\n");
+            return;
+        }
+
+        if (!have_target) {
+            terminal_writestring("usage: net ping [-c N] <ip>\n");
+            return;
+        }
+
+        terminal_writestring("PING ");
+        term_write_ipv4(target);
+        terminal_writestring(" (40 bytes of data).\n");
+
+        uint32_t tx = 0;
+        uint32_t rx = 0;
+        uint32_t min_ms = 0xFFFFFFFFu;
+        uint32_t max_ms = 0;
+        uint64_t sum_ms = 0;
+        uint64_t started_ms = pit_get_uptime_ms();
+        uint8_t interrupted = 0;
+
+        for (;;) {
+            if (max_count && tx >= max_count) break;
+
+            net_ping_result_t res = {0};
+            uint64_t probe_started_ms = pit_get_uptime_ms();
+            int rc = net_ping(target, 1000u, &res);
+            tx++;
+
+            if (rc == 0 && res.received) {
+                rx++;
+                if (res.elapsed_ms < min_ms) min_ms = res.elapsed_ms;
+                if (res.elapsed_ms > max_ms) max_ms = res.elapsed_ms;
+                sum_ms += (uint64_t)res.elapsed_ms;
+
+                terminal_writestring("40 bytes from ");
+                term_write_ipv4(target);
+                terminal_writestring(": icmp_seq=");
+                term_write_u32((uint32_t)res.sequence);
+                terminal_writestring(" ttl=");
+                term_write_u32((uint32_t)res.ttl);
+                terminal_writestring(" time=");
+                term_write_u32(res.elapsed_ms);
+                terminal_writestring("ms\n");
+            } else {
+                terminal_writestring("Request timeout for icmp_seq=");
+                if (res.sequence) term_write_u32((uint32_t)res.sequence);
+                else term_write_u32(tx);
+                terminal_writestring("\n");
+            }
+
+            /* Ctrl+C is delivered as ETX in keyboard buffer for shell-builtins. */
+            while (keyboard_data_available()) {
+                char c = keyboard_getchar();
+                if (c == 3) {
+                    interrupted = 1;
+                    break;
+                }
+            }
+            if (interrupted) break;
+
+            uint64_t probe_elapsed = pit_get_uptime_ms() - probe_started_ms;
+            if (probe_elapsed < 1000u) {
+                uint64_t wait_ms = 1000u - probe_elapsed;
+                while (wait_ms > 0u) {
+                    uint32_t step = (wait_ms > 25u) ? 25u : (uint32_t)wait_ms;
+                    pit_sleep(step);
+                    wait_ms -= step;
+
+                    while (keyboard_data_available()) {
+                        char c = keyboard_getchar();
+                        if (c == 3) {
+                            interrupted = 1;
+                            break;
+                        }
+                    }
+                    if (interrupted) break;
+                }
+            }
+            if (interrupted) break;
+        }
+
+        uint64_t elapsed_ms = pit_get_uptime_ms() - started_ms;
+        terminal_writestring("--- ");
+        term_write_ipv4(target);
+        terminal_writestring(" ping statistics ---\n");
+        term_write_u32(tx);
+        terminal_writestring(" packets transmitted, ");
+        term_write_u32(rx);
+        terminal_writestring(" received, ");
+        if (tx == 0) {
+            terminal_writestring("0");
+        } else {
+            uint32_t loss = ((tx - rx) * 100u) / tx;
+            term_write_u32(loss);
+        }
+        terminal_writestring("% packet loss, time ");
+        term_write_u32((uint32_t)elapsed_ms);
+        terminal_writestring("ms\n");
+
+        if (rx > 0) {
+            uint32_t avg_ms = (uint32_t)(sum_ms / (uint64_t)rx);
+            terminal_writestring("rtt min/avg/max = ");
+            term_write_u32(min_ms);
+            terminal_writestring("/");
+            term_write_u32(avg_ms);
+            terminal_writestring("/");
+            term_write_u32(max_ms);
+            terminal_writestring(" ms\n");
+        }
+
         return;
     }
 
@@ -2837,6 +3076,34 @@ static void cmd_net(const char* args) {
         itoa((int)st.rx_drops, buf, 10);
         terminal_writestring(buf);
         terminal_writestring("\n");
+
+        terminal_writestring("arp rx=");
+        itoa((int)st.arp_rx, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" tx=");
+        itoa((int)st.arp_tx, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" ipv4 rx=");
+        itoa((int)st.ipv4_rx, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" tx=");
+        itoa((int)st.ipv4_tx, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+
+        terminal_writestring("icmp rx=");
+        itoa((int)st.icmp_rx, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" tx=");
+        itoa((int)st.icmp_tx, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" ping req=");
+        itoa((int)st.ping_requests, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" rep=");
+        itoa((int)st.ping_replies, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
         return;
     }
 
@@ -2855,7 +3122,7 @@ static void cmd_net(const char* args) {
         return;
     }
 
-    terminal_writestring("usage: net [stats] | net tx | net regs\n");
+    terminal_writestring("usage: net [stats] | net tx | net regs | net cfg <ip> <mask> <gw> | net ping [-c N] <ip>\n");
 }
 
 /* ---- Filesystem commands ----------------------------------------------- */
