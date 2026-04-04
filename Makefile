@@ -104,6 +104,7 @@ LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(filter libc/%.c,$(LIBC_S
 ARCH_C_OBJS = $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(ARCH_C_SRCS))
 ARCH_ASM_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(ARCH_ASM_SRCS))
 USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUILD_DIR)/execvetest.elf $(USER_BUILD_DIR)/waittest.elf $(USER_BUILD_DIR)/waitstress.elf $(USER_BUILD_DIR)/waitstressbg.elf $(USER_BUILD_DIR)/catfd.elf $(USER_BUILD_DIR)/sigtest.elf $(USER_BUILD_DIR)/mmaptest.elf $(USER_BUILD_DIR)/shmtest.elf
+USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o $(USER_BUILD_DIR)/dns_blob.o
 USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o
 
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
@@ -243,6 +244,7 @@ $(USER_BUILD_DIR)/shmtest.elf: $(USER_BUILD_DIR)/shmtest.o user/linker.ld | dire
 
 $(USER_BUILD_DIR)/shmtest_blob.o: $(USER_BUILD_DIR)/shmtest.elf | directories
 	$(LD) -r -m elf_i386 -b binary $< -o $@
+
 
 
 clean:

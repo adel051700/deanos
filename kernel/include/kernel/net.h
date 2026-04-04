@@ -17,14 +17,30 @@ typedef struct net_stats {
     uint32_t ipv4_tx;
     uint32_t icmp_rx;
     uint32_t icmp_tx;
+    uint32_t udp_rx;
+    uint32_t udp_tx;
     uint32_t ping_requests;
     uint32_t ping_replies;
+    uint32_t dns_queries;
+    uint32_t dns_replies;
+    uint32_t dns_timeouts;
+    uint32_t dns_failures;
+    uint32_t dns_seen;
+    uint32_t dns_short;
+    uint32_t dns_bad_header;
+    uint32_t dns_no_a_answer;
+    uint32_t udp_bad_checksum;
+    uint32_t udp_no_socket;
+    uint32_t udp_queue_drop;
+    uint32_t udp_last_nosock_dst_port;
+    uint32_t dns_last_local_port;
 } net_stats_t;
 
 typedef struct net_ipv4_config {
     uint8_t address[4];
     uint8_t netmask[4];
     uint8_t gateway[4];
+    uint8_t dns_server[4];
     uint8_t configured;
 } net_ipv4_config_t;
 
@@ -54,6 +70,13 @@ int net_send_test_frame(void);
 int net_set_ipv4_config(const net_ipv4_config_t* config);
 int net_get_ipv4_config(net_ipv4_config_t* out_config);
 int net_ping(const uint8_t target_ip[4], uint32_t timeout_ms, net_ping_result_t* out_result);
+int net_udp_open(void);
+int net_udp_close(int socket_id);
+int net_udp_bind(int socket_id, uint16_t local_port);
+int net_udp_sendto(int socket_id, const uint8_t dst_ip[4], uint16_t dst_port, const void* payload, uint16_t payload_len);
+int net_udp_recvfrom(int socket_id, void* out_payload, uint16_t payload_capacity, uint32_t timeout_ms,
+                     uint8_t out_src_ip[4], uint16_t* out_src_port, uint16_t* out_payload_len);
+int net_dns_resolve_a(const char* hostname, uint8_t out_ip[4], uint32_t timeout_ms, const uint8_t dns_server_override[4]);
 void net_on_receive(const void* frame, uint16_t len);
 void net_get_mac(uint8_t out_mac[6]);
 void net_get_stats(net_stats_t* out_stats);

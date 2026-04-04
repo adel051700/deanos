@@ -151,7 +151,7 @@ static const struct shell_command commands[] = {
     {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
     {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
     {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr pages] | vm cow | vm refs"},
-    {"net",    cmd_net,    "Network: net [stats] | net cfg <ip> <mask> <gw> | net ping [-c N] <ip>"},
+    {"net",    cmd_net,    "Network: net [stats] | net cfg <ip> <mask> <gw> [dns] | net ping [-c N] <ip|host> | net dns <host> [dns] | net udp-test"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
@@ -2846,22 +2846,33 @@ static void cmd_net(const char* args) {
             term_write_ipv4(cfg.netmask);
             terminal_writestring(" gw=");
             term_write_ipv4(cfg.gateway);
+            terminal_writestring(" dns=");
+            term_write_ipv4(cfg.dns_server);
             terminal_writestring(cfg.configured ? " (configured)\n" : " (disabled)\n");
             return;
         }
 
-        char ip_tok[32], mask_tok[32], gw_tok[32];
+        char ip_tok[32], mask_tok[32], gw_tok[32], dns_tok[32];
         copy_token(p, ip_tok, sizeof(ip_tok));
         p = next_token(p);
         copy_token(p, mask_tok, sizeof(mask_tok));
         p = next_token(p);
         copy_token(p, gw_tok, sizeof(gw_tok));
+        p = next_token(p);
+        copy_token(p, dns_tok, sizeof(dns_tok));
 
         if (!parse_ipv4_token(ip_tok, cfg.address) ||
             !parse_ipv4_token(mask_tok, cfg.netmask) ||
             !parse_ipv4_token(gw_tok, cfg.gateway)) {
-            terminal_writestring("usage: net cfg <ip> <mask> <gateway>\n");
+            terminal_writestring("usage: net cfg <ip> <mask> <gateway> [dns]\n");
             return;
+        }
+
+        if (dns_tok[0] != '\0') {
+            if (!parse_ipv4_token(dns_tok, cfg.dns_server)) {
+                terminal_writestring("usage: net cfg <ip> <mask> <gateway> [dns]\n");
+                return;
+            }
         }
 
         cfg.configured = 1;
@@ -2874,6 +2885,8 @@ static void cmd_net(const char* args) {
         term_write_ipv4(cfg.address);
         terminal_writestring(" gw=");
         term_write_ipv4(cfg.gateway);
+        terminal_writestring(" dns=");
+        term_write_ipv4(cfg.dns_server);
         terminal_writestring("\n");
         return;
     }
@@ -2886,8 +2899,9 @@ static void cmd_net(const char* args) {
 
         const char* p = next_token(args);
         uint8_t target[4] = {0};
-        uint32_t max_count = 0; /* 0 = infinite, stop with Ctrl+C */
+        uint32_t max_count = 4; /* default like common ping tools */
         uint8_t have_target = 0;
+        char target_tok[96] = {0};
 
         while (p && *p) {
             char arg0[32];
@@ -2897,13 +2911,13 @@ static void cmd_net(const char* args) {
             if (strcmp(arg0, "-c") == 0) {
                 p = next_token(p);
                 if (!p || *p == '\0') {
-                    terminal_writestring("usage: net ping [-c N] <ip>\n");
+                    terminal_writestring("usage: net ping [-c N] <ip|host>\n");
                     return;
                 }
                 char cnt_tok[32];
                 copy_token(p, cnt_tok, sizeof(cnt_tok));
                 if (!is_decimal_token(cnt_tok)) {
-                    terminal_writestring("usage: net ping [-c N] <ip>\n");
+                    terminal_writestring("usage: net ping [-c N] <ip|host>\n");
                     return;
                 }
                 max_count = parse_uint(cnt_tok);
@@ -2911,19 +2925,30 @@ static void cmd_net(const char* args) {
                 continue;
             }
 
-            if (!have_target && parse_ipv4_token(arg0, target)) {
+            if (!have_target) {
                 have_target = 1;
+                strncpy(target_tok, arg0, sizeof(target_tok) - 1);
                 p = next_token(p);
                 continue;
             }
 
-            terminal_writestring("usage: net ping [-c N] <ip>\n");
+            terminal_writestring("usage: net ping [-c N] <ip|host>\n");
             return;
         }
 
         if (!have_target) {
-            terminal_writestring("usage: net ping [-c N] <ip>\n");
+            terminal_writestring("usage: net ping [-c N] <ip|host>\n");
             return;
+        }
+
+        if (!parse_ipv4_token(target_tok, target)) {
+            int drc = net_dns_resolve_a(target_tok, target, 8000u, 0);
+            if (drc != 0) {
+                terminal_writestring("ping: could not resolve host: ");
+                terminal_writestring(target_tok);
+                terminal_writestring("\n");
+                return;
+            }
         }
 
         terminal_writestring("PING ");
@@ -3031,6 +3056,144 @@ static void cmd_net(const char* args) {
         return;
     }
 
+    if (strcmp(token, "dns") == 0) {
+        if (!net_is_ready()) {
+            terminal_writestring("net: no initialized NIC driver\n");
+            return;
+        }
+
+        const char* p = next_token(args);
+        char host_tok[96];
+        copy_token(p, host_tok, sizeof(host_tok));
+        if (host_tok[0] == '\0') {
+            terminal_writestring("usage: net dns <hostname> [dns_server]\n");
+            return;
+        }
+
+        p = next_token(p);
+        char dns_tok[32];
+        copy_token(p, dns_tok, sizeof(dns_tok));
+
+        uint8_t literal_ip[4] = {0, 0, 0, 0};
+        if (parse_ipv4_token(host_tok, literal_ip)) {
+            terminal_writestring("dns: ");
+            terminal_writestring(host_tok);
+            terminal_writestring(" -> ");
+            term_write_ipv4(literal_ip);
+            terminal_writestring(" (literal)\n");
+            return;
+        }
+
+        uint8_t dns_override[4] = {0, 0, 0, 0};
+        const uint8_t* dns_override_ptr = 0;
+        if (dns_tok[0] != '\0') {
+            if (!parse_ipv4_token(dns_tok, dns_override)) {
+                terminal_writestring("usage: net dns <hostname> [dns_server]\n");
+                return;
+            }
+            dns_override_ptr = dns_override;
+        }
+
+        uint8_t resolved[4] = {0, 0, 0, 0};
+        int rc = net_dns_resolve_a(host_tok, resolved, 30000u, dns_override_ptr);
+        if (rc == 0) {
+            terminal_writestring("dns: ");
+            terminal_writestring(host_tok);
+            terminal_writestring(" -> ");
+            term_write_ipv4(resolved);
+            terminal_writestring("\n");
+        } else {
+            char rc_buf[16];
+            terminal_writestring("dns: lookup failed for ");
+            terminal_writestring(host_tok);
+            terminal_writestring(" (rc=");
+            itoa(rc, rc_buf, 10);
+            terminal_writestring(rc_buf);
+            terminal_writestring(")\n");
+        }
+        return;
+    }
+
+    if (strcmp(token, "udp-test") == 0) {
+        if (!net_is_ready()) {
+            terminal_writestring("net: no initialized NIC driver\n");
+            return;
+        }
+
+        net_stats_t stats_before, stats_after;
+        net_get_stats(&stats_before);
+
+        terminal_writestring("udp-test: opening socket...\n");
+        int sock = net_udp_open();
+        if (sock < 0) {
+            terminal_writestring("udp-test: failed to open socket\n");
+            return;
+        }
+        terminal_writestring("udp-test: opened socket ");
+        term_write_u32((uint32_t)sock);
+        terminal_writestring("\n");
+
+        terminal_writestring("udp-test: binding to port 0 (ephemeral)...\n");
+        if (net_udp_bind(sock, 0) != 0) {
+            terminal_writestring("udp-test: failed to bind\n");
+            net_udp_close(sock);
+            return;
+        }
+        terminal_writestring("udp-test: bind succeeded\n");
+
+        terminal_writestring("udp-test: testing socket API without send (ARP would timeout)...\n");
+        if (net_udp_bind(sock, 5555) == 0) {
+            terminal_writestring("udp-test: re-bind to port 5555 succeeded\n");
+        }
+
+        uint8_t test_target[4];
+        net_ipv4_config_t cfg;
+        net_get_ipv4_config(&cfg);
+        memcpy(test_target, cfg.address, 4);
+
+        terminal_writestring("udp-test: local IPv4 is ");
+        term_write_ipv4(test_target);
+        terminal_writestring("\n");
+
+        terminal_writestring("udp-test: attempting sendto (will timeout on ARP, which is ok)...\n");
+        test_target[3] = 100;
+        uint8_t test_payload[] = "UDP_TEST";
+        int tx_rc = net_udp_sendto(sock, test_target, 9999u, test_payload, sizeof(test_payload));
+        if (tx_rc != 0) {
+            terminal_writestring("udp-test: sendto rc=");
+            itoa(tx_rc, (char[16]){0}, 10);
+            char rc_str[16];
+            itoa(tx_rc, rc_str, 10);
+            terminal_writestring(rc_str);
+            if (tx_rc == -2) {
+                terminal_writestring(" (ARP resolution timeout - expected in test)\n");
+            } else {
+                terminal_writestring(" (other error)\n");
+            }
+        } else {
+            terminal_writestring("udp-test: sendto succeeded\n");
+        }
+
+        net_udp_close(sock);
+        terminal_writestring("udp-test: socket closed\n");
+
+        net_get_stats(&stats_after);
+        terminal_writestring("udp-test: stats - udp_tx before=");
+        char stat_buf[16];
+        itoa((int)stats_before.udp_tx, stat_buf, 10);
+        terminal_writestring(stat_buf);
+        terminal_writestring(" after=");
+        itoa((int)stats_after.udp_tx, stat_buf, 10);
+        terminal_writestring(stat_buf);
+        terminal_writestring(" (");
+        itoa((int)(stats_after.udp_tx - stats_before.udp_tx), stat_buf, 10);
+        terminal_writestring(stat_buf);
+        terminal_writestring(" sent)\n");
+
+        terminal_writestring("udp-test: API test complete\n");
+        return;
+    }
+
     if (!args || *args == '\0' || strcmp(args, "stats") == 0) {
         if (!net_is_ready()) {
             terminal_writestring("net: no initialized NIC driver\n");
@@ -3097,11 +3260,60 @@ static void cmd_net(const char* args) {
         terminal_writestring(" tx=");
         itoa((int)st.icmp_tx, buf, 10);
         terminal_writestring(buf);
+        terminal_writestring(" udp rx=");
+        itoa((int)st.udp_rx, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" tx=");
+        itoa((int)st.udp_tx, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+
+        terminal_writestring("dns q=");
+        itoa((int)st.dns_queries, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" r=");
+        itoa((int)st.dns_replies, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" to=");
+        itoa((int)st.dns_timeouts, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" fail=");
+        itoa((int)st.dns_failures, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" seen=");
+        itoa((int)st.dns_seen, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" short=");
+        itoa((int)st.dns_short, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" bh=");
+        itoa((int)st.dns_bad_header, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" noa=");
+        itoa((int)st.dns_no_a_answer, buf, 10);
+        terminal_writestring(buf);
         terminal_writestring(" ping req=");
         itoa((int)st.ping_requests, buf, 10);
         terminal_writestring(buf);
         terminal_writestring(" rep=");
         itoa((int)st.ping_replies, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
+
+        terminal_writestring("udp dbg cksum=");
+        itoa((int)st.udp_bad_checksum, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" nosock=");
+        itoa((int)st.udp_no_socket, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" qdrop=");
+        itoa((int)st.udp_queue_drop, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" lastdst=");
+        itoa((int)st.udp_last_nosock_dst_port, buf, 10);
+        terminal_writestring(buf);
+        terminal_writestring(" dnssrc=");
+        itoa((int)st.dns_last_local_port, buf, 10);
         terminal_writestring(buf);
         terminal_writestring("\n");
         return;
@@ -3122,7 +3334,7 @@ static void cmd_net(const char* args) {
         return;
     }
 
-    terminal_writestring("usage: net [stats] | net tx | net regs | net cfg <ip> <mask> <gw> | net ping [-c N] <ip>\n");
+    terminal_writestring("usage: net [stats] | net tx | net regs | net cfg <ip> <mask> <gw> [dns] | net ping [-c N] <ip|host> | net dns <host> [dns] | net udp-test\n");
 }
 
 /* ---- Filesystem commands ----------------------------------------------- */
