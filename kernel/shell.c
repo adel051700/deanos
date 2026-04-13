@@ -104,6 +104,9 @@ static void cmd_writef(const char* args);
 static void cmd_mkdir(const char* args);
 static void cmd_rm(const char* args);
 static void cmd_stat(const char* args);
+static void cmd_id(const char* args);
+static void cmd_chmod(const char* args);
+static void cmd_chown(const char* args);
 static void cmd_cd(const char* args);
 static void cmd_pwd(const char* args);
 static void cmd_exec(const char* args);
@@ -151,7 +154,7 @@ static const struct shell_command commands[] = {
     {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
     {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
     {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr pages] | vm cow | vm refs"},
-    {"net",    cmd_net,    "Network: net | net tx | net regs"},
+    {"net",    cmd_net,    "Network: net | net netstat | net dhcp [timeout_ms] | net tx | net regs | net ip | net arp | net arping <ip> | net ping <ip> [-c count] [-W timeout_ms] | net tcp http <host> <port> <path>"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
@@ -163,6 +166,9 @@ static const struct shell_command commands[] = {
     {"mkdir",   cmd_mkdir,   "Create a directory: mkdir <path>"},
     {"rm",      cmd_rm,      "Remove a file or empty directory: rm <path>"},
     {"stat",    cmd_stat,    "Show file/directory info: stat <path>"},
+    {"id",      cmd_id,      "Show current uid/gid"},
+    {"chmod",   cmd_chmod,   "Change mode bits: chmod <octal-mode> <path>"},
+    {"chown",   cmd_chown,   "Change owner/group: chown <uid> <gid> <path>"},
     {"cd",      cmd_cd,      "Change directory: cd <path>"},
     {"pwd",     cmd_pwd,     "Print working directory"},
     {"exec",    cmd_exec,    "Run an ELF program: exec <path> [&]"},
@@ -185,7 +191,6 @@ static const struct shell_command commands[] = {
 static int shell_is_hidden_help_command(const char* name) {
     if (!name) return 0;
 
-    /* Keep internal test/debug commands callable, but hide them from help. */
     if (strcmp(name, "fsfill") == 0) return 1;
     if (strcmp(name, "fsverify") == 0) return 1;
     if (strcmp(name, "vm") == 0) return 1;
@@ -198,14 +203,6 @@ static int shell_is_hidden_help_command(const char* name) {
     return 0;
 }
 
-
-// Remove the old non-static forward line:
-// - void cmd_cls(const char* args);
-// ...existing code...
-
-/**
- * Print the shell prompt: "DeanOS /path $ "
- */
 static void shell_print_prompt(void) {
     terminal_writestring("DeanOS ");
     terminal_writestring(cwd);
@@ -224,12 +221,8 @@ static void shell_clear_screen(int redraw_input) {
     terminal_setbackground(bg_color);
     terminal_setcolor(cursor_color);
 
-    if (ctl_sid > 0) {
-        (void)terminal_set_controlling_sid(ctl_sid);
-    }
-    if (fg_pgid >= 0) {
-        (void)terminal_set_foreground_pgid(fg_pgid);
-    }
+    if (ctl_sid > 0) (void)terminal_set_controlling_sid(ctl_sid);
+    if (fg_pgid >= 0) (void)terminal_set_foreground_pgid(fg_pgid);
 
     if (redraw_input) {
         shell_print_prompt();
@@ -254,9 +247,7 @@ static void shell_jobctl_ensure(void) {
     if (self <= 0) return;
 
     int sid = task_setsid();
-    if (sid < 0) {
-        sid = task_current_sid();
-    }
+    if (sid < 0) sid = task_current_sid();
     int pgid = task_current_pgid();
     if (sid <= 0 || pgid <= 0) return;
 
@@ -289,7 +280,6 @@ static int shell_jobs_find_by_pid(int pid) {
 
 static void shell_jobs_add(int pid, int pgid, const char* cmd) {
     if (pid <= 0 || pgid <= 0) return;
-
     int slot = -1;
     for (int i = 0; i < SHELL_BG_JOBS_MAX; ++i) {
         if (!shell_bg_jobs[i].in_use) {
@@ -1338,6 +1328,30 @@ static int is_decimal_token(const char* s) {
     return 1;
 }
 
+static int is_octal_token(const char* s) {
+    if (!s || *s == '\0') return 0;
+    while (*s && *s != ' ') {
+        if (*s < '0' || *s > '7') return 0;
+        s++;
+    }
+    return 1;
+}
+
+static int parse_mode_octal(const char* token, uint16_t* out_mode) {
+    if (!token || !out_mode) return -1;
+    if (!is_octal_token(token)) return -1;
+
+    uint32_t mode = 0;
+    const char* p = token;
+    while (*p && *p != ' ') {
+        mode = (mode << 3u) + (uint32_t)(*p - '0');
+        p++;
+    }
+    if (mode > 0777u) return -1;
+    *out_mode = (uint16_t)mode;
+    return 0;
+}
+
 static size_t copy_token(const char* src, char* dst, size_t dstsz) {
     size_t i = 0;
     if (!dst || dstsz == 0) return 0;
@@ -1395,6 +1409,48 @@ static void term_write_hex8(uint8_t v) {
     out[1] = hex[v & 0xF];
     out[2] = '\0';
     terminal_writestring(out);
+}
+
+static void term_write_ipv4(const uint8_t ip[4]) {
+    term_write_u32(ip[0]); terminal_writestring(".");
+    term_write_u32(ip[1]); terminal_writestring(".");
+    term_write_u32(ip[2]); terminal_writestring(".");
+    term_write_u32(ip[3]);
+}
+
+static int parse_ipv4_token(const char* token, uint8_t out_ip[4]) {
+    uint8_t parsed[4] = {0, 0, 0, 0};
+    uint32_t part = 0;
+    int octet = 0;
+    const char* s = token;
+
+    if (!token || !out_ip) return -1;
+
+    while (*s && *s != ' ') {
+        if (*s >= '0' && *s <= '9') {
+            part = part * 10u + (uint32_t)(*s - '0');
+            if (part > 255u) return -1;
+            s++;
+            continue;
+        }
+        if (*s == '.') {
+            if (octet >= 3) return -1;
+            parsed[octet++] = (uint8_t)part;
+            part = 0;
+            s++;
+            continue;
+        }
+        return -1;
+    }
+
+    if (octet != 3) return -1;
+    parsed[3] = (uint8_t)part;
+
+    out_ip[0] = parsed[0];
+    out_ip[1] = parsed[1];
+    out_ip[2] = parsed[2];
+    out_ip[3] = parsed[3];
+    return 0;
 }
 
 static void term_write_wallclock_from_epoch(uint32_t epoch_seconds) {
@@ -1466,15 +1522,17 @@ static void cmd_sys81_time(const char* args) {
 
 static void cmd_sys_exit(const char* args) {
     uint32_t code = parse_uint(args ? args : "");
-    terminal_writestring("calling exit(\n");
-    char buf[16]; itoa((int)code, buf, 10); terminal_writestring(buf); terminal_writestring(")...\n");
+    terminal_writestring("calling exit(");
+    char buf[16];
+    itoa((int)code, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(")...\n");
     (void)ksyscall3_vec(0x80, SYS_exit, code, 0, 0);
-    // Not reached: sys_exit halts.
 }
 
 static void cmd_tasks(const char* args) {
     (void)args;
-    static const char* state_names[] = {"READY","RUN  ","BLOCK","DEAD "};
+    static const char* state_names[] = {"READY", "RUN  ", "BLOCK", "DEAD "};
     char buf[16];
 
     terminal_writestring("ID  PPID  SID  PGID  STATE  QUANTUM  NAME\n");
@@ -1487,22 +1545,16 @@ static void cmd_tasks(const char* args) {
         const task_t* t = task_get(i);
         if (!t) continue;
 
-        /* ID (with * for current) */
         itoa(t->id, buf, 10);
-        if ((int)t->id == cur) {
-            terminal_writestring("*");
-        } else {
-            terminal_writestring(" ");
-        }
+        if ((int)t->id == cur) terminal_writestring("*");
+        else terminal_writestring(" ");
         terminal_writestring(buf);
         terminal_writestring("  ");
 
-        /* PPID */
         itoa((int)t->parent_id, buf, 10);
         terminal_writestring(buf);
         terminal_writestring("    ");
 
-        /* State */
         itoa((int)t->sid, buf, 10);
         terminal_writestring(buf);
         terminal_writestring("   ");
@@ -1511,18 +1563,14 @@ static void cmd_tasks(const char* args) {
         terminal_writestring(buf);
         terminal_writestring("    ");
 
-        if (t->state <= TASK_DEAD)
-            terminal_writestring(state_names[t->state]);
-        else
-            terminal_writestring("???? ");
+        if (t->state <= TASK_DEAD) terminal_writestring(state_names[t->state]);
+        else terminal_writestring("???? ");
         terminal_writestring("  ");
 
-        /* Quantum */
         itoa(t->quantum, buf, 10);
         terminal_writestring(buf);
         terminal_writestring("        ");
 
-        /* Name */
         terminal_writestring(t->name);
         terminal_writestring("\n");
     }
@@ -2754,6 +2802,337 @@ static void cmd_vm(const char* args) {
 }
 
 static void cmd_net(const char* args) {
+    if (args && strcmp(args, "netstat") == 0) {
+        uint8_t mac[6];
+        uint8_t ip[4];
+        uint8_t mask[4];
+        uint8_t gw[4];
+        net_stats_t st;
+        net_arp_stats_t ast;
+        net_arp_entry_t entries[16];
+        net_tcp_debug_stats_t tcp;
+        uint32_t arp_count;
+
+        net_get_mac(mac);
+        net_get_ipv4(ip);
+        net_get_ipv4_netmask(mask);
+        net_get_ipv4_gateway(gw);
+        net_get_stats(&st);
+        net_get_arp_stats(&ast);
+        net_tcp_get_debug_stats(&tcp);
+        arp_count = net_get_arp_cache(entries, 16u);
+
+        terminal_writestring("netstat-lite:\n");
+        terminal_writestring("  driver=");
+        terminal_writestring(net_driver_name());
+        terminal_writestring(" link=");
+        terminal_writestring(net_link_up() ? "up" : "down");
+        terminal_writestring(" mac=");
+        term_write_hex8(mac[0]); terminal_writestring(":");
+        term_write_hex8(mac[1]); terminal_writestring(":");
+        term_write_hex8(mac[2]); terminal_writestring(":");
+        term_write_hex8(mac[3]); terminal_writestring(":");
+        term_write_hex8(mac[4]); terminal_writestring(":");
+        term_write_hex8(mac[5]);
+        terminal_writestring("\n");
+
+        terminal_writestring("  inet=");
+        term_write_ipv4(ip);
+        terminal_writestring(" mask=");
+        term_write_ipv4(mask);
+        terminal_writestring(" gw=");
+        term_write_ipv4(gw);
+        terminal_writestring("\n");
+
+        terminal_writestring("  nic: irq=");
+        term_write_u32(st.interrupts);
+        terminal_writestring(" rx=");
+        term_write_u32(st.rx_packets);
+        terminal_writestring(" tx=");
+        term_write_u32(st.tx_packets);
+        terminal_writestring(" drops=");
+        term_write_u32(st.rx_drops);
+        terminal_writestring("\n");
+
+        terminal_writestring("  arp: entries=");
+        term_write_u32(arp_count);
+        terminal_writestring(" hit=");
+        term_write_u32(ast.cache_hits);
+        terminal_writestring(" miss=");
+        term_write_u32(ast.cache_misses);
+        terminal_writestring(" rx=");
+        term_write_u32(ast.rx_arp_packets);
+        terminal_writestring(" txreq=");
+        term_write_u32(ast.tx_arp_requests);
+        terminal_writestring(" txrep=");
+        term_write_u32(ast.tx_arp_replies);
+        terminal_writestring("\n");
+
+        if (arp_count > 0u) {
+            terminal_writestring("  arp-cache:\n");
+            for (uint32_t i = 0; i < arp_count; ++i) {
+                terminal_writestring("    ");
+                term_write_ipv4(entries[i].ip);
+                terminal_writestring(" -> ");
+                term_write_hex8(entries[i].mac[0]); terminal_writestring(":");
+                term_write_hex8(entries[i].mac[1]); terminal_writestring(":");
+                term_write_hex8(entries[i].mac[2]); terminal_writestring(":");
+                term_write_hex8(entries[i].mac[3]); terminal_writestring(":");
+                term_write_hex8(entries[i].mac[4]); terminal_writestring(":");
+                term_write_hex8(entries[i].mac[5]);
+                terminal_writestring("\n");
+            }
+        }
+
+        terminal_writestring("  tcp-probe: syn=");
+        term_write_u32(tcp.syn_sent);
+        terminal_writestring(" syn_retx=");
+        term_write_u32(tcp.syn_retx);
+        terminal_writestring(" synack=");
+        term_write_u32(tcp.synack_seen);
+        terminal_writestring(" rst=");
+        term_write_u32(tcp.rst_seen);
+        terminal_writestring(" ok=");
+        term_write_u32(tcp.connect_ok);
+        terminal_writestring(" timeout=");
+        term_write_u32(tcp.connect_timeout);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (args && strncmp(args, "dhcp", 4) == 0 && (args[4] == '\0' || args[4] == ' ')) {
+        const char* tok = next_token(args);
+        uint32_t timeout_ms = 6000u;
+        uint8_t mac[6];
+        uint8_t bcast[4] = {255u, 255u, 255u, 255u};
+        uint8_t discover[300];
+        uint8_t request[300];
+        uint8_t response[600];
+        uint8_t from_ip[4];
+        uint8_t offer_ip[4] = {0, 0, 0, 0};
+        uint8_t mask_ip[4] = {255u, 255u, 255u, 0u};
+        uint8_t gw_ip[4] = {0, 0, 0, 0};
+        uint8_t server_id[4] = {0, 0, 0, 0};
+        net_udp_endpoint_t from;
+        uint32_t xid;
+        uint32_t start_ms;
+        int sock;
+
+        if (tok && *tok) {
+            if (!is_decimal_token(tok)) {
+                terminal_writestring("usage: net dhcp [timeout_ms]\n");
+                return;
+            }
+            timeout_ms = parse_uint(tok);
+            if (timeout_ms == 0u) timeout_ms = 1u;
+            if (timeout_ms > 30000u) timeout_ms = 30000u;
+        }
+
+        if (!net_is_ready()) {
+            terminal_writestring("net dhcp: NIC not ready\n");
+            return;
+        }
+
+        net_get_mac(mac);
+        xid = (uint32_t)pit_get_uptime_ms() ^ 0x44484350u;
+        sock = net_udp_socket_open();
+        if (sock < 0) {
+            terminal_writestring("net dhcp: socket open failed\n");
+            return;
+        }
+        if (net_udp_socket_bind(sock, 68u) < 0) {
+            terminal_writestring("net dhcp: bind 68 failed\n");
+            (void)net_udp_socket_close(sock);
+            return;
+        }
+
+        memset(discover, 0, sizeof(discover));
+        discover[0] = 1u;   /* BOOTREQUEST */
+        discover[1] = 1u;   /* Ethernet */
+        discover[2] = 6u;   /* MAC length */
+        discover[4] = (uint8_t)((xid >> 24) & 0xFFu);
+        discover[5] = (uint8_t)((xid >> 16) & 0xFFu);
+        discover[6] = (uint8_t)((xid >> 8) & 0xFFu);
+        discover[7] = (uint8_t)(xid & 0xFFu);
+        discover[10] = 0x80u; /* broadcast flag */
+        memcpy(discover + 28, mac, 6);
+        discover[236] = 99u;
+        discover[237] = 130u;
+        discover[238] = 83u;
+        discover[239] = 99u;
+        {
+            uint16_t off = 240u;
+            discover[off++] = 53u; discover[off++] = 1u; discover[off++] = 1u; /* DISCOVER */
+            discover[off++] = 55u; discover[off++] = 3u; discover[off++] = 1u; discover[off++] = 3u; discover[off++] = 6u;
+            discover[off++] = 255u;
+            if (net_udp_socket_sendto(sock, bcast, 67u, discover, off) != NET_UDP_OK) {
+                terminal_writestring("net dhcp: discover send failed\n");
+                (void)net_udp_socket_close(sock);
+                return;
+            }
+        }
+
+        terminal_writestring("net dhcp: waiting for OFFER...\n");
+        start_ms = (uint32_t)pit_get_uptime_ms();
+        for (;;) {
+            uint32_t elapsed = (uint32_t)pit_get_uptime_ms() - start_ms;
+            uint32_t remain = elapsed >= timeout_ms ? 0u : (timeout_ms - elapsed);
+            uint16_t rx_len = 0;
+            int rx_rc;
+            uint8_t msg_type = 0;
+            uint32_t rx_xid;
+            uint16_t off;
+
+            if (remain == 0u) {
+                terminal_writestring("net dhcp: OFFER timeout\n");
+                (void)net_udp_socket_close(sock);
+                return;
+            }
+            if (remain > 500u) remain = 500u;
+
+            rx_rc = net_udp_socket_recvfrom(sock, response, sizeof(response), &rx_len, &from, remain);
+            if (rx_rc == NET_UDP_ERR_WOULD_BLOCK) continue;
+            if (rx_rc < 0 || rx_len < 244u) continue;
+            if (response[0] != 2u || response[1] != 1u || response[2] != 6u) continue;
+
+            rx_xid = ((uint32_t)response[4] << 24) |
+                     ((uint32_t)response[5] << 16) |
+                     ((uint32_t)response[6] << 8) |
+                     (uint32_t)response[7];
+            if (rx_xid != xid) continue;
+            if (response[236] != 99u || response[237] != 130u || response[238] != 83u || response[239] != 99u) continue;
+
+            off = 240u;
+            while (off < rx_len) {
+                uint8_t opt = response[off++];
+                if (opt == 0u) continue;
+                if (opt == 255u) break;
+                if (off >= rx_len) break;
+                {
+                    uint8_t olen = response[off++];
+                    if ((uint32_t)off + olen > rx_len) break;
+                    if (opt == 53u && olen == 1u) msg_type = response[off];
+                    if (opt == 54u && olen == 4u) {
+                        memcpy(server_id, response + off, 4);
+                    }
+                    off = (uint16_t)(off + olen);
+                }
+            }
+
+            if (msg_type != 2u) continue;
+            memcpy(offer_ip, response + 16, 4);
+            if ((server_id[0] | server_id[1] | server_id[2] | server_id[3]) == 0u) {
+                memcpy(server_id, from.ip, 4);
+            }
+            break;
+        }
+
+        memset(request, 0, sizeof(request));
+        request[0] = 1u;
+        request[1] = 1u;
+        request[2] = 6u;
+        request[4] = (uint8_t)((xid >> 24) & 0xFFu);
+        request[5] = (uint8_t)((xid >> 16) & 0xFFu);
+        request[6] = (uint8_t)((xid >> 8) & 0xFFu);
+        request[7] = (uint8_t)(xid & 0xFFu);
+        request[10] = 0x80u;
+        memcpy(request + 28, mac, 6);
+        request[236] = 99u;
+        request[237] = 130u;
+        request[238] = 83u;
+        request[239] = 99u;
+        {
+            uint16_t off = 240u;
+            request[off++] = 53u; request[off++] = 1u; request[off++] = 3u; /* REQUEST */
+            request[off++] = 50u; request[off++] = 4u;
+            request[off++] = offer_ip[0]; request[off++] = offer_ip[1]; request[off++] = offer_ip[2]; request[off++] = offer_ip[3];
+            request[off++] = 54u; request[off++] = 4u;
+            request[off++] = server_id[0]; request[off++] = server_id[1]; request[off++] = server_id[2]; request[off++] = server_id[3];
+            request[off++] = 55u; request[off++] = 3u; request[off++] = 1u; request[off++] = 3u; request[off++] = 6u;
+            request[off++] = 255u;
+            if (net_udp_socket_sendto(sock, bcast, 67u, request, off) != NET_UDP_OK) {
+                terminal_writestring("net dhcp: request send failed\n");
+                (void)net_udp_socket_close(sock);
+                return;
+            }
+        }
+
+        terminal_writestring("net dhcp: waiting for ACK...\n");
+        start_ms = (uint32_t)pit_get_uptime_ms();
+        for (;;) {
+            uint32_t elapsed = (uint32_t)pit_get_uptime_ms() - start_ms;
+            uint32_t remain = elapsed >= timeout_ms ? 0u : (timeout_ms - elapsed);
+            uint16_t rx_len = 0;
+            int rx_rc;
+            uint8_t msg_type = 0;
+            uint32_t rx_xid;
+            uint16_t off;
+
+            if (remain == 0u) {
+                terminal_writestring("net dhcp: ACK timeout\n");
+                (void)net_udp_socket_close(sock);
+                return;
+            }
+            if (remain > 500u) remain = 500u;
+
+            rx_rc = net_udp_socket_recvfrom(sock, response, sizeof(response), &rx_len, &from, remain);
+            if (rx_rc == NET_UDP_ERR_WOULD_BLOCK) continue;
+            if (rx_rc < 0 || rx_len < 244u) continue;
+            if (response[0] != 2u || response[1] != 1u || response[2] != 6u) continue;
+
+            rx_xid = ((uint32_t)response[4] << 24) |
+                     ((uint32_t)response[5] << 16) |
+                     ((uint32_t)response[6] << 8) |
+                     (uint32_t)response[7];
+            if (rx_xid != xid) continue;
+            if (response[236] != 99u || response[237] != 130u || response[238] != 83u || response[239] != 99u) continue;
+
+            off = 240u;
+            while (off < rx_len) {
+                uint8_t opt = response[off++];
+                if (opt == 0u) continue;
+                if (opt == 255u) break;
+                if (off >= rx_len) break;
+                {
+                    uint8_t olen = response[off++];
+                    if ((uint32_t)off + olen > rx_len) break;
+                    if (opt == 53u && olen == 1u) msg_type = response[off];
+                    if (opt == 1u && olen == 4u) memcpy(mask_ip, response + off, 4);
+                    if (opt == 3u && olen >= 4u) memcpy(gw_ip, response + off, 4);
+                    off = (uint16_t)(off + olen);
+                }
+            }
+
+            if (msg_type == 6u) {
+                terminal_writestring("net dhcp: NAK received\n");
+                (void)net_udp_socket_close(sock);
+                return;
+            }
+            if (msg_type != 5u) continue;
+            memcpy(from_ip, response + 16, 4);
+            if ((from_ip[0] | from_ip[1] | from_ip[2] | from_ip[3]) != 0u) {
+                memcpy(offer_ip, from_ip, 4);
+            }
+            break;
+        }
+
+        (void)net_udp_socket_close(sock);
+        net_set_ipv4(offer_ip[0], offer_ip[1], offer_ip[2], offer_ip[3]);
+        net_set_ipv4_netmask(mask_ip[0], mask_ip[1], mask_ip[2], mask_ip[3]);
+        if ((gw_ip[0] | gw_ip[1] | gw_ip[2] | gw_ip[3]) != 0u) {
+            net_set_ipv4_gateway(gw_ip[0], gw_ip[1], gw_ip[2], gw_ip[3]);
+        }
+
+        terminal_writestring("net dhcp: lease acquired ip=");
+        term_write_ipv4(offer_ip);
+        terminal_writestring(" mask=");
+        term_write_ipv4(mask_ip);
+        terminal_writestring(" gw=");
+        term_write_ipv4(gw_ip);
+        terminal_writestring("\n");
+        return;
+    }
+
     if (args && strcmp(args, "regs") == 0) {
         net_debug_info_t dbg;
         char buf[24];
@@ -2789,6 +3168,753 @@ static void cmd_net(const char* args) {
         itoa((int)dbg.reg_d, buf, 16);
         terminal_writestring(buf);
         terminal_writestring("\n");
+        return;
+    }
+
+    if (args && strcmp(args, "arp") == 0) {
+        net_arp_entry_t entries[16];
+        net_arp_stats_t ast;
+        uint32_t count;
+
+        net_get_arp_stats(&ast);
+        count = net_get_arp_cache(entries, 16);
+
+        terminal_writestring("arp: cache_entries=");
+        term_write_u32(count);
+        terminal_writestring(" rx=");
+        term_write_u32(ast.rx_arp_packets);
+        terminal_writestring(" req=");
+        term_write_u32(ast.rx_arp_requests);
+        terminal_writestring(" rep=");
+        term_write_u32(ast.rx_arp_replies);
+        terminal_writestring(" txreq=");
+        term_write_u32(ast.tx_arp_requests);
+        terminal_writestring(" txrep=");
+        term_write_u32(ast.tx_arp_replies);
+        terminal_writestring(" hit=");
+        term_write_u32(ast.cache_hits);
+        terminal_writestring(" miss=");
+        term_write_u32(ast.cache_misses);
+        terminal_writestring(" drop=");
+        term_write_u32(ast.dropped_frames);
+        terminal_writestring("\n");
+
+        for (uint32_t i = 0; i < count; ++i) {
+            term_write_ipv4(entries[i].ip);
+            terminal_writestring(" -> ");
+            term_write_hex8(entries[i].mac[0]); terminal_writestring(":");
+            term_write_hex8(entries[i].mac[1]); terminal_writestring(":");
+            term_write_hex8(entries[i].mac[2]); terminal_writestring(":");
+            term_write_hex8(entries[i].mac[3]); terminal_writestring(":");
+            term_write_hex8(entries[i].mac[4]); terminal_writestring(":");
+            term_write_hex8(entries[i].mac[5]);
+            terminal_writestring("\n");
+        }
+        return;
+    }
+
+    if (args && strcmp(args, "ip") == 0) {
+        uint8_t ip[4];
+        net_get_ipv4(ip);
+        terminal_writestring("net ip: ");
+        term_write_ipv4(ip);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (args && strcmp(args, "mask") == 0) {
+        uint8_t mask[4];
+        net_get_ipv4_netmask(mask);
+        terminal_writestring("net mask: ");
+        term_write_ipv4(mask);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (args && strcmp(args, "gw") == 0) {
+        uint8_t gw[4];
+        net_get_ipv4_gateway(gw);
+        terminal_writestring("net gw: ");
+        term_write_ipv4(gw);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (args && strncmp(args, "ip ", 3) == 0) {
+        uint8_t ip[4];
+        const char* tok = next_token(args);
+        if (!tok || parse_ipv4_token(tok, ip) != 0) {
+            terminal_writestring("usage: net ip <a.b.c.d>\n");
+            return;
+        }
+        net_set_ipv4(ip[0], ip[1], ip[2], ip[3]);
+        terminal_writestring("net ip set to ");
+        term_write_ipv4(ip);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (args && strncmp(args, "mask ", 5) == 0) {
+        uint8_t mask[4];
+        const char* tok = next_token(args);
+        if (!tok || parse_ipv4_token(tok, mask) != 0) {
+            terminal_writestring("usage: net mask <a.b.c.d>\n");
+            return;
+        }
+        net_set_ipv4_netmask(mask[0], mask[1], mask[2], mask[3]);
+        terminal_writestring("net mask set to ");
+        term_write_ipv4(mask);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (args && strncmp(args, "gw ", 3) == 0) {
+        uint8_t gw[4];
+        const char* tok = next_token(args);
+        if (!tok || parse_ipv4_token(tok, gw) != 0) {
+            terminal_writestring("usage: net gw <a.b.c.d>\n");
+            return;
+        }
+        net_set_ipv4_gateway(gw[0], gw[1], gw[2], gw[3]);
+        terminal_writestring("net gw set to ");
+        term_write_ipv4(gw);
+        terminal_writestring("\n");
+        return;
+    }
+
+    if (args && strncmp(args, "arping ", 7) == 0) {
+        uint8_t ip[4];
+        uint8_t mac[6];
+        const char* tok = next_token(args);
+        if (!tok || parse_ipv4_token(tok, ip) != 0) {
+            terminal_writestring("usage: net arping <a.b.c.d>\n");
+            return;
+        }
+
+        if (net_arp_resolve_retry(ip, mac, 3u, 200u) == 0) {
+            terminal_writestring("arping: ");
+            term_write_ipv4(ip);
+            terminal_writestring(" is at ");
+            term_write_hex8(mac[0]); terminal_writestring(":");
+            term_write_hex8(mac[1]); terminal_writestring(":");
+            term_write_hex8(mac[2]); terminal_writestring(":");
+            term_write_hex8(mac[3]); terminal_writestring(":");
+            term_write_hex8(mac[4]); terminal_writestring(":");
+            term_write_hex8(mac[5]);
+            terminal_writestring("\n");
+        } else {
+            terminal_writestring("arping: no reply\n");
+        }
+        return;
+    }
+
+    if (args && strncmp(args, "ping ", 5) == 0) {
+        uint8_t ip[4];
+        char target[128];
+        uint32_t count = 1u;
+        uint32_t timeout_ms = 1200u;
+        uint32_t sent = 0;
+        uint32_t recv = 0;
+        uint64_t total_rtt = 0;
+        uint32_t min_rtt = 0xFFFFFFFFu;
+        uint32_t max_rtt = 0u;
+        const char* tok = next_token(args);
+        const char* cursor;
+        int saw_pos_count = 0;
+        int until_ok = 0;
+        char opt[16];
+        char num[24];
+        if (!tok) {
+            terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U]\n");
+            return;
+        }
+        copy_token(tok, target, sizeof(target));
+
+        if (parse_ipv4_token(tok, ip) != 0) {
+            int dns_rc = net_dns_query_a(target, NULL, ip, 2000u);
+            if (dns_rc != NET_DNS_OK) {
+                terminal_writestring("ping: dns lookup failed host=");
+                terminal_writestring(target);
+                terminal_writestring(" rc=");
+                itoa(dns_rc, num, 10);
+                terminal_writestring(num);
+                terminal_writestring("\n");
+                return;
+            }
+        }
+
+        cursor = next_token(tok);
+        while (cursor && *cursor) {
+            copy_token(cursor, opt, sizeof(opt));
+
+            if (strcmp(opt, "-c") == 0) {
+                cursor = next_token(cursor);
+                if (!cursor || !*cursor || !is_decimal_token(cursor)) {
+                    terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U]\n");
+                    return;
+                }
+                count = parse_uint(cursor);
+                cursor = next_token(cursor);
+                continue;
+            }
+
+            if (strcmp(opt, "-W") == 0) {
+                cursor = next_token(cursor);
+                if (!cursor || !*cursor || !is_decimal_token(cursor)) {
+                    terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U]\n");
+                    return;
+                }
+                timeout_ms = parse_uint(cursor);
+                cursor = next_token(cursor);
+                continue;
+            }
+
+            if (strcmp(opt, "-U") == 0) {
+                until_ok = 1;
+                cursor = next_token(cursor);
+                continue;
+            }
+
+            if (!saw_pos_count && is_decimal_token(opt)) {
+                count = parse_uint(opt);
+                saw_pos_count = 1;
+                cursor = next_token(cursor);
+                continue;
+            }
+
+            terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U]\n");
+            return;
+        }
+
+        if (count == 0u) count = 1u;
+        if (count > 32u) count = 32u;
+        if (timeout_ms == 0u) timeout_ms = 1u;
+        if (timeout_ms > 10000u) timeout_ms = 10000u;
+
+        terminal_writestring("PING ");
+        terminal_writestring(target);
+        terminal_writestring(" (");
+        term_write_ipv4(ip);
+        terminal_writestring("): ");
+        term_write_u32(count);
+        if (until_ok) {
+            terminal_writestring(" probe(s, until first reply), timeout=");
+        } else {
+            terminal_writestring(" probe(s), timeout=");
+        }
+        term_write_u32(timeout_ms);
+        terminal_writestring("ms\n");
+
+        for (uint32_t i = 0; until_ok || i < count; ++i) {
+            uint64_t t0 = pit_get_uptime_ms();
+            int rc = net_ping_ipv4(ip, (uint16_t)(i + 1u), timeout_ms);
+            uint32_t rtt = (uint32_t)(pit_get_uptime_ms() - t0);
+            sent++;
+
+            if (rc == NET_PING_OK) {
+                recv++;
+                total_rtt += rtt;
+                if (rtt < min_rtt) min_rtt = rtt;
+                if (rtt > max_rtt) max_rtt = rtt;
+
+                terminal_writestring("reply from ");
+                term_write_ipv4(ip);
+                terminal_writestring(": seq=");
+                term_write_u32(i + 1u);
+                terminal_writestring(" time=");
+                term_write_u32(rtt);
+                terminal_writestring("ms\n");
+                if (until_ok) break;
+            } else if (rc == NET_PING_ERR_ARP_UNRESOLVED) {
+                terminal_writestring("no arp reply: seq=");
+                term_write_u32(i + 1u);
+                terminal_writestring("\n");
+            } else if (rc == NET_PING_ERR_DEST_UNREACH) {
+                terminal_writestring("dest unreachable: seq=");
+                term_write_u32(i + 1u);
+                terminal_writestring("\n");
+            } else if (rc == NET_PING_ERR_TIME_EXCEEDED) {
+                terminal_writestring("time exceeded: seq=");
+                term_write_u32(i + 1u);
+                terminal_writestring("\n");
+            } else if (rc == NET_PING_ERR_TX) {
+                terminal_writestring("tx failed: seq=");
+                term_write_u32(i + 1u);
+                terminal_writestring("\n");
+            } else {
+                terminal_writestring("timeout: seq=");
+                term_write_u32(i + 1u);
+                terminal_writestring("\n");
+            }
+        }
+
+        terminal_writestring("ping stats: sent=");
+        term_write_u32(sent);
+        terminal_writestring(" recv=");
+        term_write_u32(recv);
+        terminal_writestring(" loss=");
+        term_write_u32(sent > recv ? (uint32_t)(((sent - recv) * 100u) / sent) : 0u);
+        terminal_writestring("%\n");
+
+        if (recv > 0u) {
+            terminal_writestring("rtt min/avg/max=");
+            term_write_u32(min_rtt);
+            terminal_writestring("/");
+            term_write_u32((uint32_t)(total_rtt / recv));
+            terminal_writestring("/");
+            term_write_u32(max_rtt);
+            terminal_writestring(" ms\n");
+        }
+
+        return;
+    }
+
+    if (args && strncmp(args, "udp ", 4) == 0) {
+        const char* mode = next_token(args);
+        char mode_buf[16];
+
+        if (!mode) {
+            terminal_writestring("usage: net udp self <port> <token>\n");
+            return;
+        }
+
+        copy_token(mode, mode_buf, sizeof(mode_buf));
+        if (strcmp(mode_buf, "self") != 0) {
+            terminal_writestring("usage: net udp self <port> <token>\n");
+            return;
+        }
+
+        {
+            const char* port_tok = next_token(mode);
+            const char* msg_tok;
+            char msg_buf[96];
+            uint16_t rx_len = 0;
+            uint8_t rx_buf[128];
+            net_udp_endpoint_t from;
+            uint8_t local_ip[4];
+            int sock;
+            int bind_rc;
+            int tx_rc;
+            int rx_rc;
+            uint32_t port;
+            char num[24];
+
+            if (!port_tok || !is_decimal_token(port_tok)) {
+                terminal_writestring("usage: net udp self <port> <token>\n");
+                return;
+            }
+            msg_tok = next_token(port_tok);
+            if (!msg_tok || *msg_tok == '\0') {
+                terminal_writestring("usage: net udp self <port> <token>\n");
+                return;
+            }
+
+            port = parse_uint(port_tok);
+            if (port == 0u || port > 65535u) {
+                terminal_writestring("net udp: invalid port\n");
+                return;
+            }
+            copy_token(msg_tok, msg_buf, sizeof(msg_buf));
+
+            sock = net_udp_socket_open();
+            if (sock < 0) {
+                terminal_writestring("net udp: socket open failed\n");
+                return;
+            }
+
+            bind_rc = net_udp_socket_bind(sock, (uint16_t)port);
+            if (bind_rc < 0) {
+                terminal_writestring("net udp: bind failed rc=");
+                itoa(bind_rc, num, 10);
+                terminal_writestring(num);
+                terminal_writestring("\n");
+                (void)net_udp_socket_close(sock);
+                return;
+            }
+
+            net_get_ipv4(local_ip);
+            tx_rc = net_udp_socket_sendto(sock, local_ip, (uint16_t)port, msg_buf, (uint16_t)strlen(msg_buf));
+            if (tx_rc != NET_UDP_OK) {
+                terminal_writestring("net udp: send failed rc=");
+                itoa(tx_rc, num, 10);
+                terminal_writestring(num);
+                terminal_writestring("\n");
+                (void)net_udp_socket_close(sock);
+                return;
+            }
+
+            rx_rc = net_udp_socket_recvfrom(sock, rx_buf, sizeof(rx_buf) - 1u, &rx_len, &from, 1000u);
+            if (rx_rc < 0 && rx_rc != NET_UDP_ERR_MSG_TRUNC) {
+                terminal_writestring("net udp: recv failed rc=");
+                itoa(rx_rc, num, 10);
+                terminal_writestring(num);
+                terminal_writestring("\n");
+                (void)net_udp_socket_close(sock);
+                return;
+            }
+
+            rx_buf[rx_len] = '\0';
+            terminal_writestring("net udp self ok: from ");
+            term_write_ipv4(from.ip);
+            terminal_writestring(":");
+            term_write_u32((uint32_t)from.port);
+            terminal_writestring(" payload='");
+            terminal_writestring((const char*)rx_buf);
+            terminal_writestring("'\n");
+            (void)net_udp_socket_close(sock);
+            return;
+        }
+    }
+
+    if (args && strncmp(args, "tcp ", 4) == 0) {
+        const char* mode = next_token(args);
+        char mode_buf[16];
+
+        if (!mode) {
+            terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms] | net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
+            return;
+        }
+
+        copy_token(mode, mode_buf, sizeof(mode_buf));
+        if (strcmp(mode_buf, "stats") == 0) {
+            net_tcp_debug_stats_t st;
+            net_tcp_get_debug_stats(&st);
+            terminal_writestring("tcp: syn_sent=");
+            term_write_u32(st.syn_sent);
+            terminal_writestring(" syn_retx=");
+            term_write_u32(st.syn_retx);
+            terminal_writestring(" synack=");
+            term_write_u32(st.synack_seen);
+            terminal_writestring(" rst=");
+            term_write_u32(st.rst_seen);
+            terminal_writestring(" csum_drop=");
+            term_write_u32(st.checksum_drop);
+            terminal_writestring(" tuple_miss=");
+            term_write_u32(st.tuple_miss);
+            terminal_writestring(" ok=");
+            term_write_u32(st.connect_ok);
+            terminal_writestring(" timeout=");
+            term_write_u32(st.connect_timeout);
+            terminal_writestring("\n");
+            if (st.tuple_miss > 0u) {
+                terminal_writestring("tcp: last_miss src=");
+                term_write_ipv4(st.last_miss_src_ip);
+                terminal_writestring(":");
+                term_write_u32(st.last_miss_src_port);
+                terminal_writestring(" dport=");
+                term_write_u32(st.last_miss_dst_port);
+                terminal_writestring(" flags=0x");
+                {
+                    char hx[8];
+                    uint8_t f = st.last_miss_flags;
+                    hx[0] = "0123456789abcdef"[(f >> 4) & 0xFu];
+                    hx[1] = "0123456789abcdef"[f & 0xFu];
+                    hx[2] = '\0';
+                    terminal_writestring(hx);
+                }
+                terminal_writestring(" seq=");
+                term_write_u32(st.last_miss_seq);
+                terminal_writestring(" ack=");
+                term_write_u32(st.last_miss_ack);
+                terminal_writestring("\n");
+                terminal_writestring("tcp: last_miss arrival_ms=");
+                term_write_u32(st.last_miss_arrival_ms);
+                terminal_writestring(" syn_sent_ms=");
+                term_write_u32(st.last_syn_sent_ms);
+                terminal_writestring(" delta_ms=");
+                term_write_u32(st.last_miss_arrival_ms - st.last_syn_sent_ms);
+                terminal_writestring("\n");
+            }
+            return;
+        }
+
+        if (strcmp(mode_buf, "http") == 0) {
+            const char* host_tok = next_token(mode);
+            const char* port_tok;
+            const char* path_tok;
+            const char* cursor;
+            char host[128];
+            char path[160];
+            char req[320];
+            char opt[16];
+            char num[24];
+            uint8_t ip[4];
+            uint8_t rx[256];
+            uint16_t rx_len;
+            uint32_t timeout_ms = 5000u;
+            uint32_t total = 0u;
+            uint32_t port;
+            int sock = -1;
+            int rc;
+
+            if (!host_tok) {
+                terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
+                return;
+            }
+            copy_token(host_tok, host, sizeof(host));
+
+            port_tok = next_token(host_tok);
+            path_tok = next_token(port_tok);
+            if (!port_tok || !is_decimal_token(port_tok) || !path_tok || *path_tok == '\0') {
+                terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
+                return;
+            }
+
+            port = parse_uint(port_tok);
+            if (port == 0u || port > 65535u) {
+                terminal_writestring("net tcp: invalid port\n");
+                return;
+            }
+            copy_token(path_tok, path, sizeof(path));
+
+            cursor = next_token(path_tok);
+            while (cursor && *cursor) {
+                copy_token(cursor, opt, sizeof(opt));
+                if (strcmp(opt, "-W") == 0) {
+                    cursor = next_token(cursor);
+                    if (!cursor || !*cursor || !is_decimal_token(cursor)) {
+                        terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
+                        return;
+                    }
+                    timeout_ms = parse_uint(cursor);
+                    cursor = next_token(cursor);
+                    continue;
+                }
+                terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
+                return;
+            }
+
+            if (parse_ipv4_token(host_tok, ip) != 0) {
+                int dns_rc = net_dns_query_a(host, NULL, ip, timeout_ms);
+                if (dns_rc != NET_DNS_OK) {
+                    terminal_writestring("net tcp http: dns lookup failed rc=");
+                    itoa(dns_rc, num, 10);
+                    terminal_writestring(num);
+                    terminal_writestring("\n");
+                    return;
+                }
+            }
+
+            rc = net_tcp_client_connect(ip, (uint16_t)port, timeout_ms, &sock);
+            if (rc != NET_TCP_OK) {
+                terminal_writestring("net tcp http: connect failed rc=");
+                itoa(rc, num, 10);
+                terminal_writestring(num);
+                terminal_writestring("\n");
+                return;
+            }
+
+            if (path[0] != '/') {
+                char tmp[sizeof(path)];
+                strcpy(tmp, path);
+                path[0] = '/';
+                path[1] = '\0';
+                strncat(path, tmp, sizeof(path) - 2u);
+            }
+            req[0] = '\0';
+            strncat(req, "GET ", sizeof(req) - strlen(req) - 1u);
+            strncat(req, path, sizeof(req) - strlen(req) - 1u);
+            strncat(req, " HTTP/1.0\r\nHost: ", sizeof(req) - strlen(req) - 1u);
+            strncat(req, host, sizeof(req) - strlen(req) - 1u);
+            strncat(req, "\r\nConnection: close\r\n\r\n", sizeof(req) - strlen(req) - 1u);
+
+            rc = net_tcp_client_send(sock, req, (uint16_t)strlen(req), timeout_ms);
+            if (rc != NET_TCP_OK) {
+                terminal_writestring("net tcp http: send failed rc=");
+                itoa(rc, num, 10);
+                terminal_writestring(num);
+                terminal_writestring("\n");
+                (void)net_tcp_client_close(sock, 1000u);
+                return;
+            }
+
+            terminal_writestring("net tcp http: response begin\n");
+            for (;;) {
+                rc = net_tcp_client_recv(sock, rx, sizeof(rx), &rx_len, timeout_ms);
+                if (rc == NET_TCP_OK) {
+                    if (rx_len > 0u) {
+                        for (uint16_t i = 0; i < rx_len; ++i) terminal_putchar((char)rx[i]);
+                        total += rx_len;
+                    }
+                    continue;
+                }
+                if (rc == NET_TCP_ERR_CLOSED) break;
+                if (rc == NET_TCP_ERR_WOULD_BLOCK) break;
+                terminal_writestring("\nnet tcp http: recv failed rc=");
+                itoa(rc, num, 10);
+                terminal_writestring(num);
+                terminal_writestring("\n");
+                break;
+            }
+
+            (void)net_tcp_client_close(sock, timeout_ms);
+            terminal_writestring("\nnet tcp http: done bytes=");
+            term_write_u32(total);
+            terminal_writestring("\n");
+            return;
+        }
+
+        if (strcmp(mode_buf, "connect") != 0) {
+            terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms] | net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms] | net tcp stats\n");
+            return;
+        }
+
+        {
+            const char* host_tok = next_token(mode);
+            const char* port_tok;
+            const char* cursor;
+            char host[128];
+            char opt[16];
+            uint8_t ip[4];
+            uint32_t timeout_ms = 5000u;
+            uint32_t port;
+            int rc;
+            char num[24];
+
+            if (!host_tok) {
+                terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms]\n");
+                return;
+            }
+            copy_token(host_tok, host, sizeof(host));
+
+            port_tok = next_token(host_tok);
+            if (!port_tok || !is_decimal_token(port_tok)) {
+                terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms]\n");
+                return;
+            }
+
+            port = parse_uint(port_tok);
+            if (port == 0u || port > 65535u) {
+                terminal_writestring("net tcp: invalid port\n");
+                return;
+            }
+
+            cursor = next_token(port_tok);
+            while (cursor && *cursor) {
+                copy_token(cursor, opt, sizeof(opt));
+                if (strcmp(opt, "-W") == 0) {
+                    cursor = next_token(cursor);
+                    if (!cursor || !*cursor || !is_decimal_token(cursor)) {
+                        terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms]\n");
+                        return;
+                    }
+                    timeout_ms = parse_uint(cursor);
+                    cursor = next_token(cursor);
+                    continue;
+                }
+
+                terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms]\n");
+                return;
+            }
+
+            {
+                int host_is_name = (parse_ipv4_token(host_tok, ip) != 0);
+                uint32_t attempts = host_is_name ? 4u : 1u;
+
+                rc = NET_TCP_ERR_TIMEOUT;
+                for (uint32_t a = 0; a < attempts; ++a) {
+                    if (host_is_name) {
+                        int dns_rc = net_dns_query_a(host, NULL, ip, timeout_ms);
+                        if (dns_rc != NET_DNS_OK) {
+                            rc = dns_rc;
+                            break;
+                        }
+                    }
+
+                    terminal_writestring("TCP connect ");
+                    terminal_writestring(host);
+                    terminal_writestring(" (");
+                    term_write_ipv4(ip);
+                    terminal_writestring("):");
+                    term_write_u32(port);
+                    if (host_is_name) {
+                        terminal_writestring(" try=");
+                        term_write_u32(a + 1u);
+                    }
+                    terminal_writestring(" ... ");
+
+                    {
+                        int tcp_sock = -1;
+                        rc = net_tcp_client_connect(ip, (uint16_t)port, timeout_ms == 0u ? 1u : timeout_ms, &tcp_sock);
+                        if (rc == NET_TCP_OK && tcp_sock >= 0) {
+                            (void)net_tcp_client_close(tcp_sock, 1000u);
+                        }
+                    }
+                    if (rc == NET_TCP_OK) {
+                        terminal_writestring("ok\n");
+                        return;
+                    }
+
+                    terminal_writestring("failed rc=");
+                    itoa(rc, num, 10);
+                    terminal_writestring(num);
+                    terminal_writestring("\n");
+
+                    if (!host_is_name) break;
+                }
+
+                if (host_is_name && (rc == NET_DNS_ERR_TIMEOUT || rc == NET_DNS_ERR_FORMAT || rc == NET_DNS_ERR_NOT_FOUND)) {
+                    terminal_writestring("net tcp: dns lookup failed host=");
+                    terminal_writestring(host);
+                    terminal_writestring(" rc=");
+                    itoa(rc, num, 10);
+                    terminal_writestring(num);
+                    terminal_writestring("\n");
+                    return;
+                }
+            }
+            return;
+        }
+    }
+
+    if (args && strncmp(args, "dns ", 4) == 0) {
+        const char* host_tok = next_token(args);
+        const char* dns_tok;
+        char host[128];
+        uint8_t dns_server[4];
+        uint8_t resolved_ip[4];
+        int explicit_dns = 0;
+        int rc;
+        char num[24];
+
+        if (!host_tok) {
+            terminal_writestring("usage: net dns <hostname> [dns_server_ip]\n");
+            return;
+        }
+        copy_token(host_tok, host, sizeof(host));
+
+        dns_tok = next_token(host_tok);
+        if (dns_tok && *dns_tok) {
+            if (parse_ipv4_token(dns_tok, dns_server) != 0) {
+                terminal_writestring("usage: net dns <hostname> [dns_server_ip]\n");
+                return;
+            }
+            explicit_dns = 1;
+            rc = net_dns_query_a(host, dns_server, resolved_ip, 2000u);
+        } else {
+            rc = net_dns_query_a(host, NULL, resolved_ip, 2000u);
+        }
+
+        if (rc == NET_DNS_OK) {
+            terminal_writestring("dns: ");
+            terminal_writestring(host);
+            terminal_writestring(" -> ");
+            term_write_ipv4(resolved_ip);
+            terminal_writestring("\n");
+        } else {
+            terminal_writestring("dns: lookup failed rc=");
+            itoa(rc, num, 10);
+            terminal_writestring(num);
+            if (rc == NET_DNS_ERR_TIMEOUT) {
+                terminal_writestring(" server=");
+                if (explicit_dns) {
+                    term_write_ipv4(dns_server);
+                } else {
+                    terminal_writestring("auto(10.0.2.3,10.0.2.2)");
+                }
+            }
+            terminal_writestring("\n");
+        }
         return;
     }
 
@@ -2855,7 +3981,7 @@ static void cmd_net(const char* args) {
         return;
     }
 
-    terminal_writestring("usage: net [stats] | net tx | net regs\n");
+    terminal_writestring("usage: net [stats] | net netstat | net dhcp [timeout_ms] | net tx | net regs | net ip [a.b.c.d] | net mask [a.b.c.d] | net gw [a.b.c.d] | net arp | net arping <a.b.c.d> | net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U] | net udp self <port> <token> | net tcp connect <host|a.b.c.d> <port> [-W timeout_ms] | net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms] | net tcp stats | net dns <hostname> [dns_server_ip]\n");
 }
 
 /* ---- Filesystem commands ----------------------------------------------- */
@@ -3197,7 +4323,92 @@ static void cmd_stat(const char* args) {
     terminal_writestring("\n  size:  ");
     itoa((int)st.size, buf, 10);
     terminal_writestring(buf);
-    terminal_writestring(" bytes\n");
+    terminal_writestring(" bytes\n  mode:  0");
+    itoa((int)st.mode, buf, 8);
+    terminal_writestring(buf);
+    terminal_writestring("\n  uid:   ");
+    itoa((int)st.uid, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\n  gid:   ");
+    itoa((int)st.gid, buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\n");
+}
+
+static void cmd_id(const char* args) {
+    (void)args;
+    char buf[16];
+    terminal_writestring("uid=");
+    itoa(getuid(), buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring(" gid=");
+    itoa(getgid(), buf, 10);
+    terminal_writestring(buf);
+    terminal_writestring("\n");
+}
+
+static void cmd_chmod(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: chmod <octal-mode> <path>\n");
+        return;
+    }
+
+    char mode_tok[8];
+    copy_token(args, mode_tok, sizeof(mode_tok));
+    const char* p = next_token(args);
+    if (!p || *p == '\0') {
+        terminal_writestring("usage: chmod <octal-mode> <path>\n");
+        return;
+    }
+
+    uint16_t mode = 0;
+    if (parse_mode_octal(mode_tok, &mode) < 0) {
+        terminal_writestring("chmod: invalid mode (use octal like 644 or 755)\n");
+        return;
+    }
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(p, pathbuf, sizeof(pathbuf));
+    if (chmod(path, mode) < 0) {
+        terminal_writestring("chmod: failed\n");
+    }
+}
+
+static void cmd_chown(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: chown <uid> <gid> <path>\n");
+        return;
+    }
+
+    char uid_tok[16];
+    copy_token(args, uid_tok, sizeof(uid_tok));
+    const char* p = next_token(args);
+    if (!p || *p == '\0') {
+        terminal_writestring("usage: chown <uid> <gid> <path>\n");
+        return;
+    }
+
+    char gid_tok[16];
+    copy_token(p, gid_tok, sizeof(gid_tok));
+    p = next_token(p);
+    if (!p || *p == '\0') {
+        terminal_writestring("usage: chown <uid> <gid> <path>\n");
+        return;
+    }
+
+    if (!is_decimal_token(uid_tok) || !is_decimal_token(gid_tok)) {
+        terminal_writestring("chown: uid/gid must be decimal integers\n");
+        return;
+    }
+
+    uint32_t uid = parse_uint(uid_tok);
+    uint32_t gid = parse_uint(gid_tok);
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(p, pathbuf, sizeof(pathbuf));
+    if (chown(path, uid, gid) < 0) {
+        terminal_writestring("chown: failed\n");
+    }
 }
 
 static void cmd_cd(const char* args) {

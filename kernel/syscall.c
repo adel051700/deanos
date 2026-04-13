@@ -9,6 +9,7 @@
 #include "include/kernel/elf.h"
 #include "include/kernel/vfs.h"
 #include "include/kernel/shell.h"
+#include "include/kernel/net.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -90,6 +91,14 @@ static long sys_getpid(void) {
 
 static long sys_getppid(void) {
     return (long)task_current_ppid();
+}
+
+static long sys_getuid(void) {
+    return (long)task_current_uid();
+}
+
+static long sys_getgid(void) {
+    return (long)task_current_gid();
 }
 
 static long sys_kill(int32_t pid, int32_t sig) {
@@ -208,6 +217,16 @@ static long sys_mkdir(const char* path) {
     return (long)vfs_create_path(path, VFS_DIRECTORY);
 }
 
+static long sys_chmod(const char* path, uint32_t mode) {
+    if (!path) return -1;
+    return (long)vfs_chmod_path(path, (uint16_t)mode);
+}
+
+static long sys_chown(const char* path, uint32_t uid, uint32_t gid) {
+    if (!path) return -1;
+    return (long)vfs_chown_path(path, uid, gid);
+}
+
 static long sys_mmap(const syscall_mmap_args_t* args) {
     uintptr_t out = 0;
     if (task_mmap_current(args, &out) < 0) return -1;
@@ -226,6 +245,58 @@ static long sys_shm_unlink(int32_t key) {
     return (long)task_shm_unlink_current(key);
 }
 
+static long sys_socket(uint32_t domain, uint32_t type, uint32_t protocol) {
+    if (domain != KSOCK_AF_INET || type != KSOCK_SOCK_DGRAM) return -1;
+    if (protocol != 0u && protocol != KSOCK_IPPROTO_UDP) return -1;
+    return (long)net_udp_socket_open();
+}
+
+static long sys_socket_close(int32_t socket_id) {
+    return (long)net_udp_socket_close((int)socket_id);
+}
+
+static long sys_bind(const syscall_bind_args_t* args) {
+    if (!args) return -1;
+    return (long)net_udp_socket_bind((int)args->socket_id, args->local_port);
+}
+
+static long sys_sendto(const syscall_sendto_args_t* args) {
+    int rc;
+    if (!args) return -1;
+    rc = net_udp_socket_sendto((int)args->socket_id,
+                               args->dst_ip,
+                               args->dst_port,
+                               args->payload,
+                               (uint16_t)args->payload_len);
+    if (rc == NET_UDP_OK) return (long)args->payload_len;
+    return (long)rc;
+}
+
+static long sys_recvfrom(const syscall_recvfrom_args_t* args) {
+    net_udp_endpoint_t from;
+    uint16_t out_len = 0;
+    int rc;
+
+    if (!args) return -1;
+
+    rc = net_udp_socket_recvfrom((int)args->socket_id,
+                                 args->out_payload,
+                                 (uint16_t)args->payload_capacity,
+                                 &out_len,
+                                 &from,
+                                 args->timeout_ms);
+    if (rc != NET_UDP_OK && rc != NET_UDP_ERR_MSG_TRUNC) {
+        return (long)rc;
+    }
+
+    if (args->out_payload_len) *args->out_payload_len = out_len;
+    if (args->out_from_ip) memcpy(args->out_from_ip, from.ip, 4);
+    if (args->out_from_port) *args->out_from_port = from.port;
+
+    if (rc == NET_UDP_ERR_MSG_TRUNC) return NET_UDP_ERR_MSG_TRUNC;
+    return (long)out_len;
+}
+
 static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
@@ -240,6 +311,8 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_sleep_ms: return sys_sleep_ms(a1);
         case SYS_getpid: return sys_getpid();
         case SYS_getppid: return sys_getppid();
+        case SYS_getuid: return sys_getuid();
+        case SYS_getgid: return sys_getgid();
         case SYS_kill: return sys_kill((int32_t)a1, (int32_t)a2);
         case SYS_fork: return sys_fork(r);
         case SYS_execve: return sys_execve((const char*)a1, r);
@@ -258,6 +331,13 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_munmap: return sys_munmap((uintptr_t)a1, a2);
         case SYS_shm_open: return sys_shm_open((int32_t)a1, a2, a3);
         case SYS_shm_unlink: return sys_shm_unlink((int32_t)a1);
+        case SYS_socket: return sys_socket(a1, a2, a3);
+        case SYS_socket_close: return sys_socket_close((int32_t)a1);
+        case SYS_bind: return sys_bind((const syscall_bind_args_t*)a1);
+        case SYS_sendto: return sys_sendto((const syscall_sendto_args_t*)a1);
+        case SYS_recvfrom: return sys_recvfrom((const syscall_recvfrom_args_t*)a1);
+        case SYS_chmod: return sys_chmod((const char*)a1, a2);
+        case SYS_chown: return sys_chown((const char*)a1, a2, a3);
         default:        return -38; /* ENOSYS */
     }
 }

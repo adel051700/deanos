@@ -627,9 +627,13 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     if (g_current >= 0) {
         t->sid = g_tasks[g_current].sid;
         t->pgid = g_tasks[g_current].pgid;
+        t->uid = g_tasks[g_current].uid;
+        t->gid = g_tasks[g_current].gid;
     } else {
         t->sid = t->id;
         t->pgid = t->id;
+        t->uid = 0;
+        t->gid = 0;
     }
     t->fork_user_eip = 0;
     t->fork_user_esp = 0;
@@ -965,6 +969,14 @@ int task_current_sid(void) {
 
 int task_current_pgid(void) {
     return (g_current >= 0) ? (int)g_tasks[g_current].pgid : -1;
+}
+
+int task_current_uid(void) {
+    return (g_current >= 0) ? (int)g_tasks[g_current].uid : -1;
+}
+
+int task_current_gid(void) {
+    return (g_current >= 0) ? (int)g_tasks[g_current].gid : -1;
 }
 
 int task_getsid(int pid) {

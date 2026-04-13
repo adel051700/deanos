@@ -25,12 +25,12 @@ info_req_tag_end:
     // Framebuffer tag - request specific video mode
     .align 8
 framebuffer_tag_start:
-    .short 5                        // Type: framebuffer
-    .short 0                        // Flags
+    .short 5        // Type: framebuffer
+    .short 1        // Flags: optional (don't fail boot if unavailable)
     .long framebuffer_tag_end - framebuffer_tag_start
-    .long 1024                      // Width
-    .long 768                       // Height
-    .long 32                        // Depth (bits per pixel)
+    .long 0         // Width: any
+    .long 0         // Height: any
+    .long 0         // Depth: any
 framebuffer_tag_end:
 
     // End tag - required

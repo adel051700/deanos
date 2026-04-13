@@ -16,6 +16,7 @@
 #define RTL_REG_TSAD0    0x20u
 #define RTL_REG_RBSTART  0x30u
 #define RTL_REG_CR       0x37u
+#define RTL_REG_CAPR     0x38u
 #define RTL_REG_IMR      0x3Cu
 #define RTL_REG_ISR      0x3Eu
 #define RTL_REG_TCR      0x40u
@@ -26,6 +27,7 @@
 #define RTL_CR_RE        (1u << 3)
 #define RTL_CR_TE        (1u << 2)
 #define RTL_CR_RST       (1u << 4)
+#define RTL_CR_BUFE      (1u << 0)
 
 #define RTL_ISR_ROK      (1u << 0)
 #define RTL_ISR_RER      (1u << 1)
@@ -44,6 +46,7 @@
 #define RTL_RX_BUFFER_SIZE (8192u + 16u + 1500u)
 #define RTL_TX_BUFFER_SIZE 2048u
 #define RTL_TX_DESC_COUNT 4u
+#define RTL_RX_RING_SIZE 8192u
 
 typedef struct rtl8139_device {
     pci_device_info_t pci;
@@ -56,6 +59,8 @@ typedef struct rtl8139_device {
 } rtl8139_device_t;
 
 static rtl8139_device_t g_dev = {0};
+static rtl8139_rx_callback_t g_rx_callback = 0;
+static uint16_t g_rx_offset = 0;
 
 static uint8_t g_rx_buffer[RTL_RX_BUFFER_SIZE] __attribute__((aligned(16)));
 static uint8_t g_tx_buffer[RTL_TX_DESC_COUNT][RTL_TX_BUFFER_SIZE] __attribute__((aligned(16)));
@@ -84,6 +89,33 @@ static inline void rtl_outl(uint16_t reg, uint32_t v) {
     outl((uint16_t)(g_dev.io_base + reg), v);
 }
 
+static uint16_t rtl_read_le16(const uint8_t* p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static void rtl8139_drain_rx_ring(void) {
+    while ((rtl_inb(RTL_REG_CR) & RTL_CR_BUFE) == 0u) {
+        uint8_t* pkt = &g_rx_buffer[g_rx_offset];
+        uint16_t rx_len = rtl_read_le16(pkt + 2);
+
+        if (rx_len < 4u || rx_len > 1792u) {
+            g_dev.stats.rx_drops++;
+            break;
+        }
+
+        uint16_t frame_len = (uint16_t)(rx_len - 4u);
+        if (g_rx_callback && frame_len > 0) {
+            g_rx_callback(pkt + 4, frame_len);
+        }
+
+        g_dev.stats.rx_packets++;
+
+        g_rx_offset = (uint16_t)((g_rx_offset + rx_len + 4u + 3u) & ~3u);
+        g_rx_offset %= RTL_RX_RING_SIZE;
+        rtl_outw(RTL_REG_CAPR, (uint16_t)(g_rx_offset - 16u));
+    }
+}
+
 static void rtl8139_irq_handler(struct registers* regs) {
     (void)regs;
 
@@ -97,7 +129,7 @@ static void rtl8139_irq_handler(struct registers* regs) {
 
     if (isr & RTL_ISR_ROK) {
         g_dev.stats.rx_irqs++;
-        g_dev.stats.rx_packets++;
+        rtl8139_drain_rx_ring();
     }
     if (isr & RTL_ISR_TOK) {
         g_dev.stats.tx_irqs++;
@@ -164,6 +196,7 @@ int rtl8139_initialize(void) {
     }
 
     g_dev.tx_index = 0;
+    g_rx_offset = 0;
     g_dev.ready = 1;
     return 0;
 }
@@ -188,6 +221,10 @@ int rtl8139_send_raw(const void* data, uint16_t len) {
     g_dev.tx_index = (uint8_t)((idx + 1u) & (RTL_TX_DESC_COUNT - 1u));
     g_dev.stats.tx_packets++;
     return 0;
+}
+
+void rtl8139_set_rx_callback(rtl8139_rx_callback_t cb) {
+    g_rx_callback = cb;
 }
 
 int rtl8139_send_test_frame(void) {
