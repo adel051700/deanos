@@ -3,6 +3,7 @@
 #include "include/kernel/blockdev.h"
 #include "include/kernel/kheap.h"
 #include "include/kernel/log.h"
+#include "include/kernel/task.h"
 #include "include/kernel/vfs.h"
 
 #include <stdint.h>
@@ -91,6 +92,16 @@ static int minfs_flush_bitmap(minfs_t* fs);
 static int minfs_refresh_directory_sizes(minfs_t* fs);
 static int minfs_bitmap_is_set(const minfs_t* fs, uint32_t index);
 static void minfs_bitmap_set(minfs_t* fs, uint32_t index);
+
+static uint32_t minfs_current_uid(void) {
+    task_t* t = task_current();
+    return t ? t->uid : 0u;
+}
+
+static uint32_t minfs_current_gid(void) {
+    task_t* t = task_current();
+    return t ? t->gid : 0u;
+}
 
 static void minfs_disk_node_init(minfs_disk_node_t* node) {
     if (!node) return;
@@ -407,6 +418,8 @@ static void minfs_wire_vnode(minfs_t* fs, uint32_t index, vfs_node_t* node, int 
     node->size = fs->nodes[index].size;
     node->inode = (fs->dev_index << 16) | index;
     node->mode = (node->type & VFS_DIRECTORY) ? VFS_MODE_DIR_DEFAULT : VFS_MODE_FILE_DEFAULT;
+    node->uid = minfs_current_uid();
+    node->gid = minfs_current_gid();
     node->read = minfs_read;
     node->write = minfs_write;
     node->open = minfs_open;
