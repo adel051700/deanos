@@ -108,6 +108,7 @@ static volatile uint32_t g_tx_tail = 0;
 static volatile uint32_t g_rx_tail = 0;
 
 static volatile e1000_stats_t g_stats = {0};
+static e1000_rx_callback_t g_rx_callback = 0;
 
 static e1000_tx_desc_t g_tx_ring[E1000_TX_RING_SIZE] __attribute__((aligned(16)));
 static e1000_rx_desc_t g_rx_ring[E1000_RX_RING_SIZE] __attribute__((aligned(16)));
@@ -200,6 +201,9 @@ static void e1000_irq_handler(struct registers* regs) {
         }
 
         g_stats.rx_packets++;
+        if (g_rx_callback && d->length > 0) {
+            g_rx_callback(&g_rx_buf[idx][0], d->length);
+        }
         d->status = 0;
         e1000_write(E1000_REG_RDT, idx);
         g_rx_tail = (idx + 1u) % E1000_RX_RING_SIZE;
@@ -380,6 +384,10 @@ int e1000_send_raw(const void* data, uint16_t len) {
 
     g_stats.tx_packets++;
     return 0;
+}
+
+void e1000_set_rx_callback(e1000_rx_callback_t cb) {
+    g_rx_callback = cb;
 }
 
 int e1000_send_test_frame(void) {

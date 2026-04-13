@@ -12,6 +12,7 @@
 #include "include/kernel/vfs.h"
 #include "include/kernel/kheap.h"
 #include "include/kernel/log.h"
+#include "include/kernel/task.h"
 #include <string.h>
 #include <stddef.h>
 
@@ -25,6 +26,16 @@ typedef struct {
 /* ---- Inode counter ----------------------------------------------------- */
 
 static uint32_t next_inode = 1;
+
+static uint32_t ramfs_current_uid(void) {
+    task_t* t = task_current();
+    return t ? t->uid : 0u;
+}
+
+static uint32_t ramfs_current_gid(void) {
+    task_t* t = task_current();
+    return t ? t->gid : 0u;
+}
 
 /* ---- Forward declarations of vtable callbacks -------------------------- */
 
@@ -49,6 +60,8 @@ static vfs_node_t* ramfs_alloc_node(const char* name, uint32_t type) {
     n->size  = 0;
     n->inode = next_inode++;
     n->mode  = (type & VFS_DIRECTORY) ? VFS_MODE_DIR_DEFAULT : VFS_MODE_FILE_DEFAULT;
+    n->uid   = ramfs_current_uid();
+    n->gid   = ramfs_current_gid();
 
     /* Wire up the vtable */
     n->read     = ramfs_read;
