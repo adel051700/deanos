@@ -26,21 +26,55 @@ typedef struct {
 
 static vfs_mount_entry_t vfs_mounts[VFS_MAX_MOUNTS];
 
+static uint32_t vfs_effective_uid(void) {
+    task_t* t = task_current();
+    return t ? t->uid : 0u;
+}
+
+static uint32_t vfs_effective_gid(void) {
+    task_t* t = task_current();
+    return t ? t->gid : 0u;
+}
+
+static int vfs_perm_triplet(uint8_t perm, uint16_t* owner, uint16_t* group, uint16_t* other) {
+    if (!owner || !group || !other) return -1;
+    if (perm == VFS_MODE_IROTH) {
+        *owner = VFS_MODE_IRUSR;
+        *group = VFS_MODE_IRGRP;
+        *other = VFS_MODE_IROTH;
+        return 0;
+    }
+    if (perm == VFS_MODE_IWOTH) {
+        *owner = VFS_MODE_IWUSR;
+        *group = VFS_MODE_IWGRP;
+        *other = VFS_MODE_IWOTH;
+        return 0;
+    }
+    if (perm == VFS_MODE_IXOTH) {
+        *owner = VFS_MODE_IXUSR;
+        *group = VFS_MODE_IXGRP;
+        *other = VFS_MODE_IXOTH;
+        return 0;
+    }
+    return -1;
+}
+
 int vfs_node_allows(const vfs_node_t* node, uint8_t perm) {
     if (!node) return 0;
     if (node->mode == 0) return 1; /* backwards-compatible default */
 
-    if (perm == VFS_MODE_IROTH) {
-        return (node->mode & (VFS_MODE_IRUSR | VFS_MODE_IRGRP | VFS_MODE_IROTH)) != 0;
-    }
-    if (perm == VFS_MODE_IWOTH) {
-        return (node->mode & (VFS_MODE_IWUSR | VFS_MODE_IWGRP | VFS_MODE_IWOTH)) != 0;
-    }
-    if (perm == VFS_MODE_IXOTH) {
-        return (node->mode & (VFS_MODE_IXUSR | VFS_MODE_IXGRP | VFS_MODE_IXOTH)) != 0;
-    }
+    uint16_t owner_bit = 0;
+    uint16_t group_bit = 0;
+    uint16_t other_bit = 0;
+    if (vfs_perm_triplet(perm, &owner_bit, &group_bit, &other_bit) < 0) return 0;
 
-    return 0;
+    uint32_t uid = vfs_effective_uid();
+    uint32_t gid = vfs_effective_gid();
+
+    if (uid == 0u) return 1;
+    if (uid == node->uid) return (node->mode & owner_bit) != 0;
+    if (gid == node->gid) return (node->mode & group_bit) != 0;
+    return (node->mode & other_bit) != 0;
 }
 
 static int vfs_name_is_valid(const char* name) {
@@ -441,6 +475,8 @@ static vfs_node_t* pipe_make_end_node(vfs_pipe_t* pipe, uint8_t is_writer) {
     strncpy(node->name, is_writer ? "pipew" : "piper", VFS_NAME_MAX - 1);
     node->type = VFS_FILE;
     node->mode = VFS_MODE_FILE_DEFAULT;
+    node->uid = vfs_effective_uid();
+    node->gid = vfs_effective_gid();
     node->read = pipe_read;
     node->write = pipe_write;
     node->open = pipe_open;
@@ -534,11 +570,38 @@ int vfs_unlink_path(const char* path) {
     return vfs_unlink(parent, base_name);
 }
 
+int vfs_chmod_path(const char* path, uint16_t mode) {
+    if (!path) return -1;
+    vfs_node_t* node = vfs_namei(path);
+    if (!node) return -1;
+
+    uint32_t uid = vfs_effective_uid();
+    if (uid != 0u && uid != node->uid) return -1;
+
+    node->mode = (uint16_t)(mode & 0777u);
+    return 0;
+}
+
+int vfs_chown_path(const char* path, uint32_t uid, uint32_t gid) {
+    if (!path) return -1;
+    vfs_node_t* node = vfs_namei(path);
+    if (!node) return -1;
+
+    if (vfs_effective_uid() != 0u) return -1;
+
+    node->uid = uid;
+    node->gid = gid;
+    return 0;
+}
+
 int vfs_stat(vfs_node_t* node, vfs_stat_t* st) {
     if (!node || !st) return -1;
     st->inode = node->inode;
     st->type  = node->type;
     st->size  = node->size;
+    st->mode  = node->mode;
+    st->uid   = node->uid;
+    st->gid   = node->gid;
     return 0;
 }
 

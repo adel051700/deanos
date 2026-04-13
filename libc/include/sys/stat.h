@@ -8,6 +8,9 @@ struct stat {
     uint32_t inode;
     uint32_t type;
     uint32_t size;
+    uint16_t mode;
+    uint32_t uid;
+    uint32_t gid;
 };
 int fstat(int fd, struct stat* st);
 #ifdef __cplusplus

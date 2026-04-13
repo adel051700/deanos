@@ -110,6 +110,10 @@ typedef struct task {
     uint32_t        sid;
     uint32_t        pgid;
 
+    /* Security baseline credentials. */
+    uint32_t        uid;
+    uint32_t        gid;
+
     /* Per-process file descriptor table. */
     task_fd_t       fds[TASK_MAX_FDS];
 
@@ -167,6 +171,8 @@ int task_current_ppid(void);
 int task_parent_id(int id);
 int task_current_sid(void);
 int task_current_pgid(void);
+int task_current_uid(void);
+int task_current_gid(void);
 int task_getsid(int pid);
 int task_getpgid(int pid);
 int task_setpgid(int pid, int pgid);

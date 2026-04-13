@@ -63,6 +63,9 @@ typedef struct vfs_stat {
     uint32_t inode;
     uint32_t type;
     uint32_t size;
+    uint16_t mode;
+    uint32_t uid;
+    uint32_t gid;
 } vfs_stat_t;
 
 /* Function pointer types for node operations */
@@ -82,6 +85,8 @@ typedef struct vfs_node {
     uint32_t     size;         /* file: byte count; dir: child count */
     uint32_t     inode;        /* unique id */
     uint16_t     mode;         /* permission bits */
+    uint32_t     uid;          /* owner user id */
+    uint32_t     gid;          /* owner group id */
 
     /* Operations vtable — set by the filesystem driver */
     vfs_read_fn    read;
@@ -139,6 +144,8 @@ int          vfs_create(vfs_node_t* parent, const char* name, uint32_t type);
 int          vfs_unlink(vfs_node_t* parent, const char* name);
 int          vfs_create_path(const char* path, uint32_t type);
 int          vfs_unlink_path(const char* path);
+int          vfs_chmod_path(const char* path, uint16_t mode);
+int          vfs_chown_path(const char* path, uint32_t uid, uint32_t gid);
 int          vfs_stat(vfs_node_t* node, vfs_stat_t* st);
 
 /* FD-based API (uses the current task's fd table) */

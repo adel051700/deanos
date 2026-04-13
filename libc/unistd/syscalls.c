@@ -81,6 +81,14 @@ int getppid(void) {
     return (int)syscall1(SYS_getppid, 0);
 }
 
+int getuid(void) {
+    return (int)syscall1(SYS_getuid, 0);
+}
+
+int getgid(void) {
+    return (int)syscall1(SYS_getgid, 0);
+}
+
 int kill(int pid, int sig) {
     return (int)syscall2(SYS_kill, (unsigned)pid, (unsigned)sig);
 }
@@ -145,6 +153,14 @@ int tcgetpgrp(int fd) {
     return (int)syscall1(SYS_tcgetpgrp, (unsigned)fd);
 }
 
+int chmod(const char* path, uint16_t mode) {
+    return (int)syscall2(SYS_chmod, (unsigned)path, (unsigned)mode);
+}
+
+int chown(const char* path, uint32_t uid, uint32_t gid) {
+    return (int)syscall3(SYS_chown, (unsigned)path, (unsigned)uid, (unsigned)gid);
+}
+
 void* mmap(void* addr, size_t length, int prot, int flags, int fd, unsigned offset) {
     syscall_mmap_args_t args;
     args.addr = (uintptr_t)addr;
@@ -169,6 +185,63 @@ int shm_open(int key, uint32_t size, uint32_t flags) {
 
 int shm_unlink(int key) {
     return (int)syscall1(SYS_shm_unlink, (unsigned)key);
+}
+
+int socket(int domain, int type, int protocol) {
+    return (int)syscall3(SYS_socket, (unsigned)domain, (unsigned)type, (unsigned)protocol);
+}
+
+int closesocket(int sockfd) {
+    return (int)syscall1(SYS_socket_close, (unsigned)sockfd);
+}
+
+int bind(int sockfd, const struct sockaddr_in* addr) {
+    syscall_bind_args_t args;
+    if (!addr) return -1;
+    args.socket_id = sockfd;
+    args.local_port = addr->sin_port;
+    return (int)syscall1(SYS_bind, (unsigned)&args);
+}
+
+ssize_t sendto(int sockfd, const void* buf, size_t len, const struct sockaddr_in* dest) {
+    syscall_sendto_args_t args;
+    if (!dest || (!buf && len > 0u)) return -1;
+    args.socket_id = sockfd;
+    args.dst_ip[0] = dest->sin_addr.s_addr[0];
+    args.dst_ip[1] = dest->sin_addr.s_addr[1];
+    args.dst_ip[2] = dest->sin_addr.s_addr[2];
+    args.dst_ip[3] = dest->sin_addr.s_addr[3];
+    args.dst_port = dest->sin_port;
+    args.payload = buf;
+    args.payload_len = (uint32_t)len;
+    return (ssize_t)syscall1(SYS_sendto, (unsigned)&args);
+}
+
+ssize_t recvfrom(int sockfd, void* buf, size_t len, struct sockaddr_in* src, unsigned timeout_ms) {
+    syscall_recvfrom_args_t args;
+    uint16_t out_len = 0;
+    uint8_t from_ip[4] = {0, 0, 0, 0};
+    uint16_t from_port = 0;
+    long ret;
+
+    args.socket_id = sockfd;
+    args.out_payload = buf;
+    args.payload_capacity = (uint32_t)len;
+    args.out_payload_len = &out_len;
+    args.out_from_ip = from_ip;
+    args.out_from_port = &from_port;
+    args.timeout_ms = timeout_ms;
+
+    ret = syscall1(SYS_recvfrom, (unsigned)&args);
+    if (ret >= 0 && src) {
+        src->sin_family = AF_INET;
+        src->sin_port = from_port;
+        src->sin_addr.s_addr[0] = from_ip[0];
+        src->sin_addr.s_addr[1] = from_ip[1];
+        src->sin_addr.s_addr[2] = from_ip[2];
+        src->sin_addr.s_addr[3] = from_ip[3];
+    }
+    return (ssize_t)ret;
 }
 
 unsigned sleep(unsigned seconds) {

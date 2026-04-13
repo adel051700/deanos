@@ -35,7 +35,20 @@ enum {
     SYS_munmap = 28,
     SYS_shm_open = 29,
     SYS_shm_unlink = 30,
+    SYS_socket = 31,
+    SYS_socket_close = 32,
+    SYS_bind = 33,
+    SYS_sendto = 34,
+    SYS_recvfrom = 35,
+    SYS_getuid = 36,
+    SYS_getgid = 37,
+    SYS_chmod = 38,
+    SYS_chown = 39,
 };
+
+#define KSOCK_AF_INET      2u
+#define KSOCK_SOCK_DGRAM   2u
+#define KSOCK_IPPROTO_UDP 17u
 
 /* mmap protection flags */
 #define MMAP_PROT_READ   0x1u
@@ -61,6 +74,29 @@ typedef struct syscall_mmap_args {
     int32_t   fd;
     uint32_t  offset;
 } syscall_mmap_args_t;
+
+typedef struct syscall_bind_args {
+    int32_t socket_id;
+    uint16_t local_port;
+} syscall_bind_args_t;
+
+typedef struct syscall_sendto_args {
+    int32_t socket_id;
+    uint8_t dst_ip[4];
+    uint16_t dst_port;
+    const void* payload;
+    uint32_t payload_len;
+} syscall_sendto_args_t;
+
+typedef struct syscall_recvfrom_args {
+    int32_t socket_id;
+    void* out_payload;
+    uint32_t payload_capacity;
+    uint16_t* out_payload_len;
+    uint8_t* out_from_ip;
+    uint16_t* out_from_port;
+    uint32_t timeout_ms;
+} syscall_recvfrom_args_t;
 
 /* Install syscall handlers on vectors 0x80 and 0x81 */
 void syscall_initialize(void);
