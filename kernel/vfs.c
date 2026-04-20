@@ -660,6 +660,34 @@ int vfs_fd_open(const char* path, uint32_t flags) {
     return fd;
 }
 
+int vfs_fd_install_node(vfs_node_t* node, uint32_t open_flags, uint32_t fd_flags) {
+    task_t* t = task_current();
+    int fd;
+
+    if (!node) return -1;
+    if (!t) {
+        vfs_close_node(node);
+        return -1;
+    }
+    if (vfs_open_node(node, open_flags) < 0) {
+        vfs_close_node(node);
+        return -1;
+    }
+
+    fd = fd_alloc();
+    if (fd < 0) {
+        vfs_close_node(node);
+        return -1;
+    }
+
+    t->fds[fd].node = node;
+    t->fds[fd].offset = 0;
+    t->fds[fd].open_flags = open_flags;
+    t->fds[fd].fd_flags = fd_flags;
+    t->fds[fd].in_use = 1;
+    return fd;
+}
+
 int32_t vfs_fd_read(int fd, uint8_t* buffer, uint32_t size) {
     task_t* t = task_current();
     if (!t) return -1;

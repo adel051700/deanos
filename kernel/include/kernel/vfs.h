@@ -48,6 +48,11 @@ extern "C" {
 /* fcntl-like commands */
 #define VFS_F_GETFD     1
 #define VFS_F_SETFD     2
+#define VFS_F_GETFL     3
+#define VFS_F_SETFL     4
+
+/* Status flags manipulable via F_GETFL/F_SETFL */
+#define VFS_O_NONBLOCK  0x40
 
 /* ---- Types ------------------------------------------------------------- */
 
@@ -156,6 +161,7 @@ int          vfs_fd_close(int fd);
 int          vfs_fd_stat(int fd, vfs_stat_t* st);
 int          vfs_fd_fcntl(int fd, uint32_t cmd, uint32_t arg);
 int          vfs_fd_pipe(int out_fds[2]);
+int          vfs_fd_install_node(vfs_node_t* node, uint32_t open_flags, uint32_t fd_flags);
 
 #ifdef __cplusplus
 }

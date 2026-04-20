@@ -59,6 +59,8 @@ kernel/blockdev.c \
 kernel/ata.c \
 kernel/mbr.c \
 kernel/net.c \
+kernel/dhcp.c \
+kernel/dns.c \
 kernel/syscall.c \
 kernel/task.c \
 kernel/tss.c \
@@ -88,6 +90,7 @@ libc/stdio/itoa.c \
 libc/stdio/printf.c \
 libc/stdlib/malloc.c \
 libc/unistd/syscalls.c \
+libc/netdb/resolve.c \
 libc/string/memset.c \
 libc/string/memcmp.c \
 libc/string/strlen.c \
@@ -131,6 +134,7 @@ directories:
 	@mkdir -p $(LIBC_BUILD_DIR)/stdio
 	@mkdir -p $(LIBC_BUILD_DIR)/stdlib
 	@mkdir -p $(LIBC_BUILD_DIR)/unistd
+	@mkdir -p $(LIBC_BUILD_DIR)/netdb
 	@mkdir -p $(LIBC_BUILD_DIR)/string
 	@mkdir -p $(ARCH_BUILD_DIR)/boot
 	@mkdir -p $(USER_BUILD_DIR)
