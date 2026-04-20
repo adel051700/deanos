@@ -68,6 +68,7 @@
 #define E1000_TCTL_COLD_SHIFT 12
 
 #define E1000_TX_CMD_EOP  (1u << 0)
+#define E1000_TX_CMD_IFCS (1u << 1)
 #define E1000_TX_CMD_RS   (1u << 3)
 #define E1000_TX_STAT_DD  (1u << 0)
 
@@ -376,7 +377,7 @@ int e1000_send_raw(const void* data, uint16_t len) {
     memcpy(&g_tx_buf[idx][0], data, len);
 
     d->length = len;
-    d->cmd = (uint8_t)(E1000_TX_CMD_EOP | E1000_TX_CMD_RS);
+    d->cmd = (uint8_t)(E1000_TX_CMD_EOP | E1000_TX_CMD_IFCS | E1000_TX_CMD_RS);
     d->status = 0;
 
     g_tx_tail = (idx + 1u) % E1000_TX_RING_SIZE;
