@@ -13,3 +13,5 @@
 /*.iso
 /isodir/*
 *.elf
+/.claude/*
+/deanos-course/*
