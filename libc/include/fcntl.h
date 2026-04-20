@@ -10,10 +10,13 @@ extern "C" {
 #define O_TRUNC  0x08
 #define O_APPEND 0x10
 #define O_CLOEXEC 0x20
+#define O_NONBLOCK 0x40
 
 #define FD_CLOEXEC 0x1
 #define F_GETFD    1
 #define F_SETFD    2
+#define F_GETFL    3
+#define F_SETFL    4
 
 int open(const char* path, int flags);
 int fcntl(int fd, int cmd, int arg);

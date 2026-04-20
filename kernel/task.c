@@ -19,6 +19,7 @@
 #include "include/kernel/usermode.h"
 #include "include/kernel/vfs.h"
 #include "include/kernel/blockdev.h"
+#include "include/kernel/net.h"
 #include "../libc/include/string.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -343,8 +344,10 @@ static int task_lazy_elf_install(task_t* t,
 }
 
 static void idle_thread(void) {
-    for (;;)
+    for (;;) {
+        net_worker_step();
         __asm__ __volatile__("hlt");
+    }
 }
 
 static void fork_child_entry(void) {
@@ -925,6 +928,7 @@ void task_yield(void) {
  */
 void scheduler_tick(void) {
     g_sched_ticks++;
+    net_timers_tick(10u);
     blockdev_pump(1);
     wake_blocked_tasks();
 
