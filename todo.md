@@ -68,8 +68,8 @@
 41. ~~Network stack phase 3: TCP state machine for simple clients.~~
 42. ~~Userland networking tools: ping, netstat-lite, and DHCP client command.~~
 43. ~~Security baseline: user/group IDs, chmod/chown, and permission enforcement.~~
-44. Hardening: kernel/user pointer validation audit for all syscalls.
-45. Hardening: stack canary support and non-executable user stacks.
+44. ~~Hardening: kernel/user pointer validation audit for all syscalls.~~
+45. ~~Hardening: stack canary support and non-executable user stacks.~~
 46. Randomness: entropy collector + /dev/random and /dev/urandom devices.
 47. Timekeeping improvements: monotonic clock + RTC synchronization strategy.
 48. TTY improvements: line discipline, canonical/raw mode, and control characters.

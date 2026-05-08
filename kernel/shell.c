@@ -545,6 +545,7 @@ typedef struct {
     char path[VFS_PATH_MAX];
     char in_path[VFS_PATH_MAX];
     char out_path[VFS_PATH_MAX];
+    char args[VFS_PATH_MAX];
     int  has_in;
     int  has_out;
     int  append_out;
@@ -589,12 +590,18 @@ static size_t shell_stage_next_token(const char** p_in, char* out, size_t out_sz
     }
 
     size_t i = 0;
-    while (p[i] && p[i] != ' ' && p[i] != '<' && p[i] != '>' && i < out_sz - 1) {
-        out[i] = p[i];
-        i++;
+    if (*p == '"' || *p == '\'') {
+        char quote = *p++;
+        while (*p && *p != quote && i < out_sz - 1) {
+            out[i++] = *p++;
+        }
+        if (*p == quote) p++;
+    } else {
+        while (*p && *p != ' ' && *p != '<' && *p != '>' && *p != '"' && *p != '\'' && i < out_sz - 1) {
+            out[i++] = *p++;
+        }
     }
     out[i] = '\0';
-    p += i;
     *p_in = p;
     return i;
 }
@@ -621,8 +628,13 @@ static int shell_stage_parse(char* segment, shell_stage_spec_t* spec) {
     size_t n = shell_stage_next_token(&p, token, sizeof(token));
     if (n == 0) return -1;
 
+    /* First token is the command name (or "exec"). Store it as the path. */
     if (strcmp(token, "exec") == 0) {
+        /* leave spec->path empty for exec handling; caller will parse differently */
         while (*p == ' ') p++;
+    } else {
+        strncpy(spec->path, token, sizeof(spec->path) - 1);
+        spec->path[sizeof(spec->path) - 1] = '\0';
     }
 
     while (*p) {
@@ -655,12 +667,22 @@ static int shell_stage_parse(char* segment, shell_stage_spec_t* spec) {
             continue;
         }
 
-        if (spec->path[0] != '\0') {
-            return -1;
-        }
+        /* Append non-redirection tokens to the argument string (skip the first token if it was used as path) */
+        if (token[0] != '\0') {
+            /* If this token equals the command name we already recorded, skip adding it to args */
+            if (spec->path[0] != '\0' && strcmp(token, spec->path) == 0) {
+                continue;
+            }
 
-        strncpy(spec->path, token, sizeof(spec->path) - 1);
-        spec->path[sizeof(spec->path) - 1] = '\0';
+            if (spec->args[0] != '\0') {
+                size_t cur = strlen(spec->args);
+                if (cur + 1 >= sizeof(spec->args)) return -1;
+                spec->args[cur++] = ' ';
+                spec->args[cur] = '\0';
+            }
+            if (strlen(spec->args) + strlen(token) >= sizeof(spec->args)) return -1;
+            strcat(spec->args, token);
+        }
     }
 
     return (spec->path[0] != '\0') ? 0 : -1;
@@ -712,6 +734,40 @@ static void shell_execute_pipeline(const char* command) {
             terminal_writestring("pipe: '>'/'>>' only supported on the last stage\n");
             return;
         }
+    }
+
+    if (stage_count == 1 && strcmp(specs[0].path, "echo") == 0) {
+        if (specs[0].has_in) {
+            terminal_writestring("pipe: 'echo' does not support input redirection\n");
+            return;
+        }
+
+        int out_fd = -1;
+        if (specs[0].has_out) {
+            char out_resolved[VFS_PATH_MAX];
+            const char* out_path = resolve_shell_path(specs[0].out_path, out_resolved, sizeof(out_resolved));
+            uint32_t oflags = VFS_O_WRONLY | VFS_O_CREATE;
+            oflags |= specs[0].append_out ? VFS_O_APPEND : VFS_O_TRUNC;
+            out_fd = vfs_fd_open(out_path, oflags);
+            if (out_fd < 0) {
+                terminal_writestring("pipe: failed to open output: ");
+                terminal_writestring(out_path);
+                terminal_writestring("\n");
+                return;
+            }
+        }
+
+        if (out_fd >= 0) {
+            if (specs[0].args[0] != '\0') {
+                (void)vfs_fd_write(out_fd, (const uint8_t*)specs[0].args, (uint32_t)strlen(specs[0].args));
+            }
+            (void)vfs_fd_write(out_fd, (const uint8_t*)"\n", 1);
+            (void)vfs_fd_close(out_fd);
+        } else {
+            terminal_writestring(specs[0].args);
+            terminal_writestring("\n");
+        }
+        return;
     }
 
     int pipes[SHELL_PIPE_MAX_STAGES - 1][2];
@@ -779,8 +835,15 @@ static void shell_execute_pipeline(const char* command) {
         if (opened_in_fd >= 0) vfs_fd_close(opened_in_fd);
         if (opened_out_fd >= 0) vfs_fd_close(opened_out_fd);
         if (pid < 0) {
+            /* Diagnostic: print the parsed spec values to help debugging */
             terminal_writestring("pipe: launch failed for ");
             terminal_writestring(path);
+            terminal_writestring("\n  spec.path= ");
+            terminal_writestring(specs[i].path);
+            terminal_writestring("\n  spec.args= ");
+            terminal_writestring(specs[i].args);
+            terminal_writestring("\n  spec.out= ");
+            terminal_writestring(specs[i].has_out ? specs[i].out_path : "(none)");
             terminal_writestring("\n");
             launch_failed = 1;
             break;

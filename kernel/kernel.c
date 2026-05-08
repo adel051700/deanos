@@ -15,11 +15,14 @@
 #include "include/kernel/minfs.h"
 #include "include/kernel/fat32.h"
 #include "include/kernel/elf.h"
+#include "include/kernel/random.h"
 #include "include/kernel/blockdev.h"
 #include "include/kernel/ata.h"
 #include "include/kernel/mbr.h"
 #include "include/kernel/paging.h"
 #include "include/kernel/net.h"
+#include "include/kernel/stack_protector.h"
+#include "include/kernel/usermode.h"
 
 #include <stdint.h>
 
@@ -44,10 +47,14 @@ void kernel_main(void) {
     gdt_initialize();
     tss_initialize(0x10, 0);    /* kernel SS=0x10, ESP0 updated per-task */
     idt_initialize();
+    usermode_install_protections();   /* #GP handler for NX-stack violations */
     syscall_initialize();
     pit_initialize(100);
     keyboard_initialize();
     mouse_initialize();
+
+    /* Reseed the stack canary now that PIT/RTC are reachable. */
+    stack_protector_initialize();
 
     blockdev_initialize();
     mbr_initialize();
@@ -77,6 +84,8 @@ void kernel_main(void) {
     /* Filesystem: must come after kheap (initialized in constructor) */
     vfs_initialize();
     ramfs_initialize();
+    /* Randomness devices */
+    random_initialize();
     minfs_auto_mount();
     (void)fat32_auto_mount((uint32_t)-1);
     elf_install_test_programs();

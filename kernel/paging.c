@@ -646,6 +646,117 @@ static void page_fault_handler(struct registers* r) {
     while (1) { __asm__ __volatile__("hlt"); }
 }
 
+static int user_addr_in_demand_region(uintptr_t addr, int write) {
+    demand_region_t* region = find_demand_region(addr);
+    if (!region) return 0;
+    if ((region->flags & PTE_U) == 0u) return 0;
+    if (write && ((region->flags & PTE_W) == 0u)) return 0;
+    return 1;
+}
+
+static int user_addr_in_lazy_region(uintptr_t addr, int write) {
+    task_t* cur = task_current();
+    if (!cur) return 0;
+
+    for (uint32_t i = 0; i < cur->elf_region_count && i < TASK_ELF_LAZY_MAX; ++i) {
+        const task_elf_lazy_region_t* reg = &cur->elf_regions[i];
+        if (!reg->in_use) continue;
+        if (addr < reg->start || addr >= reg->end) continue;
+        if (write && ((reg->flags & PAGING_FLAG_WRITE) == 0u)) return 0;
+        return 1;
+    }
+
+    for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+        const task_mmap_region_t* reg = &cur->mmap_regions[i];
+        if (!reg->in_use) continue;
+        if (addr < reg->start || addr >= reg->end) continue;
+        if (write && ((reg->prot & MMAP_PROT_WRITE) == 0u)) return 0;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int user_addr_accessible(uintptr_t addr, int write) {
+    uint32_t* pd = pd_from_phys(g_current_cr3);
+    uint32_t dir_idx = (addr >> 22) & 0x3FFu;
+    uint32_t pt_idx = (addr >> 12) & 0x3FFu;
+    uint32_t pde;
+    uint32_t* pt;
+    uint32_t pte;
+
+    if (!pd) return 0;
+    pde = pd[dir_idx];
+    if ((pde & PTE_P) != 0u) {
+        if ((pde & PTE_U) == 0u) return 0;
+        pt = (uint32_t*)(uintptr_t)(pde & ~0xFFFu);
+        pte = pt[pt_idx];
+        if ((pte & PTE_P) != 0u) {
+            if ((pte & PTE_U) == 0u) return 0;
+            if (write && ((pte & PTE_W) == 0u)) return 0;
+            return 1;
+        }
+        if (pte_is_swapped(pte)) {
+            if ((pte & PTE_U) == 0u) return 0;
+            if (write && ((pte & PTE_W) == 0u)) return 0;
+            return 1;
+        }
+    }
+
+    if (user_addr_in_demand_region(addr, write)) return 1;
+    if (user_addr_in_lazy_region(addr, write)) return 1;
+    return 0;
+}
+
+int paging_user_range_readable(const void* ptr, size_t len) {
+    uintptr_t start = (uintptr_t)ptr;
+    uintptr_t end;
+    uintptr_t page;
+
+    if (len == 0u) return 1;
+    if (!ptr) return 0;
+    end = start + (uintptr_t)len - 1u;
+    if (end < start) return 0;
+
+    page = start & ~0xFFFu;
+    for (;;) {
+        if (!user_addr_accessible(page, 0)) return 0;
+        if (page >= (end & ~0xFFFu)) break;
+        if (page > UINTPTR_MAX - 0x1000u) return 0;
+        page += 0x1000u;
+    }
+    return 1;
+}
+
+int paging_user_range_writable(void* ptr, size_t len) {
+    uintptr_t start = (uintptr_t)ptr;
+    uintptr_t end;
+    uintptr_t page;
+
+    if (len == 0u) return 1;
+    if (!ptr) return 0;
+    end = start + (uintptr_t)len - 1u;
+    if (end < start) return 0;
+
+    page = start & ~0xFFFu;
+    for (;;) {
+        if (!user_addr_accessible(page, 1)) return 0;
+        if (page >= (end & ~0xFFFu)) break;
+        if (page > UINTPTR_MAX - 0x1000u) return 0;
+        page += 0x1000u;
+    }
+    return 1;
+}
+
+int paging_user_cstring_readable(const char* str, size_t max_len) {
+    if (!str || max_len == 0u) return 0;
+    for (size_t i = 0; i < max_len; ++i) {
+        if (!paging_user_range_readable(str + i, 1u)) return 0;
+        if (str[i] == '\0') return 1;
+    }
+    return 0;
+}
+
 // Exported heap info
 uintptr_t paging_heap_base(void) { return (uintptr_t)KHEAP_BASE; }
 uintptr_t paging_heap_size(void) { return (uintptr_t)KHEAP_SIZE; }

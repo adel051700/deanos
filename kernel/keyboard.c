@@ -1,6 +1,7 @@
 #include "include/kernel/keyboard.h"
 #include "include/kernel/io.h"
 #include "include/kernel/irq.h"
+#include "include/kernel/random.h"
 #include "include/kernel/signal.h"
 #include "include/kernel/tty.h"
 #include <stdint.h>
@@ -59,6 +60,9 @@ static void keyboard_buffer_enqueue_str(const char* s);
 static void keyboard_irq_handler(struct registers* regs) {
     (void)regs;
     uint8_t scancode = inb(0x60);
+
+    /* Feed scancode/timing into entropy pool */
+    random_add_entropy((uint32_t)scancode);
 
     if (scancode == 0xE0) {
         e0_prefix = 1;

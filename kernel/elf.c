@@ -12,6 +12,11 @@
 #define ELF_USER_STACK_SIZE  (8u * 1024u)
 #define ELF_USER_STACK_BASE  0xBFFF8000u
 
+/* The ELF user stack must be in the non-executable region above the user
+ * code segment limit (see USER_NX_BOUNDARY in usermode.h). */
+_Static_assert(ELF_USER_STACK_BASE >= USER_NX_BOUNDARY,
+               "ELF user stack must sit above USER_NX_BOUNDARY");
+
 static const char* path_basename(const char* path) {
     if (!path) return NULL;
     const char* name = path;
@@ -160,6 +165,8 @@ extern const uint8_t _binary_build_user_mmaptest_elf_start[];
 extern const uint8_t _binary_build_user_mmaptest_elf_end[];
 extern const uint8_t _binary_build_user_shmtest_elf_start[];
 extern const uint8_t _binary_build_user_shmtest_elf_end[];
+extern const uint8_t _binary_build_user_negptrtest_elf_start[];
+extern const uint8_t _binary_build_user_negptrtest_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -427,4 +434,10 @@ void elf_install_test_programs(void) {
     if (!shmtest) return;
     uint32_t shmtest_size = (uint32_t)(_binary_build_user_shmtest_elf_end - _binary_build_user_shmtest_elf_start);
     vfs_write(shmtest, 0, shmtest_size, _binary_build_user_shmtest_elf_start);
+
+    vfs_create(bin, "negptrtest", VFS_FILE);
+    vfs_node_t* negptrtest = vfs_finddir(bin, "negptrtest");
+    if (!negptrtest) return;
+    uint32_t negptrtest_size = (uint32_t)(_binary_build_user_negptrtest_elf_end - _binary_build_user_negptrtest_elf_start);
+    vfs_write(negptrtest, 0, negptrtest_size, _binary_build_user_negptrtest_elf_start);
 }

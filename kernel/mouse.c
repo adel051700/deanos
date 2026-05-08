@@ -4,6 +4,7 @@
 #include "include/kernel/io.h"
 #include "include/kernel/irq.h"
 #include "include/kernel/log.h"
+#include "include/kernel/random.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -136,6 +137,9 @@ static void mouse_irq_handler(struct registers* regs) {
     if ((status & PS2_STATUS_AUX_DATA) == 0) return;
 
     uint8_t data = inb(PS2_DATA_PORT);
+
+    /* Feed the raw mouse data byte into the entropy collector */
+    random_add_entropy((uint32_t)data);
 
     if (g_packet_index == 0 && (data & 0x08) == 0) {
         return; /* maintain packet byte alignment */

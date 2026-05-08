@@ -2,6 +2,7 @@
 #define _KERNEL_PAGING_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include "multiboot.h"
 
 /* Public mapping flags used by demand-region registration. */
@@ -63,5 +64,10 @@ void paging_release_mm(uint32_t cr3_phys);
 
 /* Debug helper: return tracked MM refcount for a CR3 (0 if unknown). */
 uint32_t paging_mm_refcount(uint32_t cr3_phys);
+
+/* Validate user-accessible ranges for syscall pointer hardening. */
+int paging_user_range_readable(const void* ptr, size_t len);
+int paging_user_range_writable(void* ptr, size_t len);
+int paging_user_cstring_readable(const char* str, size_t max_len);
 
 #endif
