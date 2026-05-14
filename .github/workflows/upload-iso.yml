@@ -16,119 +16,67 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Create package.json
-        run: |
-          cat > package.json <<'EOF'
-          {
-            "type": "module",
-            "dependencies": {
-              "@supabase/supabase-js": "^2.49.1"
-            }
-          }
-          EOF
-
-      - name: Install dependencies
-        run: npm install
-
       - name: Upload newest ISO
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          cat > upload-latest-iso.mjs <<'EOF'
-          import fs from "node:fs";
-          import path from "node:path";
-          import { createClient } from "@supabase/supabase-js";
+          set -euo pipefail
 
-          const ISO_DIR = "isos";
-          const BUCKET = "deanos-releases";
+          ISO_DIR="isos"
+          BUCKET="deanos-releases"
+          ISO_PATTERN='^deanos-([0-9]{2})-([0-9]{2})-([0-9]{4})-([0-9]+)_([0-9]+)\.iso$'
 
-          // deanos-DD-MM-YYYY-X_Y_Z.iso
-          const ISO_REGEX = /^deanos-(\d{2})-(\d{2})-(\d{4})-(\d+)_(\d+)\.iso$/;
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
+            echo "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" >&2
+            exit 1
+          fi
 
-          function compareVersion(a, b) {
-            for (let i = 0; i < 3; i++) {
-              if (a[i] !== b[i]) return a[i] - b[i];
-            }
-            return 0;
-          }
+          if [ ! -d "$ISO_DIR" ]; then
+            echo "Missing folder: $ISO_DIR" >&2
+            exit 1
+          fi
 
-          function getIsoFiles() {
-            if (!fs.existsSync(ISO_DIR)) {
-              throw new Error(`Missing folder: ${ISO_DIR}`);
-            }
+          newest_key=""
+          newest_file=""
 
-            return fs.readdirSync(ISO_DIR)
-              .filter(file => ISO_REGEX.test(file))
-              .map(file => {
-                const match = file.match(ISO_REGEX);
-                const [, dd, mm, yyyy, major, minor] = match;
+          for filepath in "$ISO_DIR"/*.iso; do
+            [ -e "$filepath" ] || continue
+            filename="$(basename "$filepath")"
 
-                return {
-                  file,
-                  fullPath: path.join(ISO_DIR, file),
-                  dateValue: Number(`${yyyy}${mm}${dd}`),
-                  version: [Number(major), Number(minor)],
-                };
-              });
-          }
+            if [[ "$filename" =~ $ISO_PATTERN ]]; then
+              dd="${BASH_REMATCH[1]}"
+              mm="${BASH_REMATCH[2]}"
+              yyyy="${BASH_REMATCH[3]}"
+              major="${BASH_REMATCH[4]}"
+              minor="${BASH_REMATCH[5]}"
 
-          function pickNewest(files) {
-            if (files.length === 0) {
-              throw new Error("No ISO files found matching deanos-DD-MM-YYYY-X_Y_Z.iso");
-            }
+              # Compare by semantic version first, then by date.
+              key="$(printf '%010d%010d%04d%02d%02d' "$major" "$minor" "$yyyy" "$mm" "$dd")"
+              if [ -z "$newest_key" ] || [ "$key" \> "$newest_key" ]; then
+                newest_key="$key"
+                newest_file="$filepath"
+              fi
+            fi
+          done
 
-            files.sort((a, b) => {
-              const versionCmp = compareVersion(a.version, b.version);
-              if (versionCmp !== 0) return versionCmp;
-              return a.dateValue - b.dateValue;
-            });
+          if [ -z "$newest_file" ]; then
+            echo "No ISO files found matching deanos-DD-MM-YYYY-X_Y_Z.iso" >&2
+            exit 1
+          fi
 
-            return files[files.length - 1];
-          }
+          newest_name="$(basename "$newest_file")"
+          storage_path="iso/$newest_name"
+          upload_url="${SUPABASE_URL%/}/storage/v1/object/$BUCKET/$storage_path"
 
-          async function main() {
-            const url = process.env.SUPABASE_URL;
-            const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          echo "Uploading $newest_name"
 
-            if (!url || !key) {
-              throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
-            }
+          curl --fail-with-body --silent --show-error \
+            -X POST "$upload_url" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "x-upsert: true" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$newest_file"
 
-            const supabase = createClient(url, key);
-
-            const files = getIsoFiles();
-            const latest = pickNewest(files);
-
-            console.log(`Uploading ${latest.file}`);
-
-            const fileBuffer = fs.readFileSync(latest.fullPath);
-
-            const storagePath = `iso/${latest.file}`;
-
-            const { error } = await supabase.storage
-              .from(BUCKET)
-              .upload(storagePath, fileBuffer, {
-              contentType: "application/octet-stream",
-              upsert: true,
-            });
-
-            if (error) {
-              throw error;
-            }
-
-            console.log(`Uploaded ${latest.file} to ${BUCKET}`);
-          }
-
-          main().catch(err => {
-            console.error(err);
-            process.exit(1);
-          });
-          EOF
-
-          node upload-latest-iso.mjs
+          echo "Uploaded $newest_name to $BUCKET"
