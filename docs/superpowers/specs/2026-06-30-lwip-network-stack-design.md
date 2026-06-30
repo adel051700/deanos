@@ -17,7 +17,7 @@ hand-write; and learn how a real third-party stack is ported into a hobby OS.
   `sys_arch` threading layer. Migration to `NO_SYS=0` is possible later but out
   of scope here.
 - **Vendoring:** lwIP as a **git submodule** pinned to release tag
-  **STABLE-2_2_0**.
+  **STABLE-2_2_1_RELEASE**.
 - **DHCP/DNS:** Use lwIP's built-in `dhcp` and `dns` modules; delete the custom
   `dhcp.c`/`dns.c`.
 - **Userland ABI:** Clean up toward **standard fd-based BSD sockets** (option 2),
@@ -127,7 +127,7 @@ Affected files: `kernel/syscall.c`, `libc/unistd/syscalls.c`,
 
 ## Build integration
 
-- Submodule `third_party/lwip/` pinned to **STABLE-2_2_0**.
+- Submodule `third_party/lwip/` pinned to **STABLE-2_2_1_RELEASE**.
 - `Makefile`: include lwIP's `Filelists.mk` for the source list (core, ipv4,
   netif; not the api/ socket layer); add
   `-I third_party/lwip/src/include -I kernel/lwip_port` to `CFLAGS`; compile into

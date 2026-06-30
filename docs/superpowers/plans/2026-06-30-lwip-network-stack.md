@@ -6,14 +6,14 @@
 
 **Architecture:** lwIP is vendored as a git submodule and compiled into the freestanding `-m32` kernel. A thin port layer (`kernel/lwip_port/`) provides `lwipopts.h`, `arch/cc.h`, `sys_now()`, a static lwIP heap, and a `netif` glue that bridges the drivers' `*_send_raw` / `*_set_rx_callback` hooks to lwIP. A single `net_service_tick()` pumps deferred RX and `sys_check_timeouts()` from the scheduler loop. The kernel's `syscall.c` socket layer drives lwIP's raw TCP/UDP API directly (no lwIP socket/netconn layer), implementing blocking via `net_service_tick()` + `task_yield()`.
 
-**Tech Stack:** lwIP STABLE-2_2_0, i686-elf-gcc cross toolchain, freestanding C, QEMU (`-netdev user`) for verification, GRUB ISO.
+**Tech Stack:** lwIP STABLE-2_2_1_RELEASE, i686-elf-gcc cross toolchain, freestanding C, QEMU (`-netdev user`) for verification, GRUB ISO.
 
 ## Global Constraints
 
 - Cross compiler: `/home/adel/opt/cross/bin/i686-elf-gcc` (and `-as`, `-ld`). Target i386, little-endian.
 - All kernel objects compile with: `-O2 -g -ffreestanding -Wall -Wextra -fno-pie -fno-stack-protector -Ikernel/include -Ilibc/include` (plus new lwIP includes). No hosted libc, no stack protector, no PIE.
 - lwIP config: `NO_SYS=1`, `SYS_LIGHTWEIGHT_PROT=0`, `LWIP_NETCONN=0`, `LWIP_SOCKET=0`, `MEM_LIBC_MALLOC=0` (static lwIP heap), IPv6 off.
-- lwIP submodule path: `third_party/lwip/`, pinned to tag `STABLE-2_2_0`.
+- lwIP submodule path: `third_party/lwip/`, pinned to tag `STABLE-2_2_1_RELEASE`.
 - Port layer path: `kernel/lwip_port/`.
 - **No host unit-test harness exists** in this repo (todo.md item 56 is open). "Tests" in this plan are: (a) the kernel **builds clean** (`make` with no new warnings/errors), and (b) **QEMU smoke runs** show expected on-screen/serial output. Each task states the exact build/run command and expected observation. Treat a failing build or missing observation as a red test.
 - Verification QEMU invocations already exist: `make run-net` (e1000) and `make run-net-rtl` (rtl8139).
@@ -63,7 +63,7 @@
 cd /home/adel/desktop/Uni/free_time/deanos
 git submodule add https://github.com/lwip-tcpip/lwip.git third_party/lwip
 git -C third_party/lwip fetch --tags
-git -C third_party/lwip checkout STABLE-2_2_0
+git -C third_party/lwip checkout STABLE-2_2_1_RELEASE
 git add third_party/lwip .gitmodules
 ```
 
@@ -73,7 +73,7 @@ Run:
 ```bash
 ls third_party/lwip/src/Filelists.mk third_party/lwip/src/include/lwip/init.h && git -C third_party/lwip describe --tags
 ```
-Expected: both paths listed, and `describe` prints `STABLE-2_2_0`.
+Expected: both paths listed, and `describe` prints `STABLE-2_2_1_RELEASE`.
 
 - [ ] **Step 3: Ignore lwIP build output**
 
@@ -86,7 +86,7 @@ build/lwip/
 
 ```bash
 git add .gitignore .gitmodules third_party/lwip
-git commit -m "build(net): vendor lwIP STABLE-2_2_0 as submodule"
+git commit -m "build(net): vendor lwIP STABLE-2_2_1_RELEASE as submodule"
 ```
 
 ---
@@ -502,9 +502,12 @@ Wire init: bind driver → `netif_add` → `netif_set_default`/`up` → `dhcp_st
 
 **Files:**
 - Create: `kernel/include/kernel/net_lwip.h`
-- Modify: `kernel/lwip_port/lwip_glue.c` (add `net_lwip_start`, `net_service_tick`)
+- Modify: `kernel/lwip_port/lwip_glue.c` (add `net_lwip_start`, `net_service_tick`, DHCP status callback)
+- Modify: `kernel/lwip_port/deanos_netif.c` (make `deanos_netif_bind_driver` perform the NIC hardware init)
 - Modify: `kernel/kernel.c:55` (call `net_lwip_start` instead of `net_initialize`)
-- Modify: the scheduler/idle loop (confirm location in Step 1) to call `net_service_tick()`
+- Modify: `kernel/task.c` idle thread (`idle_thread`, ~line 347) to call `net_service_tick()`
+
+**CRITICAL — NIC hardware init.** The OLD `net_initialize()` (in `net.c`) is what called `e1000_initialize()` / `rtl8139_initialize()` (net.c:2734/2745) to actually probe PCI and set up the NIC rings. We are no longer calling `net_initialize()`, so **`deanos_netif_bind_driver()` must now perform that hardware init itself** — `e1000_is_ready()` only returns true *after* `e1000_initialize()` has run. See Step 0.
 
 **Interfaces:**
 - Consumes: `deanos_netif_bind_driver()`, `deanos_netif_init()`, `deanos_netif_default()`, `net_lwip_rx_pump()`, `sys_check_timeouts()`, lwIP `netif_add`/`netif_set_default`/`netif_set_up`/`dhcp_start`.
@@ -514,13 +517,34 @@ Wire init: bind driver → `netif_add` → `netif_set_default`/`up` → `dhcp_st
   - `int  net_lwip_is_ready(void)` — link/driver bound.
   - `void net_lwip_get_ipv4(uint8_t out[4])`, `..._netmask`, `..._gateway`, `void net_lwip_get_mac(uint8_t out[6])`, `const char* net_lwip_driver_name(void)`.
 
-- [ ] **Step 1: Find the idle/scheduler loop and the existing poll site**
+- [ ] **Step 0: Make `deanos_netif_bind_driver()` initialize the NIC hardware**
+
+In `kernel/lwip_port/deanos_netif.c`, change `deanos_netif_bind_driver()` so it calls the driver's `*_initialize()` (which performs PCI probe + ring setup and is what makes `*_is_ready()` true), mirroring net.c:2734-2745's probe order. Declare the init functions (they are in `kernel/e1000.h` / `kernel/rtl8139.h` — confirm the exact names; from net.c they are `int e1000_initialize(void)` and `int rtl8139_initialize(void)`, both returning 0 on success):
+```c
+int deanos_netif_bind_driver(void) {
+    if (e1000_initialize() == 0) {
+        g_tx = e1000_send_raw; g_set_rx_cb = e1000_set_rx_callback;
+        g_get_mac = e1000_get_mac; g_link_up = e1000_link_up; g_drv_name = "e1000";
+    } else if (rtl8139_initialize() == 0) {
+        g_tx = rtl8139_send_raw; g_set_rx_cb = rtl8139_set_rx_callback;
+        g_get_mac = rtl8139_get_mac; g_link_up = rtl8139_link_up; g_drv_name = "rtl8139";
+    } else {
+        klog("net: no supported NIC initialized");
+        return -1;
+    }
+    g_set_rx_cb(rx_isr_cb);
+    return 0;
+}
+```
+(Add the `e1000_initialize`/`rtl8139_initialize` prototypes via the existing driver header includes if not already declared.)
+
+- [ ] **Step 1: Confirm the idle thread and the existing poll site**
 
 Run:
 ```bash
-grep -rnE "net_poll|idle|schedule|hlt|while *\(1\)" kernel/task.c kernel/kernel.c kernel/syscall.c | head
+grep -rnE "net_poll|idle_thread|for *\(;;\)|hlt" kernel/task.c kernel/syscall.c | head
 ```
-Expected: identify (a) the idle loop or main kernel loop where `net_service_tick()` should be pumped each iteration, and (b) `kernel/syscall.c:388` where `net_poll(0u)` is called inside `sys_poll` (replace with `net_service_tick()`).
+Expected: confirm (a) `kernel/task.c` `idle_thread()` (~line 347, a `for(;;){ ... hlt }`) is where `net_service_tick()` is pumped each iteration, and (b) `kernel/syscall.c:388` where `net_poll(0u)` is called inside `sys_poll` (replace with `net_service_tick()`).
 
 - [ ] **Step 2: Write `kernel/include/kernel/net_lwip.h`**
 
@@ -554,6 +578,19 @@ Append to `kernel/lwip_port/lwip_glue.c`:
 
 static int g_started = 0;
 
+/* Logs the bound IPv4 to serial (klog mirrors to COM1) so headless QEMU
+   verification has an observable "DHCP got a lease" signal. */
+static void netif_status_cb(struct netif* netif) {
+    char line[64];
+    uint32_t v = ip4_addr_get_u32(netif_ip4_addr(netif));
+    if (v == 0u) return;  /* still 0.0.0.0: not bound yet */
+    /* format "lwip: bound IP a.b.c.d" using the existing printf-family */
+    ksnprintf(line, sizeof(line), "lwip: bound IP %u.%u.%u.%u",
+              (unsigned)(v & 0xff), (unsigned)((v >> 8) & 0xff),
+              (unsigned)((v >> 16) & 0xff), (unsigned)((v >> 24) & 0xff));
+    klog(line);
+}
+
 int net_lwip_start(void) {
     ip4_addr_t any; ip4_addr_set_zero(&any);
     lwip_init();
@@ -561,10 +598,12 @@ int net_lwip_start(void) {
     netif_add(deanos_netif_default(), &any, &any, &any, NULL,
               deanos_netif_init, netif_input);
     netif_set_default(deanos_netif_default());
+    netif_set_status_callback(deanos_netif_default(), netif_status_cb);
     netif_set_up(deanos_netif_default());
     netif_set_link_up(deanos_netif_default());
     dhcp_start(deanos_netif_default());
     g_started = 1;
+    klog("lwip: netif up, dhcp started");
     return 0;
 }
 
@@ -597,29 +636,36 @@ In `kernel/kernel.c` around line 55, replace `(void)net_initialize();` with:
 ```
 Add `#include "include/kernel/net_lwip.h"` near the other includes.
 
-- [ ] **Step 5: Pump the tick from the idle loop and the poll site**
+> Note: `ksnprintf` above is a placeholder for whatever bounded string-format
+> helper exists in this kernel's printf-family. Confirm the real name; if there
+> is no snprintf-style helper, format the IP into the buffer manually (it is
+> just four `uint8_t`s). The point is only to emit one serial line on lease.
 
-In the idle/main loop found in Step 1, add (once per loop iteration, before `hlt`/yield):
-```c
-net_service_tick();
-```
+- [ ] **Step 5: Pump the tick from the idle thread and the poll site**
+
+In `kernel/task.c` `idle_thread()` (~line 347), add `net_service_tick();` inside the `for(;;)` loop, before the `hlt` (add `#include "include/kernel/net_lwip.h"`). This is the background heartbeat that drives DHCP, ARP, and TCP timeouts when no task is blocked in a socket call.
 In `kernel/syscall.c:388`, replace `(void)net_poll(0u);` with `net_service_tick();` and add `#include "include/kernel/net_lwip.h"`.
 
 > Leave the old `net.c` still compiled for now (other `net_*` callers in `shell.c`/`syscall.c` still reference it). Both stacks linked at once is fine as long as only one binds the driver's RX callback — and only lwIP does (`net_lwip_start` registers `rx_isr_cb`; do **not** also call the old `net_initialize`). This is the temporary `USE_LWIP` state.
 
-- [ ] **Step 6: Build and run under QEMU; verify ping**
+- [ ] **Step 6: Headless boot + verify DHCP lease via serial**
 
-Run:
+Build the ISO and boot QEMU headless with serial captured to a file, on a timeout (the kernel keeps running, so the timeout ending the process is expected — we inspect the captured serial log):
 ```bash
-make run-net
+make iso
+timeout 40 qemu-system-i386 -cdrom isos/deanos-*.iso \
+  -netdev user,id=net0 -device e1000,netdev=net0 \
+  -display none -serial file:/tmp/deanos-serial.log 2>/dev/null; \
+echo "--- serial log ---"; cat /tmp/deanos-serial.log
 ```
-In the deanos shell, run the existing ping command against the QEMU gateway:
-```
-net ping 10.0.2.2
-```
-Expected: at least one ICMP echo reply reported (QEMU's user-net gateway is `10.0.2.2`). Also confirm `net ip` (or `net`) shows a DHCP-assigned address in `10.0.2.x` with gateway `10.0.2.2`.
+Expected in `/tmp/deanos-serial.log`:
+- `lwip: netif up, dhcp started`
+- `lwip: bound IP 10.0.2.15` (QEMU user-net hands out `10.0.2.15`; gateway `10.0.2.2`).
+- No kernel panic / triple-fault / reboot loop (the log should not show the boot banner appearing twice).
 
-> If ping still routes through old `net.c` code (it will until Task 9 rewires the shell), instead verify lwIP itself by temporarily adding a one-line debug in `net_service_tick` or checking that `dhcp` assigned an address via lwIP. The authoritative ping-over-lwIP check happens in Task 9; for this task, success = DHCP lease obtained via lwIP (address shows in `10.0.2.15` range) and no crash.
+This is the authoritative milestone for this task: **lwIP obtained a DHCP lease end-to-end through the netif/driver glue.** (Interactive `net ping` from the shell still routes through old `net.c` until Task 10; the human will confirm interactive ping/dns/http at the Task 10 and Task 13 checkpoints.)
+
+> If `lwip: bound IP` never appears but `netif up` does: DHCP isn't completing — check that `net_service_tick()` is actually being pumped (idle thread runs only when no task is READY; confirm the shell isn't busy-spinning) and that the RX path delivers frames. Report findings rather than guessing.
 
 - [ ] **Step 7: Commit**
 
@@ -1571,6 +1617,6 @@ git commit -m "refactor(net): remove hand-rolled network stack (replaced by lwIP
 
 ## Self-Review notes (addressed)
 
-- **Spec coverage:** port layer (Tasks 2–4) ✓; static heap (Task 2 lwipopts) ✓; deferred RX into `netif->input` (Task 4) ✓; single `net_service_tick` pump (Task 5) ✓; DHCP via lwIP + delete `dhcp.c` (Tasks 5, 14) ✓; DNS via lwIP + delete `dns.c` (Tasks 7, 14) ✓; raw API / no lwIP socket layer (Task 2 `LWIP_SOCKET=0`; Tasks 6–8) ✓; socket syscalls rewired (Task 9) ✓; BSD ABI cleanup, drop per-call timeouts, `closesocket` alias, `fcntl`/`O_NONBLOCK` (Task 11) ✓; submodule pinned STABLE-2_2_0 + `Filelists.mk` (Tasks 1, 3) ✓; CI submodule init (Task 12) ✓; incremental ping→DNS→TCP→ABI→delete order ✓; keep NIC drivers (Task 4 reuses `*_send_raw`/`*_set_rx_callback`) ✓.
+- **Spec coverage:** port layer (Tasks 2–4) ✓; static heap (Task 2 lwipopts) ✓; deferred RX into `netif->input` (Task 4) ✓; single `net_service_tick` pump (Task 5) ✓; DHCP via lwIP + delete `dhcp.c` (Tasks 5, 14) ✓; DNS via lwIP + delete `dns.c` (Tasks 7, 14) ✓; raw API / no lwIP socket layer (Task 2 `LWIP_SOCKET=0`; Tasks 6–8) ✓; socket syscalls rewired (Task 9) ✓; BSD ABI cleanup, drop per-call timeouts, `closesocket` alias, `fcntl`/`O_NONBLOCK` (Task 11) ✓; submodule pinned STABLE-2_2_1_RELEASE + `Filelists.mk` (Tasks 1, 3) ✓; CI submodule init (Task 12) ✓; incremental ping→DNS→TCP→ABI→delete order ✓; keep NIC drivers (Task 4 reuses `*_send_raw`/`*_set_rx_callback`) ✓.
 - **Confirm-then-use:** several steps begin with a `grep` to confirm exact symbol names (`pit_get_ms`, `task_yield`, driver `is_ready`/`get_mac`, arg-struct locations) before writing code, because those names were not all verified during planning. Use the confirmed names, not the placeholders.
 - **Type consistency:** `ksock_udp_t`/`ksock_tcp_t` opaque types and their function signatures are defined once (Tasks 6, 8) and consumed unchanged in Task 9; `KSOCK_TCP_WOULDBLOCK` defined in `ksock_tcp.h` and used in both backend and syscall layer.
