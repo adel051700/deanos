@@ -13,8 +13,8 @@ include $(LWIPDIR)/Filelists.mk
 # Filelists.mk exports COREFILES CORE4FILES NETIFFILES (paths under $(LWIPDIR)/...)
 # slipif.c requires sio_send/sio_open/sio_tryread serial stubs we don't provide.
 LWIP_SRCS = $(COREFILES) $(CORE4FILES) $(filter-out $(LWIPDIR)/netif/slipif.c,$(NETIFFILES))
-# Task 4: add kernel/lwip_port/deanos_netif.c here when created
-LWIP_PORT_SRCS = kernel/lwip_port/lwip_glue.c
+LWIP_PORT_SRCS = kernel/lwip_port/lwip_glue.c \
+                 kernel/lwip_port/deanos_netif.c
 LWIP_OBJS = $(patsubst $(LWIP_DIR)/src/%.c,$(LWIP_BUILD_DIR)/%.o,$(LWIP_SRCS))
 LWIP_OBJS += $(patsubst kernel/lwip_port/%.c,$(LWIP_BUILD_DIR)/port/%.o,$(LWIP_PORT_SRCS))
 DESTDIR = isodir
