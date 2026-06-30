@@ -5,6 +5,7 @@
 #include "netif/ethernet.h"
 #include "kernel/e1000.h"     /* found via -Ikernel/include */
 #include "kernel/rtl8139.h"   /* found via -Ikernel/include */
+#include "kernel/log.h"       /* klog() */
 #include <string.h>
 #include <stdint.h>
 
@@ -79,14 +80,17 @@ void net_lwip_rx_pump(void) {
 }
 
 int deanos_netif_bind_driver(void) {
-    /* Mirror the old net_initialize probe order: e1000 first, then rtl8139. */
-    if (e1000_is_ready()) {
+    /* Perform NIC hardware init (PCI probe + ring setup) then bind the driver.
+     * e1000_initialize()/rtl8139_initialize() return 0 on success and make
+     * *_is_ready() true — they must be called before any is_ready() check. */
+    if (e1000_initialize() == 0) {
         g_tx = e1000_send_raw; g_set_rx_cb = e1000_set_rx_callback;
         g_get_mac = e1000_get_mac; g_link_up = e1000_link_up; g_drv_name = "e1000";
-    } else if (rtl8139_is_ready()) {
+    } else if (rtl8139_initialize() == 0) {
         g_tx = rtl8139_send_raw; g_set_rx_cb = rtl8139_set_rx_callback;
         g_get_mac = rtl8139_get_mac; g_link_up = rtl8139_link_up; g_drv_name = "rtl8139";
     } else {
+        klog("net: no supported NIC initialized");
         return -1;
     }
     g_set_rx_cb(rx_isr_cb);

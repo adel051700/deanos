@@ -20,6 +20,7 @@
 #include "include/kernel/mbr.h"
 #include "include/kernel/paging.h"
 #include "include/kernel/net.h"
+#include "include/kernel/net_lwip.h"
 
 #include <stdint.h>
 
@@ -52,7 +53,7 @@ void kernel_main(void) {
     blockdev_initialize();
     mbr_initialize();
     ata_initialize();
-    (void)net_initialize();
+    (void)net_lwip_start();
 
     ata_probe_summary_t ata_summary = {0};
     ata_probe_get_summary(&ata_summary);

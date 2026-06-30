@@ -11,6 +11,7 @@
 #include "include/kernel/vfs.h"
 #include "include/kernel/shell.h"
 #include "include/kernel/net.h"
+#include "include/kernel/net_lwip.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -385,7 +386,7 @@ static long sys_poll(const syscall_poll_args_t* args) {
         if (timeout == 0) return 0;
         if (timeout > 0 && elapsed >= (uint32_t)timeout) return 0;
 
-        (void)net_poll(0u);
+        net_service_tick();
         pit_sleep(10u);
         elapsed += 10u;
     }

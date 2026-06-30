@@ -20,6 +20,7 @@
 #include "include/kernel/vfs.h"
 #include "include/kernel/blockdev.h"
 #include "include/kernel/net.h"
+#include "include/kernel/net_lwip.h"
 #include "../libc/include/string.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -345,7 +346,7 @@ static int task_lazy_elf_install(task_t* t,
 
 static void idle_thread(void) {
     for (;;) {
-        net_worker_step();
+        net_service_tick();
         __asm__ __volatile__("hlt");
     }
 }
@@ -929,6 +930,7 @@ void task_yield(void) {
 void scheduler_tick(void) {
     g_sched_ticks++;
     net_timers_tick(10u);
+    net_service_tick();   /* drive lwIP RX pump + timeouts at 100 Hz */
     blockdev_pump(1);
     wake_blocked_tasks();
 
