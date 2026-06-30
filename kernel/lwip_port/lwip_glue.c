@@ -122,10 +122,51 @@ int net_lwip_start(void) {
     return 0;
 }
 
+/*
+ * Local IRQ save/restore via EFLAGS (pushf/popf).
+ * The kernel exposes only bare interrupts_enable()/interrupts_disable()
+ * (idt.h); those are unsafe here because an unconditional sti on return
+ * from an IRQ-context call would re-enable interrupts prematurely.
+ * A save/restore pair preserves the IF bit exactly as the caller left it.
+ */
+static inline uint32_t local_irq_save(void) {
+    uint32_t flags;
+    __asm__ volatile("pushf; pop %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void local_irq_restore(uint32_t flags) {
+    __asm__ volatile("push %0; popf" :: "r"(flags) : "memory");
+}
+
 void net_service_tick(void) {
+    static volatile int in_tick = 0;
     if (!g_started) return;
+    /*
+     * Reentrancy guard: net_service_tick() is called from BOTH task context
+     * (sys_poll, kernel/syscall.c, interrupts enabled) AND IRQ context
+     * (scheduler_tick, kernel/task.c, PIT IRQ 0, interrupts disabled).
+     * lwIP's raw API is non-reentrant — concurrent entry corrupts pcb lists,
+     * the timeout list, and memp/mem pools.  We atomically test-and-set
+     * in_tick with IRQs disabled so the IRQ-side call bails out immediately
+     * if a task is already mid-pump.
+     *
+     * The IRQ-side call is intentionally kept: the shell busy-spins (hlt+nop
+     * while READY) so the idle thread never runs, making the IRQ pump the
+     * only thing that drives DHCP/ARP/TCP timeouts in the background.
+     *
+     * TODO (Task 10): the cleaner long-term fix is to make the shell
+     * yield/block properly so the idle thread drives the pump exclusively,
+     * at which point the IRQ-context call in scheduler_tick() can be removed.
+     */
+    uint32_t flags = local_irq_save();
+    if (in_tick) { local_irq_restore(flags); return; }
+    in_tick = 1;
+    local_irq_restore(flags);
+
     net_lwip_rx_pump();
     sys_check_timeouts();
+    in_tick = 0;
 }
 
 int net_lwip_is_ready(void) {
