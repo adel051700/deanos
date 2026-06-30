@@ -6,6 +6,17 @@ KERNEL_BUILD_DIR = $(BUILD_DIR)/kernel
 LIBC_BUILD_DIR = $(BUILD_DIR)/libc
 ARCH_BUILD_DIR = $(BUILD_DIR)/arch/i386
 USER_BUILD_DIR = $(BUILD_DIR)/user
+LWIP_BUILD_DIR = $(BUILD_DIR)/lwip
+LWIP_DIR = third_party/lwip
+LWIPDIR = $(LWIP_DIR)/src
+include $(LWIPDIR)/Filelists.mk
+# Filelists.mk exports COREFILES CORE4FILES NETIFFILES (paths under $(LWIPDIR)/...)
+# slipif.c requires sio_send/sio_open/sio_tryread serial stubs we don't provide.
+LWIP_SRCS = $(COREFILES) $(CORE4FILES) $(filter-out $(LWIPDIR)/netif/slipif.c,$(NETIFFILES))
+# Task 4: add kernel/lwip_port/deanos_netif.c here when created
+LWIP_PORT_SRCS = kernel/lwip_port/lwip_glue.c
+LWIP_OBJS = $(patsubst $(LWIP_DIR)/src/%.c,$(LWIP_BUILD_DIR)/%.o,$(LWIP_SRCS))
+LWIP_OBJS += $(patsubst kernel/lwip_port/%.c,$(LWIP_BUILD_DIR)/port/%.o,$(LWIP_PORT_SRCS))
 DESTDIR = isodir
 DATE = $(shell date +%d-%m-%Y)
 MAJOR = 0
@@ -27,7 +38,7 @@ LD = /home/adel/opt/cross/bin/i686-elf-ld
 
 # Includes
 CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra -fno-pie -fno-stack-protector
-CPPFLAGS:=$(CPPFLAGS) -Ikernel/include -Ilibc/include
+CPPFLAGS:=$(CPPFLAGS) -Ikernel/include -Ilibc/include -Ikernel/lwip_port -Ithird_party/lwip/src/include
 LDFLAGS:=$(LDFLAGS) -n -nostdlib
 LIBS:=$(LIBS) -lgcc
 
@@ -89,6 +100,7 @@ LIBC_SRCS = \
 libc/stdio/itoa.c \
 libc/stdio/printf.c \
 libc/stdlib/malloc.c \
+libc/stdlib/atoi.c \
 libc/unistd/syscalls.c \
 libc/netdb/resolve.c \
 libc/string/memset.c \
@@ -110,7 +122,7 @@ USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUI
 USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o
 
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
-ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
+ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LWIP_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
 
 .PHONY: all clean install directories iso run run-net run-net-rtl
 .SUFFIXES: .o .c .s
@@ -138,6 +150,17 @@ directories:
 	@mkdir -p $(LIBC_BUILD_DIR)/string
 	@mkdir -p $(ARCH_BUILD_DIR)/boot
 	@mkdir -p $(USER_BUILD_DIR)
+	@mkdir -p $(LWIP_BUILD_DIR)
+
+# Compile lwIP core source files
+$(LWIP_BUILD_DIR)/%.o: $(LWIP_DIR)/src/%.c | directories
+	@mkdir -p $(dir $@)
+	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS) -Wno-unused-parameter -Wno-address
+
+# Compile lwIP port/glue files (kernel/lwip_port/*.c)
+$(LWIP_BUILD_DIR)/port/%.o: kernel/lwip_port/%.c | directories
+	@mkdir -p $(dir $@)
+	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS) -Wno-unused-parameter
 
 # Compile C files from kernel directory
 $(KERNEL_BUILD_DIR)/%.o: kernel/%.c | directories

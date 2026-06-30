@@ -65,4 +65,10 @@
 /* No OS threads to defer into. */
 #define LWIP_TCPIP_CORE_LOCKING     0
 
+/* ---- Random number source (used by DNS for txid generation) ----
+ * lwip_port_rand() is implemented in lwip_glue.c as a simple LCG.
+ * unsigned int == u32_t on i686. */
+unsigned int lwip_port_rand(void);
+#define LWIP_RAND() lwip_port_rand()
+
 #endif /* LWIP_LWIPOPTS_H */
