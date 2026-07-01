@@ -16,6 +16,10 @@ int  ksock_tcp_send(ksock_tcp_t*, const void* buf, uint16_t len, uint32_t timeou
 int  ksock_tcp_recv(ksock_tcp_t*, void* buf, uint16_t cap, uint16_t* out_len, uint32_t timeout_ms, int nonblock);
 int  ksock_tcp_readable(ksock_tcp_t*);
 int  ksock_tcp_writable(ksock_tcp_t*);
+/* Returns non-zero if a listener has a fully-established connection queued
+ * and waiting to be accepted (i.e. ksock_tcp_accept() would return
+ * immediately without blocking). Only meaningful for listener sockets. */
+int  ksock_tcp_accept_ready(ksock_tcp_t* lst);
 void ksock_tcp_set_nodelay(ksock_tcp_t*, int on);
 ksock_tcp_t* ksock_tcp_listen(uint16_t port, int backlog);
 ksock_tcp_t* ksock_tcp_accept(ksock_tcp_t* listener, uint32_t timeout_ms, int nonblock);

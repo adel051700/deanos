@@ -114,6 +114,10 @@ ksock_tcp_t* ksock_tcp_connect(const uint8_t ip[4], uint16_t port, uint32_t time
 int ksock_tcp_readable(ksock_tcp_t* s) { return s && (s->rx_len > 0 || s->peer_closed); }
 int ksock_tcp_writable(ksock_tcp_t* s) { return s && s->pcb && tcp_sndbuf(s->pcb) > 0; }
 
+int ksock_tcp_accept_ready(ksock_tcp_t* lst) {
+    return lst && lst->is_listener && (lst->acc_tail != lst->acc_head);
+}
+
 void ksock_tcp_set_nodelay(ksock_tcp_t* s, int on) {
     if (!s || !s->pcb) return;
     if (on) tcp_nagle_disable(s->pcb); else tcp_nagle_enable(s->pcb);

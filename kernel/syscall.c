@@ -87,13 +87,15 @@ static int32_t ksock_write(vfs_node_t* node, uint32_t offset, uint32_t size, con
     if (impl->role != KSOCK_ROLE_STREAM_CONN || !impl->tcp) return -1;
     to = impl->nonblock ? 0u : ksock_effective_timeout(impl->snd_timeout_ms, 0u);
     rc = ksock_tcp_send((ksock_tcp_t*)impl->tcp, buffer, (uint16_t)size, to, impl->nonblock);
-    if (rc == (int)size) return (int32_t)size;
-    /* The old stack's client-send helper was all-or-nothing: it looped internally until
-     * every byte was sent, or returned NET_TCP_ERR_WOULD_BLOCK. ksock_tcp_send() can also
-     * return a partial count (0 <= rc < size) if the send buffer fills before size bytes
-     * go out; there is no old-API equivalent for "partial", so collapse both partial and
-     * KSOCK_TCP_WOULDBLOCK into the old WOULD_BLOCK value. */
-    if (rc >= 0 || rc == KSOCK_TCP_WOULDBLOCK) return NET_TCP_ERR_WOULD_BLOCK;
+    /* ksock_tcp_send() commits bytes into lwIP's send buffer (tcp_write +
+     * tcp_output) before returning, so any rc >= 0 -- full or partial -- means
+     * those bytes are already queued to the peer. Reporting WOULD_BLOCK for a
+     * partial send (as the old stack's all-or-nothing helper implied) would
+     * make callers resend from offset 0, duplicating bytes in the stream.
+     * Only report WOULD_BLOCK when truly nothing was sent (KSOCK_TCP_WOULDBLOCK,
+     * a negative value distinct from any non-negative committed count). */
+    if (rc >= 0) return (int32_t)rc;
+    if (rc == KSOCK_TCP_WOULDBLOCK) return NET_TCP_ERR_WOULD_BLOCK;
     return -1;
 }
 
@@ -343,12 +345,12 @@ static short ksock_poll_mask(ksock_node_impl_t* impl, short events) {
         if ((events & KPOLLIN) && ksock_tcp_readable((ksock_tcp_t*)impl->tcp)) revents |= KPOLLIN;
         if ((events & KPOLLOUT) && ksock_tcp_writable((ksock_tcp_t*)impl->tcp)) revents |= KPOLLOUT;
     } else if (impl->role == KSOCK_ROLE_STREAM_LISTENER && impl->tcp) {
-        /* NOTE: ksock_tcp.h exposes no accept-queue-peek; ksock_tcp_readable()
-         * reflects rx_len/peer_closed, which are never set on a listener's
-         * ksock_tcp_t (only accepted connections get tcp_recv wired up). A
-         * listening socket therefore never reports KPOLLIN here even when a
-         * connection is queued -- see task-9-report.md for detail. */
-        if ((events & KPOLLIN) && ksock_tcp_readable((ksock_tcp_t*)impl->tcp)) revents |= KPOLLIN;
+        /* A listener's ksock_tcp_t never gets tcp_recv wired up (only
+         * accepted connections do), so rx_len/peer_closed - and therefore
+         * ksock_tcp_readable() - never reflect a pending connection. Use the
+         * accept-queue accessor instead so KPOLLIN means "accept() would not
+         * block". */
+        if ((events & KPOLLIN) && ksock_tcp_accept_ready((ksock_tcp_t*)impl->tcp)) revents |= KPOLLIN;
     }
     if (impl->shut_rd && (events & KPOLLIN)) revents |= KPOLLHUP;
     return revents;
