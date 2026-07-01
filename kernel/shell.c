@@ -16,14 +16,24 @@
 #include "include/kernel/minfs.h"
 #include "include/kernel/fat32.h"
 #include "include/kernel/paging.h"
-#include "include/kernel/net.h"
-#include "include/kernel/net_dhcp.h"
+/* <unistd.h> must be included before any lwip header below: our libc's
+ * unistd.h typedefs ssize_t as long, but lwip/arch.h (pulled in transitively
+ * by lwip_port headers) typedefs its own ssize_t as int whenever SSIZE_MAX isn't
+ * already defined - a conflicting-types build error. Pre-defining SSIZE_MAX
+ * here makes lwip/arch.h skip its typedef and just re-include <unistd.h>
+ * (a no-op, guarded by _UNISTD_H), so this TU only ever sees the long one. */
+#include <unistd.h>
+#define SSIZE_MAX 0x7fffffffL
+#include "include/kernel/net_lwip.h"
+#include "lwip_port/ksock_dns.h"
+#include "lwip_port/ksock_tcp.h"
+#include "lwip_port/deanos_netif.h"
+#include "lwip/dhcp.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 #define MAX_COMMAND_LENGTH 256
 #define SHELL_HISTORY_SIZE 32
@@ -155,7 +165,7 @@ static const struct shell_command commands[] = {
     {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
     {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
     {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr pages] | vm cow | vm refs"},
-    {"net",    cmd_net,    "Network: net | net netstat | net rxdefer | net timers | net p2 | net dns cache | net test regress|fuzz|stress [count] [seed] | net dhcp [timeout_ms] | net tx | net regs | net ip | net arp | net arping <ip> | net ping <ip> [-c count] [-W timeout_ms] | net tcp http <host> <port> <path>"},
+    {"net",    cmd_net,    "Network: net | net ip | net ping <host|ip> [-c count] [-W timeout_ms] | net dns <hostname> | net tcp http <host> <port> <path> | net dhcp [renew]"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
@@ -2803,34 +2813,25 @@ static void cmd_vm(const char* args) {
 }
 
 static void cmd_net(const char* args) {
-    if (args && strcmp(args, "netstat") == 0) {
-        const netif_t* nif;
+    /* net / net ip: current lwIP interface status */
+    if (!args || *args == '\0' || strcmp(args, "ip") == 0) {
         uint8_t mac[6];
         uint8_t ip[4];
         uint8_t mask[4];
         uint8_t gw[4];
-        net_stats_t st;
-        net_arp_stats_t ast;
-        net_arp_entry_t entries[16];
-        net_tcp_debug_stats_t tcp;
-        uint32_t arp_count;
 
-        net_get_mac(mac);
-        net_get_ipv4(ip);
-        net_get_ipv4_netmask(mask);
-        net_get_ipv4_gateway(gw);
-        net_get_stats(&st);
-        net_get_arp_stats(&ast);
-        net_tcp_get_debug_stats(&tcp);
-        arp_count = net_get_arp_cache(entries, 16u);
-        nif = net_default_netif();
+        net_lwip_get_mac(mac);
+        net_lwip_get_ipv4(ip);
+        net_lwip_get_ipv4_netmask(mask);
+        net_lwip_get_ipv4_gateway(gw);
 
-        terminal_writestring("netstat-lite:\n");
-        terminal_writestring("  driver=");
-        terminal_writestring(net_driver_name());
+        terminal_writestring("net: driver=");
+        terminal_writestring(net_lwip_driver_name());
         terminal_writestring(" link=");
-        terminal_writestring(net_link_up() ? "up" : "down");
-        terminal_writestring(" mac=");
+        terminal_writestring(net_lwip_is_ready() ? "up" : "down");
+        terminal_writestring("\n");
+
+        terminal_writestring("mac: ");
         term_write_hex8(mac[0]); terminal_writestring(":");
         term_write_hex8(mac[1]); terminal_writestring(":");
         term_write_hex8(mac[2]); terminal_writestring(":");
@@ -2839,670 +2840,66 @@ static void cmd_net(const char* args) {
         term_write_hex8(mac[5]);
         terminal_writestring("\n");
 
-        terminal_writestring("  inet=");
+        terminal_writestring("inet=");
         term_write_ipv4(ip);
         terminal_writestring(" mask=");
         term_write_ipv4(mask);
         terminal_writestring(" gw=");
         term_write_ipv4(gw);
         terminal_writestring("\n");
-
-        terminal_writestring("  nic: irq=");
-        term_write_u32(st.interrupts);
-        terminal_writestring(" rx=");
-        term_write_u32(st.rx_packets);
-        terminal_writestring(" tx=");
-        term_write_u32(st.tx_packets);
-        terminal_writestring(" drops=");
-        term_write_u32(st.rx_drops);
-        terminal_writestring("\n");
-
-        if (nif) {
-            terminal_writestring("  netif: flags=0x");
-            term_write_hex8(nif->flags);
-            terminal_writestring(" rx=");
-            term_write_u32(nif->rx_frames);
-            terminal_writestring(" tx=");
-            term_write_u32(nif->tx_frames);
-            terminal_writestring(" drops=");
-            term_write_u32(nif->rx_drops);
-            terminal_writestring(" linkchg=");
-            term_write_u32(nif->link_changes);
-            terminal_writestring("\n");
-        }
-
-        terminal_writestring("  arp: entries=");
-        term_write_u32(arp_count);
-        terminal_writestring(" hit=");
-        term_write_u32(ast.cache_hits);
-        terminal_writestring(" miss=");
-        term_write_u32(ast.cache_misses);
-        terminal_writestring(" rx=");
-        term_write_u32(ast.rx_arp_packets);
-        terminal_writestring(" txreq=");
-        term_write_u32(ast.tx_arp_requests);
-        terminal_writestring(" txrep=");
-        term_write_u32(ast.tx_arp_replies);
-        terminal_writestring("\n");
-
-        if (arp_count > 0u) {
-            terminal_writestring("  arp-cache:\n");
-            for (uint32_t i = 0; i < arp_count; ++i) {
-                terminal_writestring("    ");
-                term_write_ipv4(entries[i].ip);
-                terminal_writestring(" -> ");
-                term_write_hex8(entries[i].mac[0]); terminal_writestring(":");
-                term_write_hex8(entries[i].mac[1]); terminal_writestring(":");
-                term_write_hex8(entries[i].mac[2]); terminal_writestring(":");
-                term_write_hex8(entries[i].mac[3]); terminal_writestring(":");
-                term_write_hex8(entries[i].mac[4]); terminal_writestring(":");
-                term_write_hex8(entries[i].mac[5]);
-                terminal_writestring("\n");
-            }
-        }
-
-        terminal_writestring("  tcp-probe: syn=");
-        term_write_u32(tcp.syn_sent);
-        terminal_writestring(" syn_retx=");
-        term_write_u32(tcp.syn_retx);
-        terminal_writestring(" synack=");
-        term_write_u32(tcp.synack_seen);
-        terminal_writestring(" rst=");
-        term_write_u32(tcp.rst_seen);
-        terminal_writestring(" ok=");
-        term_write_u32(tcp.connect_ok);
-        terminal_writestring(" timeout=");
-        term_write_u32(tcp.connect_timeout);
-        terminal_writestring("\n");
         return;
     }
 
+    /* net dhcp [renew]: lwIP's dhcp_start() already ran at boot (net_lwip_start());
+     * this just reports the current lease, or nudges a renewal. */
     if (args && strncmp(args, "dhcp", 4) == 0 && (args[4] == '\0' || args[4] == ' ')) {
         const char* tok = next_token(args);
-        uint32_t timeout_ms = 6000u;
-        uint8_t mac[6];
-        uint8_t bcast[4] = {255u, 255u, 255u, 255u};
-        uint8_t discover[300];
-        uint8_t request[300];
-        uint8_t response[600];
-        uint8_t from_ip[4];
-        uint8_t offer_ip[4] = {0, 0, 0, 0};
-        uint8_t mask_ip[4] = {255u, 255u, 255u, 0u};
-        uint8_t gw_ip[4] = {0, 0, 0, 0};
-        uint8_t server_id[4] = {0, 0, 0, 0};
-        uint32_t lease_s = 3600u;
-        uint32_t t1_s = 0u;
-        uint32_t t2_s = 0u;
-        net_udp_endpoint_t from;
-        uint32_t xid;
-        uint32_t start_ms;
-        int sock;
 
-        if (tok && *tok) {
-            if (!is_decimal_token(tok)) {
-                terminal_writestring("usage: net dhcp [timeout_ms]\n");
+        if (tok && strcmp(tok, "renew") == 0) {
+            struct netif* nif = deanos_netif_default();
+            if (!nif) {
+                terminal_writestring("net dhcp renew: no netif\n");
                 return;
             }
-            timeout_ms = parse_uint(tok);
-            if (timeout_ms == 0u) timeout_ms = 1u;
-            if (timeout_ms > 30000u) timeout_ms = 30000u;
+            if (dhcp_renew(nif) != ERR_OK) {
+                terminal_writestring("net dhcp renew: failed to start\n");
+                return;
+            }
+            terminal_writestring("net dhcp renew: requested\n");
+            return;
         }
 
-        if (!net_is_ready()) {
+        if (!net_lwip_is_ready()) {
             terminal_writestring("net dhcp: NIC not ready\n");
             return;
         }
 
-        net_get_mac(mac);
-        xid = (uint32_t)pit_get_uptime_ms() ^ 0x44484350u;
-        sock = net_udp_socket_open();
-        if (sock < 0) {
-            terminal_writestring("net dhcp: socket open failed\n");
-            return;
-        }
-        if (net_udp_socket_bind(sock, 68u) < 0) {
-            terminal_writestring("net dhcp: bind 68 failed\n");
-            (void)net_udp_socket_close(sock);
-            return;
-        }
-
-        memset(discover, 0, sizeof(discover));
-        discover[0] = 1u;   /* BOOTREQUEST */
-        discover[1] = 1u;   /* Ethernet */
-        discover[2] = 6u;   /* MAC length */
-        discover[4] = (uint8_t)((xid >> 24) & 0xFFu);
-        discover[5] = (uint8_t)((xid >> 16) & 0xFFu);
-        discover[6] = (uint8_t)((xid >> 8) & 0xFFu);
-        discover[7] = (uint8_t)(xid & 0xFFu);
-        discover[10] = 0x80u; /* broadcast flag */
-        memcpy(discover + 28, mac, 6);
-        discover[236] = 99u;
-        discover[237] = 130u;
-        discover[238] = 83u;
-        discover[239] = 99u;
         {
-            uint16_t off = 240u;
-            discover[off++] = 53u; discover[off++] = 1u; discover[off++] = 1u; /* DISCOVER */
-            discover[off++] = 55u; discover[off++] = 3u; discover[off++] = 1u; discover[off++] = 3u; discover[off++] = 6u;
-            discover[off++] = 255u;
-            if (net_udp_socket_sendto(sock, bcast, 67u, discover, off) != NET_UDP_OK) {
-                terminal_writestring("net dhcp: discover send failed\n");
-                (void)net_udp_socket_close(sock);
-                return;
-            }
-        }
-
-        terminal_writestring("net dhcp: waiting for OFFER...\n");
-        start_ms = (uint32_t)pit_get_uptime_ms();
-        for (;;) {
-            uint32_t elapsed = (uint32_t)pit_get_uptime_ms() - start_ms;
-            uint32_t remain = elapsed >= timeout_ms ? 0u : (timeout_ms - elapsed);
-            uint16_t rx_len = 0;
-            int rx_rc;
-            uint8_t msg_type = 0;
-            uint32_t rx_xid;
-
-            if (remain == 0u) {
-                terminal_writestring("net dhcp: OFFER timeout\n");
-                (void)net_udp_socket_close(sock);
-                return;
-            }
-            if (remain > 500u) remain = 500u;
-
-            rx_rc = net_udp_socket_recvfrom(sock, response, sizeof(response), &rx_len, &from, remain);
-            if (rx_rc == NET_UDP_ERR_WOULD_BLOCK) continue;
-            if (rx_rc < 0 || rx_len < 244u) continue;
-            if (response[0] != 2u || response[1] != 1u || response[2] != 6u) continue;
-
-            rx_xid = ((uint32_t)response[4] << 24) |
-                     ((uint32_t)response[5] << 16) |
-                     ((uint32_t)response[6] << 8) |
-                     (uint32_t)response[7];
-            if (rx_xid != xid) continue;
-            if (response[236] != 99u || response[237] != 130u || response[238] != 83u || response[239] != 99u) continue;
-
-            if (net_dhcp_parse_options(response, rx_len, &msg_type, server_id, mask_ip, gw_ip, &lease_s, &t1_s, &t2_s) != 0) {
-                continue;
-            }
-
-            if (msg_type != 2u) continue;
-            memcpy(offer_ip, response + 16, 4);
-            if ((server_id[0] | server_id[1] | server_id[2] | server_id[3]) == 0u) {
-                memcpy(server_id, from.ip, 4);
-            }
-            break;
-        }
-
-        memset(request, 0, sizeof(request));
-        request[0] = 1u;
-        request[1] = 1u;
-        request[2] = 6u;
-        request[4] = (uint8_t)((xid >> 24) & 0xFFu);
-        request[5] = (uint8_t)((xid >> 16) & 0xFFu);
-        request[6] = (uint8_t)((xid >> 8) & 0xFFu);
-        request[7] = (uint8_t)(xid & 0xFFu);
-        request[10] = 0x80u;
-        memcpy(request + 28, mac, 6);
-        request[236] = 99u;
-        request[237] = 130u;
-        request[238] = 83u;
-        request[239] = 99u;
-        {
-            uint16_t off = 240u;
-            request[off++] = 53u; request[off++] = 1u; request[off++] = 3u; /* REQUEST */
-            request[off++] = 50u; request[off++] = 4u;
-            request[off++] = offer_ip[0]; request[off++] = offer_ip[1]; request[off++] = offer_ip[2]; request[off++] = offer_ip[3];
-            request[off++] = 54u; request[off++] = 4u;
-            request[off++] = server_id[0]; request[off++] = server_id[1]; request[off++] = server_id[2]; request[off++] = server_id[3];
-            request[off++] = 55u; request[off++] = 3u; request[off++] = 1u; request[off++] = 3u; request[off++] = 6u;
-            request[off++] = 255u;
-            if (net_udp_socket_sendto(sock, bcast, 67u, request, off) != NET_UDP_OK) {
-                terminal_writestring("net dhcp: request send failed\n");
-                (void)net_udp_socket_close(sock);
-                return;
-            }
-        }
-
-        terminal_writestring("net dhcp: waiting for ACK...\n");
-        start_ms = (uint32_t)pit_get_uptime_ms();
-        for (;;) {
-            uint32_t elapsed = (uint32_t)pit_get_uptime_ms() - start_ms;
-            uint32_t remain = elapsed >= timeout_ms ? 0u : (timeout_ms - elapsed);
-            uint16_t rx_len = 0;
-            int rx_rc;
-            uint8_t msg_type = 0;
-            uint32_t rx_xid;
-
-            if (remain == 0u) {
-                terminal_writestring("net dhcp: ACK timeout\n");
-                (void)net_udp_socket_close(sock);
-                return;
-            }
-            if (remain > 500u) remain = 500u;
-
-            rx_rc = net_udp_socket_recvfrom(sock, response, sizeof(response), &rx_len, &from, remain);
-            if (rx_rc == NET_UDP_ERR_WOULD_BLOCK) continue;
-            if (rx_rc < 0 || rx_len < 244u) continue;
-            if (response[0] != 2u || response[1] != 1u || response[2] != 6u) continue;
-
-            rx_xid = ((uint32_t)response[4] << 24) |
-                     ((uint32_t)response[5] << 16) |
-                     ((uint32_t)response[6] << 8) |
-                     (uint32_t)response[7];
-            if (rx_xid != xid) continue;
-            if (response[236] != 99u || response[237] != 130u || response[238] != 83u || response[239] != 99u) continue;
-
-            if (net_dhcp_parse_options(response, rx_len, &msg_type, server_id, mask_ip, gw_ip, &lease_s, &t1_s, &t2_s) != 0) {
-                continue;
-            }
-
-            if (msg_type == 6u) {
-                terminal_writestring("net dhcp: NAK received\n");
-                (void)net_udp_socket_close(sock);
-                return;
-            }
-            if (msg_type != 5u) continue;
-            memcpy(from_ip, response + 16, 4);
-            if ((from_ip[0] | from_ip[1] | from_ip[2] | from_ip[3]) != 0u) {
-                memcpy(offer_ip, from_ip, 4);
-            }
-            break;
-        }
-
-        (void)net_udp_socket_close(sock);
-        net_set_ipv4(offer_ip[0], offer_ip[1], offer_ip[2], offer_ip[3]);
-        net_set_ipv4_netmask(mask_ip[0], mask_ip[1], mask_ip[2], mask_ip[3]);
-        if ((gw_ip[0] | gw_ip[1] | gw_ip[2] | gw_ip[3]) != 0u) {
-            net_set_ipv4_gateway(gw_ip[0], gw_ip[1], gw_ip[2], gw_ip[3]);
-        }
-        net_dhcp_client_seed(server_id, offer_ip, mask_ip, gw_ip, lease_s, t1_s, t2_s);
-
-        terminal_writestring("net dhcp: lease acquired ip=");
-        term_write_ipv4(offer_ip);
-        terminal_writestring(" mask=");
-        term_write_ipv4(mask_ip);
-        terminal_writestring(" gw=");
-        term_write_ipv4(gw_ip);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strcmp(args, "regs") == 0) {
-        net_debug_info_t dbg;
-        char buf[24];
-        net_get_debug_info(&dbg);
-
-        terminal_writestring("net regs:\n");
-        terminal_writestring("  pci=");
-        itoa((int)dbg.vendor_id, buf, 16);
-        terminal_writestring(buf);
-        terminal_writestring(":");
-        itoa((int)dbg.device_id, buf, 16);
-        terminal_writestring(buf);
-        terminal_writestring(" io=0x");
-        itoa((int)dbg.io_base, buf, 16);
-        terminal_writestring(buf);
-        terminal_writestring(" irq=");
-        itoa((int)dbg.irq, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring("\n");
-
-        terminal_writestring("  reg_a=0x");
-        itoa((int)dbg.reg_a, buf, 16);
-        terminal_writestring(buf);
-        terminal_writestring(" reg_b=0x");
-        itoa((int)dbg.reg_b, buf, 16);
-        terminal_writestring(buf);
-        terminal_writestring("\n");
-
-        terminal_writestring("  reg_c=0x");
-        itoa((int)dbg.reg_c, buf, 16);
-        terminal_writestring(buf);
-        terminal_writestring(" reg_d=0x");
-        itoa((int)dbg.reg_d, buf, 16);
-        terminal_writestring(buf);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && (strcmp(args, "rxdefer") == 0 || strcmp(args, "dbg rxdefer") == 0)) {
-        net_rx_defer_stats_t st;
-        uint32_t queued_est = 0u;
-
-        net_get_rx_defer_stats(&st);
-        if (st.enqueued > st.dequeued) queued_est = st.enqueued - st.dequeued;
-
-        terminal_writestring("net rxdefer: enq=");
-        term_write_u32(st.enqueued);
-        terminal_writestring(" deq=");
-        term_write_u32(st.dequeued);
-        terminal_writestring(" queued~=");
-        term_write_u32(queued_est);
-        terminal_writestring(" drop_pool=");
-        term_write_u32(st.drop_pool_empty);
-        terminal_writestring(" drop_qfull=");
-        term_write_u32(st.drop_queue_full);
-        terminal_writestring(" drop_oversz=");
-        term_write_u32(st.drop_too_large);
-        terminal_writestring(" drop_inv=");
-        term_write_u32(st.drop_invalid);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strcmp(args, "timers") == 0) {
-        const netif_t* nif = net_default_netif();
-        net_timer_debug_t t;
-        net_p2_stats_t p2;
-
-        net_get_timer_debug(&t);
-        net_get_p2_stats(&p2);
-
-        terminal_writestring("timers: link[");
-        term_write_u32(t.link_refresh_count);
-        terminal_writestring(" refresh, ");
-        term_write_u32(t.link_state_changes);
-        terminal_writestring(" changes, ");
-        term_write_u32(t.link_refresh_period_ms);
-        terminal_writestring("ms]\n");
-
-        terminal_writestring("  dhcp lease=");
-        term_write_u32(t.dhcp_lease_remaining_ms);
-        terminal_writestring(" t1=");
-        term_write_u32(t.dhcp_t1_remaining_ms);
-        terminal_writestring(" t2=");
-        term_write_u32(t.dhcp_t2_remaining_ms);
-        terminal_writestring(" retry=");
-        term_write_u32(t.dhcp_retry_remaining_ms);
-        terminal_writestring(" count=");
-        term_write_u32(t.dhcp_retry_count);
-        terminal_writestring("\n");
-
-        terminal_writestring("  tcp rtx active=");
-        term_write_u32(t.tcp_rtx_active);
-        terminal_writestring(" scans=");
-        term_write_u32(t.tcp_rtx_scans);
-        terminal_writestring(" due=");
-        term_write_u32(t.tcp_rtx_due);
-        terminal_writestring(" sent=");
-        term_write_u32(t.tcp_rtx_sent);
-        terminal_writestring(" timeout=");
-        term_write_u32(t.tcp_rtx_timeout);
-        terminal_writestring("\n");
-
-        terminal_writestring("  ipv4 frag ok=");
-        term_write_u32(p2.ipv4_frag_reasm_ok);
-        terminal_writestring(" drop=");
-        term_write_u32(p2.ipv4_frag_reasm_drop);
-        terminal_writestring("\n");
-
-        if (nif) {
-            terminal_writestring("  netif rx=");
-            term_write_u32(nif->rx_frames);
-            terminal_writestring(" tx=");
-            term_write_u32(nif->tx_frames);
-            terminal_writestring(" drops=");
-            term_write_u32(nif->rx_drops);
-            terminal_writestring(" linkchg=");
-            term_write_u32(nif->link_changes);
-            terminal_writestring("\n");
-        }
-        return;
-    }
-
-    if (args && strcmp(args, "p2") == 0) {
-        net_p2_stats_t p2;
-        net_get_p2_stats(&p2);
-        terminal_writestring("p2: ipv4_bad="); term_write_u32(p2.ipv4_malformed);
-        terminal_writestring(" frag_rx="); term_write_u32(p2.ipv4_frag_rx);
-        terminal_writestring(" frag_ok="); term_write_u32(p2.ipv4_frag_reasm_ok);
-        terminal_writestring(" frag_drop="); term_write_u32(p2.ipv4_frag_reasm_drop);
-        terminal_writestring(" icmp_unr="); term_write_u32(p2.icmp_rx_unreach);
-        terminal_writestring(" icmp_tex="); term_write_u32(p2.icmp_rx_timeex);
-        terminal_writestring(" icmp_parm="); term_write_u32(p2.icmp_rx_param);
-        terminal_writestring("\n");
-
-        terminal_writestring("    dns hit="); term_write_u32(p2.dns_cache_hit);
-        terminal_writestring(" miss="); term_write_u32(p2.dns_cache_miss);
-        terminal_writestring(" neg_hit="); term_write_u32(p2.dns_cache_neg_hit);
-        terminal_writestring(" ins="); term_write_u32(p2.dns_cache_insert);
-        terminal_writestring(" evict="); term_write_u32(p2.dns_cache_evict);
-        terminal_writestring(" retry="); term_write_u32(p2.dns_query_retry);
-        terminal_writestring(" backoff="); term_write_u32(p2.dns_query_backoff);
-        terminal_writestring(" timeout="); term_write_u32(p2.dns_query_timeout);
-        terminal_writestring(" cache_entries="); term_write_u32(net_dns_cache_count());
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strncmp(args, "test ", 5) == 0) {
-        const char* mode = next_token(args);
-        if (!mode) {
-            terminal_writestring("usage: net test regress | net test fuzz [count] [seed] | net test stress [count] [seed]\n");
-            return;
-        }
-
-        if (strncmp(mode, "regress", 7) == 0) {
-            uint8_t f1[34] = {0};
-            uint8_t f2[42] = {0};
             uint8_t ip[4];
-            net_get_ipv4(ip);
+            uint8_t mask[4];
+            uint8_t gw[4];
+            net_lwip_get_ipv4(ip);
+            net_lwip_get_ipv4_netmask(mask);
+            net_lwip_get_ipv4_gateway(gw);
 
-            f1[12] = 0x08; f1[13] = 0x00;
-            f1[14] = 0x44; /* bad IHL */
-            f1[16] = 0x00; f1[17] = 0x14;
-            memcpy(f1 + 30, ip, 4);
-            net_core_input(f1, sizeof(f1));
-
-            f2[12] = 0x08; f2[13] = 0x00;
-            f2[14] = 0x45;
-            f2[16] = 0x00; f2[17] = 0x1C;
-            f2[23] = 17; /* UDP */
-            f2[20] = 0x20; f2[21] = 0x01; /* MF + offset */
-            memcpy(f2 + 30, ip, 4);
-            net_core_input(f2, sizeof(f2));
-
-            terminal_writestring("net test regress: injected malformed/fragment cases\n");
-            return;
-        }
-
-        if (strncmp(mode, "fuzz", 4) == 0 || strncmp(mode, "stress", 6) == 0) {
-            const char* n_tok = next_token(mode);
-            const char* seed_tok = NULL;
-            uint32_t n = 128u;
-            uint32_t seed = 0x1234ABCDu;
-            uint32_t seed_init;
-            char seed_buf[24];
-            uint8_t frame[96];
-
-            if (n_tok && *n_tok) {
-                if (!is_decimal_token(n_tok)) {
-                    terminal_writestring("usage: net test fuzz [count] [seed] | net test stress [count] [seed]\n");
-                    return;
-                }
-                n = parse_uint(n_tok);
-                seed_tok = next_token(n_tok);
-                if (seed_tok && *seed_tok) {
-                    if (!is_decimal_token(seed_tok)) {
-                        terminal_writestring("usage: net test fuzz [count] [seed] | net test stress [count] [seed]\n");
-                        return;
-                    }
-                    seed = parse_uint(seed_tok);
-                }
-            }
-            if (n == 0u) n = 1u;
-            if (n > 10000u) n = 10000u;
-            seed_init = seed;
-
-            for (uint32_t i = 0; i < n; ++i) {
-                uint32_t len = 34u + (seed % 60u);
-                if (len > sizeof(frame)) len = sizeof(frame);
-                for (uint32_t j = 0; j < len; ++j) {
-                    seed = seed * 1664525u + 1013904223u;
-                    frame[j] = (uint8_t)(seed >> 24);
-                }
-                frame[12] = 0x08; frame[13] = 0x00;
-                frame[14] = (uint8_t)(0x40u | (frame[14] & 0x0Fu));
-                net_core_input(frame, (uint16_t)len);
-            }
-
-            terminal_writestring("net test ");
-            terminal_writestring(strncmp(mode, "stress", 6) == 0 ? "stress" : "fuzz");
-            terminal_writestring(": injected frames=");
-            term_write_u32(n);
-            terminal_writestring(" seed=");
-            itoa((int)seed_init, seed_buf, 10);
-            terminal_writestring(seed_buf);
-            terminal_writestring("\n");
-            return;
-        }
-
-        terminal_writestring("usage: net test regress | net test fuzz [count] [seed] | net test stress [count] [seed]\n");
-        return;
-    }
-
-    if (args && strcmp(args, "arp") == 0) {
-        net_arp_entry_t entries[16];
-        net_arp_stats_t ast;
-        uint32_t count;
-
-        net_get_arp_stats(&ast);
-        count = net_get_arp_cache(entries, 16);
-
-        terminal_writestring("arp: cache_entries=");
-        term_write_u32(count);
-        terminal_writestring(" rx=");
-        term_write_u32(ast.rx_arp_packets);
-        terminal_writestring(" req=");
-        term_write_u32(ast.rx_arp_requests);
-        terminal_writestring(" rep=");
-        term_write_u32(ast.rx_arp_replies);
-        terminal_writestring(" txreq=");
-        term_write_u32(ast.tx_arp_requests);
-        terminal_writestring(" txrep=");
-        term_write_u32(ast.tx_arp_replies);
-        terminal_writestring(" hit=");
-        term_write_u32(ast.cache_hits);
-        terminal_writestring(" miss=");
-        term_write_u32(ast.cache_misses);
-        terminal_writestring(" drop=");
-        term_write_u32(ast.dropped_frames);
-        terminal_writestring("\n");
-
-        for (uint32_t i = 0; i < count; ++i) {
-            term_write_ipv4(entries[i].ip);
-            terminal_writestring(" -> ");
-            term_write_hex8(entries[i].mac[0]); terminal_writestring(":");
-            term_write_hex8(entries[i].mac[1]); terminal_writestring(":");
-            term_write_hex8(entries[i].mac[2]); terminal_writestring(":");
-            term_write_hex8(entries[i].mac[3]); terminal_writestring(":");
-            term_write_hex8(entries[i].mac[4]); terminal_writestring(":");
-            term_write_hex8(entries[i].mac[5]);
-            terminal_writestring("\n");
-        }
-        return;
-    }
-
-    if (args && strcmp(args, "ip") == 0) {
-        uint8_t ip[4];
-        net_get_ipv4(ip);
-        terminal_writestring("net ip: ");
-        term_write_ipv4(ip);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strcmp(args, "mask") == 0) {
-        uint8_t mask[4];
-        net_get_ipv4_netmask(mask);
-        terminal_writestring("net mask: ");
-        term_write_ipv4(mask);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strcmp(args, "gw") == 0) {
-        uint8_t gw[4];
-        net_get_ipv4_gateway(gw);
-        terminal_writestring("net gw: ");
-        term_write_ipv4(gw);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strncmp(args, "ip ", 3) == 0) {
-        uint8_t ip[4];
-        const char* tok = next_token(args);
-        if (!tok || parse_ipv4_token(tok, ip) != 0) {
-            terminal_writestring("usage: net ip <a.b.c.d>\n");
-            return;
-        }
-        net_set_ipv4(ip[0], ip[1], ip[2], ip[3]);
-        terminal_writestring("net ip set to ");
-        term_write_ipv4(ip);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strncmp(args, "mask ", 5) == 0) {
-        uint8_t mask[4];
-        const char* tok = next_token(args);
-        if (!tok || parse_ipv4_token(tok, mask) != 0) {
-            terminal_writestring("usage: net mask <a.b.c.d>\n");
-            return;
-        }
-        net_set_ipv4_netmask(mask[0], mask[1], mask[2], mask[3]);
-        terminal_writestring("net mask set to ");
-        term_write_ipv4(mask);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strncmp(args, "gw ", 3) == 0) {
-        uint8_t gw[4];
-        const char* tok = next_token(args);
-        if (!tok || parse_ipv4_token(tok, gw) != 0) {
-            terminal_writestring("usage: net gw <a.b.c.d>\n");
-            return;
-        }
-        net_set_ipv4_gateway(gw[0], gw[1], gw[2], gw[3]);
-        terminal_writestring("net gw set to ");
-        term_write_ipv4(gw);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (args && strncmp(args, "arping ", 7) == 0) {
-        uint8_t ip[4];
-        uint8_t mac[6];
-        const char* tok = next_token(args);
-        if (!tok || parse_ipv4_token(tok, ip) != 0) {
-            terminal_writestring("usage: net arping <a.b.c.d>\n");
-            return;
-        }
-
-        if (net_arp_resolve_retry(ip, mac, 3u, 200u) == 0) {
-            terminal_writestring("arping: ");
+            terminal_writestring("net dhcp: lease ip=");
             term_write_ipv4(ip);
-            terminal_writestring(" is at ");
-            term_write_hex8(mac[0]); terminal_writestring(":");
-            term_write_hex8(mac[1]); terminal_writestring(":");
-            term_write_hex8(mac[2]); terminal_writestring(":");
-            term_write_hex8(mac[3]); terminal_writestring(":");
-            term_write_hex8(mac[4]); terminal_writestring(":");
-            term_write_hex8(mac[5]);
+            terminal_writestring(" mask=");
+            term_write_ipv4(mask);
+            terminal_writestring(" gw=");
+            term_write_ipv4(gw);
             terminal_writestring("\n");
-        } else {
-            terminal_writestring("arping: no reply\n");
         }
         return;
     }
 
+    /* net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms]: blocking
+     * ICMP echo via net_lwip_ping() (raw-ICMP helper in lwip_glue.c). */
     if (args && strncmp(args, "ping ", 5) == 0) {
         uint8_t ip[4];
         char target[128];
         uint32_t count = 1u;
-        uint32_t timeout_ms = 1200u;
+        uint32_t timeout_ms = 1000u;
         uint32_t sent = 0;
         uint32_t recv = 0;
         uint64_t total_rtt = 0;
@@ -3511,23 +2908,18 @@ static void cmd_net(const char* args) {
         const char* tok = next_token(args);
         const char* cursor;
         int saw_pos_count = 0;
-        int until_ok = 0;
         char opt[16];
-        char num[24];
-        if (!tok) {
-            terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U]\n");
+
+        if (!tok || *tok == '\0') {
+            terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms]\n");
             return;
         }
         copy_token(tok, target, sizeof(target));
 
         if (parse_ipv4_token(tok, ip) != 0) {
-            int dns_rc = net_dns_query_a(target, NULL, ip, 2000u);
-            if (dns_rc != NET_DNS_OK) {
+            if (ksock_dns_query_a(target, ip, 5000u) != 0) {
                 terminal_writestring("ping: dns lookup failed host=");
                 terminal_writestring(target);
-                terminal_writestring(" rc=");
-                itoa(dns_rc, num, 10);
-                terminal_writestring(num);
                 terminal_writestring("\n");
                 return;
             }
@@ -3540,7 +2932,7 @@ static void cmd_net(const char* args) {
             if (strcmp(opt, "-c") == 0) {
                 cursor = next_token(cursor);
                 if (!cursor || !*cursor || !is_decimal_token(cursor)) {
-                    terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U]\n");
+                    terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms]\n");
                     return;
                 }
                 count = parse_uint(cursor);
@@ -3551,16 +2943,10 @@ static void cmd_net(const char* args) {
             if (strcmp(opt, "-W") == 0) {
                 cursor = next_token(cursor);
                 if (!cursor || !*cursor || !is_decimal_token(cursor)) {
-                    terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U]\n");
+                    terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms]\n");
                     return;
                 }
                 timeout_ms = parse_uint(cursor);
-                cursor = next_token(cursor);
-                continue;
-            }
-
-            if (strcmp(opt, "-U") == 0) {
-                until_ok = 1;
                 cursor = next_token(cursor);
                 continue;
             }
@@ -3572,7 +2958,7 @@ static void cmd_net(const char* args) {
                 continue;
             }
 
-            terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U]\n");
+            terminal_writestring("usage: net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms]\n");
             return;
         }
 
@@ -3587,21 +2973,17 @@ static void cmd_net(const char* args) {
         term_write_ipv4(ip);
         terminal_writestring("): ");
         term_write_u32(count);
-        if (until_ok) {
-            terminal_writestring(" probe(s, until first reply), timeout=");
-        } else {
-            terminal_writestring(" probe(s), timeout=");
-        }
+        terminal_writestring(" probe(s), timeout=");
         term_write_u32(timeout_ms);
         terminal_writestring("ms\n");
 
-        for (uint32_t i = 0; until_ok || i < count; ++i) {
+        for (uint32_t i = 0; i < count; ++i) {
             uint64_t t0 = pit_get_uptime_ms();
-            int rc = net_ping_ipv4(ip, (uint16_t)(i + 1u), timeout_ms);
+            int rc = net_lwip_ping(ip, (uint16_t)(i + 1u), timeout_ms);
             uint32_t rtt = (uint32_t)(pit_get_uptime_ms() - t0);
             sent++;
 
-            if (rc == NET_PING_OK) {
+            if (rc == 0) {
                 recv++;
                 total_rtt += rtt;
                 if (rtt < min_rtt) min_rtt = rtt;
@@ -3614,23 +2996,6 @@ static void cmd_net(const char* args) {
                 terminal_writestring(" time=");
                 term_write_u32(rtt);
                 terminal_writestring("ms\n");
-                if (until_ok) break;
-            } else if (rc == NET_PING_ERR_ARP_UNRESOLVED) {
-                terminal_writestring("no arp reply: seq=");
-                term_write_u32(i + 1u);
-                terminal_writestring("\n");
-            } else if (rc == NET_PING_ERR_DEST_UNREACH) {
-                terminal_writestring("dest unreachable: seq=");
-                term_write_u32(i + 1u);
-                terminal_writestring("\n");
-            } else if (rc == NET_PING_ERR_TIME_EXCEEDED) {
-                terminal_writestring("time exceeded: seq=");
-                term_write_u32(i + 1u);
-                terminal_writestring("\n");
-            } else if (rc == NET_PING_ERR_TX) {
-                terminal_writestring("tx failed: seq=");
-                term_write_u32(i + 1u);
-                terminal_writestring("\n");
             } else {
                 terminal_writestring("timeout: seq=");
                 term_write_u32(i + 1u);
@@ -3659,186 +3024,59 @@ static void cmd_net(const char* args) {
         return;
     }
 
-    if (args && strncmp(args, "udp ", 4) == 0) {
-        const char* mode = next_token(args);
-        char mode_buf[16];
+    /* net dns <hostname>: resolve via lwIP's DNS client (ksock_dns_query_a). */
+    if (args && strncmp(args, "dns ", 4) == 0) {
+        const char* host_tok = next_token(args);
+        char host[128];
+        uint8_t ip[4];
 
-        if (!mode) {
-            terminal_writestring("usage: net udp self <port> <token>\n");
+        if (!host_tok || *host_tok == '\0') {
+            terminal_writestring("usage: net dns <hostname>\n");
             return;
         }
+        copy_token(host_tok, host, sizeof(host));
 
-        copy_token(mode, mode_buf, sizeof(mode_buf));
-        if (strcmp(mode_buf, "self") != 0) {
-            terminal_writestring("usage: net udp self <port> <token>\n");
+        if (ksock_dns_query_a(host, ip, 5000u) == 0) {
+            terminal_writestring("dns: ");
+            terminal_writestring(host);
+            terminal_writestring(" -> ");
+            term_write_ipv4(ip);
+            terminal_writestring("\n");
+        } else {
+            terminal_writestring("dns: lookup failed host=");
+            terminal_writestring(host);
+            terminal_writestring("\n");
+        }
+        return;
+    }
+
+    /* net tcp http <host|a.b.c.d> <port> <path>: resolve -> connect -> GET -> print body. */
+    if (args && strncmp(args, "tcp ", 4) == 0) {
+        const char* mode = next_token(args);
+
+        if (!mode || strncmp(mode, "http", 4) != 0 || (mode[4] != '\0' && mode[4] != ' ')) {
+            terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path>\n");
             return;
         }
 
         {
-            const char* port_tok = next_token(mode);
-            const char* msg_tok;
-            char msg_buf[96];
-            uint16_t rx_len = 0;
-            uint8_t rx_buf[128];
-            net_udp_endpoint_t from;
-            uint8_t local_ip[4];
-            int sock;
-            int bind_rc;
-            int tx_rc;
-            int rx_rc;
-            uint32_t port;
-            char num[24];
-
-            if (!port_tok || !is_decimal_token(port_tok)) {
-                terminal_writestring("usage: net udp self <port> <token>\n");
-                return;
-            }
-            msg_tok = next_token(port_tok);
-            if (!msg_tok || *msg_tok == '\0') {
-                terminal_writestring("usage: net udp self <port> <token>\n");
-                return;
-            }
-
-            port = parse_uint(port_tok);
-            if (port == 0u || port > 65535u) {
-                terminal_writestring("net udp: invalid port\n");
-                return;
-            }
-            copy_token(msg_tok, msg_buf, sizeof(msg_buf));
-
-            sock = net_udp_socket_open();
-            if (sock < 0) {
-                terminal_writestring("net udp: socket open failed\n");
-                return;
-            }
-
-            bind_rc = net_udp_socket_bind(sock, (uint16_t)port);
-            if (bind_rc < 0) {
-                terminal_writestring("net udp: bind failed rc=");
-                itoa(bind_rc, num, 10);
-                terminal_writestring(num);
-                terminal_writestring("\n");
-                (void)net_udp_socket_close(sock);
-                return;
-            }
-
-            net_get_ipv4(local_ip);
-            tx_rc = net_udp_socket_sendto(sock, local_ip, (uint16_t)port, msg_buf, (uint16_t)strlen(msg_buf));
-            if (tx_rc != NET_UDP_OK) {
-                terminal_writestring("net udp: send failed rc=");
-                itoa(tx_rc, num, 10);
-                terminal_writestring(num);
-                terminal_writestring("\n");
-                (void)net_udp_socket_close(sock);
-                return;
-            }
-
-            rx_rc = net_udp_socket_recvfrom(sock, rx_buf, sizeof(rx_buf) - 1u, &rx_len, &from, 1000u);
-            if (rx_rc < 0 && rx_rc != NET_UDP_ERR_MSG_TRUNC) {
-                terminal_writestring("net udp: recv failed rc=");
-                itoa(rx_rc, num, 10);
-                terminal_writestring(num);
-                terminal_writestring("\n");
-                (void)net_udp_socket_close(sock);
-                return;
-            }
-
-            rx_buf[rx_len] = '\0';
-            terminal_writestring("net udp self ok: from ");
-            term_write_ipv4(from.ip);
-            terminal_writestring(":");
-            term_write_u32((uint32_t)from.port);
-            terminal_writestring(" payload='");
-            terminal_writestring((const char*)rx_buf);
-            terminal_writestring("'\n");
-            (void)net_udp_socket_close(sock);
-            return;
-        }
-    }
-
-    if (args && strncmp(args, "tcp ", 4) == 0) {
-        const char* mode = next_token(args);
-        char mode_buf[16];
-
-        if (!mode) {
-            terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms] | net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
-            return;
-        }
-
-        copy_token(mode, mode_buf, sizeof(mode_buf));
-        if (strcmp(mode_buf, "stats") == 0) {
-            net_tcp_debug_stats_t st;
-            net_tcp_get_debug_stats(&st);
-            terminal_writestring("tcp: syn_sent=");
-            term_write_u32(st.syn_sent);
-            terminal_writestring(" syn_retx=");
-            term_write_u32(st.syn_retx);
-            terminal_writestring(" synack=");
-            term_write_u32(st.synack_seen);
-            terminal_writestring(" rst=");
-            term_write_u32(st.rst_seen);
-            terminal_writestring(" csum_drop=");
-            term_write_u32(st.checksum_drop);
-            terminal_writestring(" tuple_miss=");
-            term_write_u32(st.tuple_miss);
-            terminal_writestring(" ok=");
-            term_write_u32(st.connect_ok);
-            terminal_writestring(" timeout=");
-            term_write_u32(st.connect_timeout);
-            terminal_writestring("\n");
-            if (st.tuple_miss > 0u) {
-                terminal_writestring("tcp: last_miss src=");
-                term_write_ipv4(st.last_miss_src_ip);
-                terminal_writestring(":");
-                term_write_u32(st.last_miss_src_port);
-                terminal_writestring(" dport=");
-                term_write_u32(st.last_miss_dst_port);
-                terminal_writestring(" flags=0x");
-                {
-                    char hx[8];
-                    uint8_t f = st.last_miss_flags;
-                    hx[0] = "0123456789abcdef"[(f >> 4) & 0xFu];
-                    hx[1] = "0123456789abcdef"[f & 0xFu];
-                    hx[2] = '\0';
-                    terminal_writestring(hx);
-                }
-                terminal_writestring(" seq=");
-                term_write_u32(st.last_miss_seq);
-                terminal_writestring(" ack=");
-                term_write_u32(st.last_miss_ack);
-                terminal_writestring("\n");
-                terminal_writestring("tcp: last_miss arrival_ms=");
-                term_write_u32(st.last_miss_arrival_ms);
-                terminal_writestring(" syn_sent_ms=");
-                term_write_u32(st.last_syn_sent_ms);
-                terminal_writestring(" delta_ms=");
-                term_write_u32(st.last_miss_arrival_ms - st.last_syn_sent_ms);
-                terminal_writestring("\n");
-            }
-            return;
-        }
-
-        if (strcmp(mode_buf, "http") == 0) {
             const char* host_tok = next_token(mode);
             const char* port_tok;
             const char* path_tok;
-            const char* cursor;
             char host[128];
             char path[160];
             char req[320];
-            char opt[16];
-            char num[24];
             uint8_t ip[4];
             uint8_t rx[256];
             uint16_t rx_len;
             uint32_t timeout_ms = 5000u;
             uint32_t total = 0u;
             uint32_t port;
-            int sock = -1;
+            ksock_tcp_t* sock;
             int rc;
 
-            if (!host_tok) {
-                terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
+            if (!host_tok || *host_tok == '\0') {
+                terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path>\n");
                 return;
             }
             copy_token(host_tok, host, sizeof(host));
@@ -3846,51 +3084,29 @@ static void cmd_net(const char* args) {
             port_tok = next_token(host_tok);
             path_tok = next_token(port_tok);
             if (!port_tok || !is_decimal_token(port_tok) || !path_tok || *path_tok == '\0') {
-                terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
+                terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path>\n");
                 return;
             }
 
             port = parse_uint(port_tok);
             if (port == 0u || port > 65535u) {
-                terminal_writestring("net tcp: invalid port\n");
+                terminal_writestring("net tcp http: invalid port\n");
                 return;
             }
             copy_token(path_tok, path, sizeof(path));
 
-            cursor = next_token(path_tok);
-            while (cursor && *cursor) {
-                copy_token(cursor, opt, sizeof(opt));
-                if (strcmp(opt, "-W") == 0) {
-                    cursor = next_token(cursor);
-                    if (!cursor || !*cursor || !is_decimal_token(cursor)) {
-                        terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
-                        return;
-                    }
-                    timeout_ms = parse_uint(cursor);
-                    cursor = next_token(cursor);
-                    continue;
-                }
-                terminal_writestring("usage: net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms]\n");
-                return;
-            }
-
             if (parse_ipv4_token(host_tok, ip) != 0) {
-                int dns_rc = net_dns_query_a(host, NULL, ip, timeout_ms);
-                if (dns_rc != NET_DNS_OK) {
-                    terminal_writestring("net tcp http: dns lookup failed rc=");
-                    itoa(dns_rc, num, 10);
-                    terminal_writestring(num);
+                if (ksock_dns_query_a(host, ip, timeout_ms) != 0) {
+                    terminal_writestring("net tcp http: dns lookup failed host=");
+                    terminal_writestring(host);
                     terminal_writestring("\n");
                     return;
                 }
             }
 
-            rc = net_tcp_client_connect(ip, (uint16_t)port, timeout_ms, &sock);
-            if (rc != NET_TCP_OK) {
-                terminal_writestring("net tcp http: connect failed rc=");
-                itoa(rc, num, 10);
-                terminal_writestring(num);
-                terminal_writestring("\n");
+            sock = ksock_tcp_connect(ip, (uint16_t)port, timeout_ms);
+            if (!sock) {
+                terminal_writestring("net tcp http: connect failed\n");
                 return;
             }
 
@@ -3906,298 +3122,38 @@ static void cmd_net(const char* args) {
             strncat(req, path, sizeof(req) - strlen(req) - 1u);
             strncat(req, " HTTP/1.0\r\nHost: ", sizeof(req) - strlen(req) - 1u);
             strncat(req, host, sizeof(req) - strlen(req) - 1u);
-            strncat(req, "\r\nConnection: close\r\n\r\n", sizeof(req) - strlen(req) - 1u);
+            strncat(req, "\r\n\r\n", sizeof(req) - strlen(req) - 1u);
 
-            rc = net_tcp_client_send(sock, req, (uint16_t)strlen(req), timeout_ms);
-            if (rc != NET_TCP_OK) {
-                terminal_writestring("net tcp http: send failed rc=");
-                itoa(rc, num, 10);
-                terminal_writestring(num);
-                terminal_writestring("\n");
-                (void)net_tcp_client_close(sock, 1000u);
+            rc = ksock_tcp_send(sock, req, (uint16_t)strlen(req), timeout_ms, 0);
+            if (rc < 0) {
+                terminal_writestring("net tcp http: send failed\n");
+                ksock_tcp_close(sock);
                 return;
             }
 
             terminal_writestring("net tcp http: response begin\n");
             for (;;) {
-                rc = net_tcp_client_recv(sock, rx, sizeof(rx), &rx_len, timeout_ms);
-                if (rc == NET_TCP_OK) {
-                    if (rx_len > 0u) {
-                        for (uint16_t i = 0; i < rx_len; ++i) terminal_putchar((char)rx[i]);
-                        total += rx_len;
-                    }
+                rc = ksock_tcp_recv(sock, rx, sizeof(rx), &rx_len, timeout_ms, 0);
+                if (rc > 0) {
+                    for (uint16_t i = 0; i < rx_len; ++i) terminal_putchar((char)rx[i]);
+                    total += rx_len;
                     continue;
                 }
-                if (rc == NET_TCP_ERR_CLOSED) break;
-                if (rc == NET_TCP_ERR_WOULD_BLOCK) break;
-                terminal_writestring("\nnet tcp http: recv failed rc=");
-                itoa(rc, num, 10);
-                terminal_writestring(num);
-                terminal_writestring("\n");
+                if (rc == 0) break;                        /* peer closed (FIN) */
+                if (rc == KSOCK_TCP_WOULDBLOCK) break;      /* idle timeout */
+                terminal_writestring("\nnet tcp http: recv failed\n");
                 break;
             }
 
-            (void)net_tcp_client_close(sock, timeout_ms);
+            ksock_tcp_close(sock);
             terminal_writestring("\nnet tcp http: done bytes=");
             term_write_u32(total);
             terminal_writestring("\n");
             return;
         }
-
-        if (strcmp(mode_buf, "connect") != 0) {
-            terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms] | net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms] | net tcp stats\n");
-            return;
-        }
-
-        {
-            const char* host_tok = next_token(mode);
-            const char* port_tok;
-            const char* cursor;
-            char host[128];
-            char opt[16];
-            uint8_t ip[4];
-            uint32_t timeout_ms = 5000u;
-            uint32_t port;
-            int rc;
-            char num[24];
-
-            if (!host_tok) {
-                terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms]\n");
-                return;
-            }
-            copy_token(host_tok, host, sizeof(host));
-
-            port_tok = next_token(host_tok);
-            if (!port_tok || !is_decimal_token(port_tok)) {
-                terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms]\n");
-                return;
-            }
-
-            port = parse_uint(port_tok);
-            if (port == 0u || port > 65535u) {
-                terminal_writestring("net tcp: invalid port\n");
-                return;
-            }
-
-            cursor = next_token(port_tok);
-            while (cursor && *cursor) {
-                copy_token(cursor, opt, sizeof(opt));
-                if (strcmp(opt, "-W") == 0) {
-                    cursor = next_token(cursor);
-                    if (!cursor || !*cursor || !is_decimal_token(cursor)) {
-                        terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms]\n");
-                        return;
-                    }
-                    timeout_ms = parse_uint(cursor);
-                    cursor = next_token(cursor);
-                    continue;
-                }
-
-                terminal_writestring("usage: net tcp connect <host|a.b.c.d> <port> [-W timeout_ms]\n");
-                return;
-            }
-
-            {
-                int host_is_name = (parse_ipv4_token(host_tok, ip) != 0);
-                uint32_t attempts = host_is_name ? 4u : 1u;
-
-                rc = NET_TCP_ERR_TIMEOUT;
-                for (uint32_t a = 0; a < attempts; ++a) {
-                    if (host_is_name) {
-                        int dns_rc = net_dns_query_a(host, NULL, ip, timeout_ms);
-                        if (dns_rc != NET_DNS_OK) {
-                            rc = dns_rc;
-                            break;
-                        }
-                    }
-
-                    terminal_writestring("TCP connect ");
-                    terminal_writestring(host);
-                    terminal_writestring(" (");
-                    term_write_ipv4(ip);
-                    terminal_writestring("):");
-                    term_write_u32(port);
-                    if (host_is_name) {
-                        terminal_writestring(" try=");
-                        term_write_u32(a + 1u);
-                    }
-                    terminal_writestring(" ... ");
-
-                    {
-                        int tcp_sock = -1;
-                        rc = net_tcp_client_connect(ip, (uint16_t)port, timeout_ms == 0u ? 1u : timeout_ms, &tcp_sock);
-                        if (rc == NET_TCP_OK && tcp_sock >= 0) {
-                            (void)net_tcp_client_close(tcp_sock, 1000u);
-                        }
-                    }
-                    if (rc == NET_TCP_OK) {
-                        terminal_writestring("ok\n");
-                        return;
-                    }
-
-                    terminal_writestring("failed rc=");
-                    itoa(rc, num, 10);
-                    terminal_writestring(num);
-                    terminal_writestring("\n");
-
-                    if (!host_is_name) break;
-                }
-
-                if (host_is_name && (rc == NET_DNS_ERR_TIMEOUT || rc == NET_DNS_ERR_FORMAT || rc == NET_DNS_ERR_NOT_FOUND)) {
-                    terminal_writestring("net tcp: dns lookup failed host=");
-                    terminal_writestring(host);
-                    terminal_writestring(" rc=");
-                    itoa(rc, num, 10);
-                    terminal_writestring(num);
-                    terminal_writestring("\n");
-                    return;
-                }
-            }
-            return;
-        }
     }
 
-    if (args && strncmp(args, "dns ", 4) == 0) {
-        const char* host_tok = next_token(args);
-        const char* dns_tok;
-        char host[128];
-        uint8_t dns_server[4];
-        uint8_t resolved_ip[4];
-        int explicit_dns = 0;
-        int rc;
-        char num[24];
-
-        if (!host_tok) {
-            terminal_writestring("usage: net dns <hostname> [dns_server_ip]\n");
-            return;
-        }
-
-        if (strcmp(host_tok, "cache") == 0) {
-            net_dns_cache_debug_entry_t entries[16];
-            uint32_t n = net_dns_cache_dump(entries, 16u);
-            terminal_writestring("dns cache entries=");
-            term_write_u32(n);
-            terminal_writestring("\n");
-            for (uint32_t i = 0; i < n; ++i) {
-                terminal_writestring("  ");
-                terminal_writestring(entries[i].name);
-                terminal_writestring(" -> ");
-                if (entries[i].negative) {
-                    terminal_writestring("<NEG>");
-                } else {
-                    term_write_ipv4(entries[i].ip);
-                }
-                terminal_writestring(" ttl=");
-                term_write_u32(entries[i].ttl_left_ms);
-                terminal_writestring("ms age=");
-                term_write_u32(entries[i].age_ms);
-                terminal_writestring("ms lru=");
-                term_write_u32(entries[i].lru_rank);
-                terminal_writestring("\n");
-            }
-            return;
-        }
-        copy_token(host_tok, host, sizeof(host));
-
-        dns_tok = next_token(host_tok);
-        if (dns_tok && *dns_tok) {
-            if (parse_ipv4_token(dns_tok, dns_server) != 0) {
-                terminal_writestring("usage: net dns <hostname> [dns_server_ip]\n");
-                return;
-            }
-            explicit_dns = 1;
-            rc = net_dns_query_a(host, dns_server, resolved_ip, 2000u);
-        } else {
-            rc = net_dns_query_a(host, NULL, resolved_ip, 2000u);
-        }
-
-        if (rc == NET_DNS_OK) {
-            terminal_writestring("dns: ");
-            terminal_writestring(host);
-            terminal_writestring(" -> ");
-            term_write_ipv4(resolved_ip);
-            terminal_writestring("\n");
-        } else {
-            terminal_writestring("dns: lookup failed rc=");
-            itoa(rc, num, 10);
-            terminal_writestring(num);
-            if (rc == NET_DNS_ERR_TIMEOUT) {
-                terminal_writestring(" server=");
-                if (explicit_dns) {
-                    term_write_ipv4(dns_server);
-                } else {
-                    terminal_writestring("auto(10.0.2.3,10.0.2.2)");
-                }
-            }
-            terminal_writestring("\n");
-        }
-        return;
-    }
-
-    if (!args || *args == '\0' || strcmp(args, "stats") == 0) {
-        if (!net_is_ready()) {
-            terminal_writestring("net: no initialized NIC driver\n");
-            return;
-        }
-
-        uint8_t mac[6];
-        net_stats_t st;
-        char buf[24];
-
-        net_get_mac(mac);
-        net_get_stats(&st);
-
-        terminal_writestring("net: driver=");
-        terminal_writestring(net_driver_name());
-        terminal_writestring(" state=");
-        terminal_writestring(net_link_up() ? "link-up\n" : "link-down\n");
-
-        terminal_writestring("mac: ");
-        term_write_hex8(mac[0]); terminal_writestring(":");
-        term_write_hex8(mac[1]); terminal_writestring(":");
-        term_write_hex8(mac[2]); terminal_writestring(":");
-        term_write_hex8(mac[3]); terminal_writestring(":");
-        term_write_hex8(mac[4]); terminal_writestring(":");
-        term_write_hex8(mac[5]); terminal_writestring("\n");
-
-        terminal_writestring("irqs=");
-        itoa((int)st.interrupts, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(" rx=");
-        itoa((int)st.rx_packets, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(" tx=");
-        itoa((int)st.tx_packets, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(" rxirq=");
-        itoa((int)st.rx_irqs, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(" txirq=");
-        itoa((int)st.tx_irqs, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(" drops=");
-        itoa((int)st.rx_drops, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (strcmp(args, "tx") == 0) {
-        if (!net_is_ready()) {
-            terminal_writestring("net: no initialized NIC driver\n");
-            return;
-        }
-
-        int rc = net_send_test_frame();
-        if (rc == 0) {
-            terminal_writestring("net: queued one test Ethernet frame\n");
-        } else {
-            terminal_writestring("net: tx failed\n");
-        }
-        return;
-    }
-
-    terminal_writestring("usage: net [stats] | net netstat | net rxdefer | net timers | net p2 | net test regress | net test fuzz [count] [seed] | net test stress [count] [seed] | net dhcp [timeout_ms] | net tx | net regs | net ip [a.b.c.d] | net mask [a.b.c.d] | net gw [a.b.c.d] | net arp | net arping <a.b.c.d> | net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] [-U] | net udp self <port> <token> | net tcp connect <host|a.b.c.d> <port> [-W timeout_ms] | net tcp http <host|a.b.c.d> <port> <path> [-W timeout_ms] | net tcp stats | net dns <hostname> [dns_server_ip] | net dns cache\n");
+    terminal_writestring("usage: net [ip] | net ping <host|a.b.c.d> [count] [-c count] [-W timeout_ms] | net dns <hostname> | net tcp http <host|a.b.c.d> <port> <path> | net dhcp [renew]\n");
 }
 
 /* ---- Filesystem commands ----------------------------------------------- */

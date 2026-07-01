@@ -182,3 +182,97 @@ void net_lwip_get_ipv4(uint8_t o[4])         { copy_ip4(o, netif_ip4_addr(deanos
 void net_lwip_get_ipv4_netmask(uint8_t o[4]) { copy_ip4(o, netif_ip4_netmask(deanos_netif_default())); }
 void net_lwip_get_ipv4_gateway(uint8_t o[4]) { copy_ip4(o, netif_ip4_gw(deanos_netif_default())); }
 void net_lwip_get_mac(uint8_t o[6])          { memcpy(o, deanos_netif_default()->hwaddr, 6); }
+
+/* ---- Task 10: minimal blocking ICMP echo (ping) via lwIP raw API ---- */
+
+#include "lwip/raw.h"
+#include "lwip/icmp.h"
+#include "lwip/prot/icmp.h"
+#include "lwip/inet_chksum.h"
+#include "kernel/task.h"
+
+/* Shared between raw_sendto() (this stack frame) and the raw_recv callback
+ * (invoked synchronously from net_lwip_rx_pump() -> netif_input() while we
+ * spin below) — no locking needed since both run on the same task, never
+ * concurrently with each other. */
+typedef struct {
+    volatile int done;
+    volatile int ok;
+    uint16_t id;    /* network byte order, matches what we put on the wire */
+    uint16_t seq;   /* network byte order */
+} ping_wait_t;
+
+static u8_t ping_recv_cb(void* arg, struct raw_pcb* pcb, struct pbuf* p, const ip_addr_t* addr) {
+    ping_wait_t* w = (ping_wait_t*)arg;
+    (void)pcb; (void)addr;
+    if (!p) return 0;
+    {
+        /* Raw IPv4 pcbs receive the pbuf with the IP header still attached
+         * (ip4_input() calls raw_input() before pbuf_remove_header()) —
+         * skip past it via the current-packet's header length rather than
+         * assuming a fixed 20 bytes (IP options are legal, if rare). */
+        u16_t iphdr_len = ip_current_header_tot_len();
+        struct icmp_echo_hdr hdr;
+        if (p->tot_len >= (u16_t)(iphdr_len + sizeof(struct icmp_echo_hdr)) &&
+            pbuf_copy_partial(p, &hdr, sizeof(hdr), iphdr_len) == sizeof(hdr) &&
+            hdr.type == ICMP_ER && hdr.id == w->id && hdr.seqno == w->seq) {
+            w->ok = 1;
+            w->done = 1;
+            pbuf_free(p);
+            return 1;   /* consumed */
+        }
+    }
+    return 0;   /* not ours; let lwIP keep looking / deliver elsewhere */
+}
+
+int net_lwip_ping(const uint8_t ip[4], uint16_t seq, uint32_t timeout_ms) {
+    static uint16_t ping_id_ctr = 0xDE00;
+    struct raw_pcb* pcb;
+    struct pbuf* p;
+    struct icmp_echo_hdr* echo;
+    ip_addr_t dst;
+    ping_wait_t w;
+    uint32_t start;
+    int rc;
+
+    if (!net_lwip_is_ready()) return -1;
+
+    pcb = raw_new(IP_PROTO_ICMP);
+    if (!pcb) return -1;
+    if (raw_bind(pcb, IP_ADDR_ANY) != ERR_OK) { raw_remove(pcb); return -1; }
+
+    IP_ADDR4(&dst, ip[0], ip[1], ip[2], ip[3]);
+
+    memset(&w, 0, sizeof(w));
+    w.id  = lwip_htons(ping_id_ctr++);
+    w.seq = lwip_htons(seq);
+    raw_recv(pcb, ping_recv_cb, &w);
+
+    p = pbuf_alloc(PBUF_IP, sizeof(struct icmp_echo_hdr), PBUF_RAM);
+    if (!p) { raw_remove(pcb); return -1; }
+    echo = (struct icmp_echo_hdr*)p->payload;
+    memset(echo, 0, sizeof(*echo));
+    echo->type   = ICMP_ECHO;
+    echo->code   = 0;
+    echo->id     = w.id;
+    echo->seqno  = w.seq;
+    echo->chksum = 0;
+    echo->chksum = inet_chksum(echo, sizeof(*echo));
+
+    if (raw_sendto(pcb, p, &dst) != ERR_OK) {
+        pbuf_free(p);
+        raw_remove(pcb);
+        return -1;
+    }
+    pbuf_free(p);
+
+    start = (uint32_t)pit_get_uptime_ms();
+    while (!w.done) {
+        if (timeout_ms && (uint32_t)pit_get_uptime_ms() - start >= timeout_ms) break;
+        net_service_tick();
+        task_yield();
+    }
+    rc = w.ok ? 0 : -1;
+    raw_remove(pcb);
+    return rc;
+}
