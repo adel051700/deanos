@@ -19,7 +19,6 @@
 #include "include/kernel/ata.h"
 #include "include/kernel/mbr.h"
 #include "include/kernel/paging.h"
-#include "include/kernel/net.h"
 #include "include/kernel/net_lwip.h"
 
 #include <stdint.h>

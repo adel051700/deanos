@@ -19,7 +19,6 @@
 #include "include/kernel/usermode.h"
 #include "include/kernel/vfs.h"
 #include "include/kernel/blockdev.h"
-#include "include/kernel/net.h"
 #include "include/kernel/net_lwip.h"
 #include "../libc/include/string.h"
 #include <stddef.h>
@@ -929,7 +928,6 @@ void task_yield(void) {
  */
 void scheduler_tick(void) {
     g_sched_ticks++;
-    net_timers_tick(10u);
     net_service_tick();   /* drive lwIP RX pump + timeouts at 100 Hz */
     blockdev_pump(1);
     wake_blocked_tasks();

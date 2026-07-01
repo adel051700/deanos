@@ -72,9 +72,6 @@ kernel/serial.c \
 kernel/blockdev.c \
 kernel/ata.c \
 kernel/mbr.c \
-kernel/net.c \
-kernel/dhcp.c \
-kernel/dns.c \
 kernel/syscall.c \
 kernel/task.c \
 kernel/tss.c \
