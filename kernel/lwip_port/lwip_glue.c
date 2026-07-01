@@ -139,34 +139,43 @@ static inline void local_irq_restore(uint32_t flags) {
     __asm__ volatile("push %0; popf" :: "r"(flags) : "memory");
 }
 
+/* net_lock()/net_unlock(): shared "big net lock" API — see kernel/net_lwip.h
+ * for the full rationale. These simply expose the local IRQ save/restore
+ * pair above so other translation units (ksock_tcp.c, ksock_udp.c,
+ * ksock_dns.c) can serialize their direct lwIP raw-API calls against the
+ * PIT-driven pump below. pushf/popf save the exact IF bit, so nested
+ * net_lock()/net_unlock() pairs (e.g. a callback invoked from inside the
+ * locked pump calling a helper that itself takes the lock) compose safely:
+ * each nested acquire just re-saves IF==0 and the matching release restores
+ * that same state. */
+uint32_t net_lock(void) { return local_irq_save(); }
+void net_unlock(uint32_t flags) { local_irq_restore(flags); }
+
 void net_service_tick(void) {
-    static volatile int in_tick = 0;
+    uint32_t flags;
     if (!g_started) return;
     /*
-     * Reentrancy guard: net_service_tick() is called from BOTH task context
-     * (sys_poll, kernel/syscall.c, interrupts enabled) AND IRQ context
-     * (scheduler_tick, kernel/task.c, PIT IRQ 0, interrupts disabled).
-     * lwIP's raw API is non-reentrant — concurrent entry corrupts pcb lists,
-     * the timeout list, and memp/mem pools.  We atomically test-and-set
-     * in_tick with IRQs disabled so the IRQ-side call bails out immediately
-     * if a task is already mid-pump.
+     * net_service_tick() is called from BOTH task context (sys_poll,
+     * kernel/syscall.c, ksock_* blocking loops — interrupts enabled) AND IRQ
+     * context (scheduler_tick, kernel/task.c, PIT IRQ 0, interrupts already
+     * disabled). lwIP's raw API is non-reentrant — concurrent entry
+     * corrupts pcb lists, the timeout list, and memp/mem pools. Running the
+     * ENTIRE body under net_lock() makes this a complete critical section on
+     * this uniprocessor kernel: the PIT cannot fire mid-pump (no IRQ = no
+     * reentrant pump call) and no task switch can occur mid-pump either, so
+     * the previous in_tick test-and-set flag is no longer needed — it only
+     * ever protected the pump against itself, and full-body IRQ-off now
+     * does that plus far more (it also serializes against every direct
+     * task-context raw-API caller, which in_tick never covered).
      *
      * The IRQ-side call is intentionally kept: the shell busy-spins (hlt+nop
      * while READY) so the idle thread never runs, making the IRQ pump the
      * only thing that drives DHCP/ARP/TCP timeouts in the background.
-     *
-     * TODO (Task 10): the cleaner long-term fix is to make the shell
-     * yield/block properly so the idle thread drives the pump exclusively,
-     * at which point the IRQ-context call in scheduler_tick() can be removed.
      */
-    uint32_t flags = local_irq_save();
-    if (in_tick) { local_irq_restore(flags); return; }
-    in_tick = 1;
-    local_irq_restore(flags);
-
+    flags = net_lock();
     net_lwip_rx_pump();
     sys_check_timeouts();
-    in_tick = 0;
+    net_unlock(flags);
 }
 
 int net_lwip_is_ready(void) {
@@ -233,23 +242,32 @@ int net_lwip_ping(const uint8_t ip[4], uint16_t seq, uint32_t timeout_ms) {
     ip_addr_t dst;
     ping_wait_t w;
     uint32_t start;
+    uint32_t f;
     int rc;
 
     if (!net_lwip_is_ready()) return -1;
 
+    f = net_lock();
     pcb = raw_new(IP_PROTO_ICMP);
-    if (!pcb) return -1;
-    if (raw_bind(pcb, IP_ADDR_ANY) != ERR_OK) { raw_remove(pcb); return -1; }
+    if (!pcb) { net_unlock(f); return -1; }
+    if (raw_bind(pcb, IP_ADDR_ANY) != ERR_OK) { raw_remove(pcb); net_unlock(f); return -1; }
+    net_unlock(f);
 
     IP_ADDR4(&dst, ip[0], ip[1], ip[2], ip[3]);
 
     memset(&w, 0, sizeof(w));
     w.id  = lwip_htons(ping_id_ctr++);
     w.seq = lwip_htons(seq);
-    raw_recv(pcb, ping_recv_cb, &w);
 
+    f = net_lock();
+    raw_recv(pcb, ping_recv_cb, &w);
+    net_unlock(f);
+
+    /* pbuf_alloc/raw_sendto/pbuf_free all touch lwIP's shared pbuf pool and
+     * pcb state — same critical section, no yield inside it. */
+    f = net_lock();
     p = pbuf_alloc(PBUF_IP, sizeof(struct icmp_echo_hdr), PBUF_RAM);
-    if (!p) { raw_remove(pcb); return -1; }
+    if (!p) { raw_remove(pcb); net_unlock(f); return -1; }
     echo = (struct icmp_echo_hdr*)p->payload;
     memset(echo, 0, sizeof(*echo));
     echo->type   = ICMP_ECHO;
@@ -262,17 +280,27 @@ int net_lwip_ping(const uint8_t ip[4], uint16_t seq, uint32_t timeout_ms) {
     if (raw_sendto(pcb, p, &dst) != ERR_OK) {
         pbuf_free(p);
         raw_remove(pcb);
+        net_unlock(f);
         return -1;
     }
     pbuf_free(p);
+    net_unlock(f);
 
     start = (uint32_t)pit_get_uptime_ms();
-    while (!w.done) {
+    for (;;) {
+        int done;
+        f = net_lock();
+        done = w.done;
+        net_unlock(f);
+        if (done) break;
         if (timeout_ms && (uint32_t)pit_get_uptime_ms() - start >= timeout_ms) break;
         net_service_tick();
         task_yield();
     }
+
+    f = net_lock();
     rc = w.ok ? 0 : -1;
     raw_remove(pcb);
+    net_unlock(f);
     return rc;
 }

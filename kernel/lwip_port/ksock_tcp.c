@@ -28,16 +28,24 @@ static err_t on_sent(void* arg, struct tcp_pcb* pcb, u16_t len);
 static void  on_err(void* arg, err_t e);
 static err_t on_connected(void* arg, struct tcp_pcb* pcb, err_t e);
 
+/* alloc_sock(): kmalloc is the kernel's own heap, untouched by the lwIP
+ * pump, so it stays outside the net lock; the tcp_* registration calls
+ * touch the shared pcb and are wrapped. Called both from task context
+ * (ksock_tcp_connect) and from on_accept() (already running inside the
+ * locked pump) — net_lock()/net_unlock() nest safely via pushf/popf either
+ * way. */
 static ksock_tcp_t* alloc_sock(struct tcp_pcb* pcb) {
     ksock_tcp_t* s = (ksock_tcp_t*)kmalloc(sizeof(*s));
     if (!s) return 0;
     memset(s, 0, sizeof(*s));
     s->pcb = pcb;
     if (pcb) {
+        uint32_t f = net_lock();
         tcp_arg(pcb, s);
         tcp_recv(pcb, on_recv);
         tcp_sent(pcb, on_sent);
         tcp_err(pcb, on_err);
+        net_unlock(f);
     }
     return s;
 }
@@ -96,31 +104,71 @@ static void on_err(void* arg, err_t e) {
 ksock_tcp_t* ksock_tcp_connect(const uint8_t ip[4], uint16_t port, uint32_t timeout_ms) {
     ip_addr_t dst; struct tcp_pcb* pcb; ksock_tcp_t* s;
     uint32_t start = (uint32_t)pit_get_uptime_ms();
+    uint32_t f;
+    int connect_failed;
     IP_ADDR4(&dst, ip[0], ip[1], ip[2], ip[3]);
+
+    f = net_lock();
     pcb = tcp_new();
+    net_unlock(f);
     if (!pcb) return 0;
+
     s = alloc_sock(pcb);
-    if (!s) { tcp_abort(pcb); return 0; }
-    if (tcp_connect(pcb, &dst, port, on_connected) != ERR_OK) { ksock_tcp_close(s); return 0; }
-    while (!s->connected && !s->err) {
+    if (!s) { f = net_lock(); tcp_abort(pcb); net_unlock(f); return 0; }
+
+    f = net_lock();
+    connect_failed = (tcp_connect(pcb, &dst, port, on_connected) != ERR_OK);
+    net_unlock(f);
+    if (connect_failed) { ksock_tcp_close(s); return 0; }
+
+    for (;;) {
+        int connected, err;
+        f = net_lock();
+        connected = s->connected;
+        err = s->err;
+        net_unlock(f);
+        if (connected) break;
+        if (err) { ksock_tcp_close(s); return 0; }
         if (timeout_ms && (uint32_t)pit_get_uptime_ms() - start >= timeout_ms) { ksock_tcp_close(s); return 0; }
         net_service_tick();
         task_yield();
     }
-    if (s->err) { ksock_tcp_close(s); return 0; }
     return s;
 }
 
-int ksock_tcp_readable(ksock_tcp_t* s) { return s && (s->rx_len > 0 || s->peer_closed); }
-int ksock_tcp_writable(ksock_tcp_t* s) { return s && s->pcb && tcp_sndbuf(s->pcb) > 0; }
+int ksock_tcp_readable(ksock_tcp_t* s) {
+    int r; uint32_t f;
+    if (!s) return 0;
+    f = net_lock();
+    r = (s->rx_len > 0 || s->peer_closed);
+    net_unlock(f);
+    return r;
+}
+
+int ksock_tcp_writable(ksock_tcp_t* s) {
+    int r; uint32_t f;
+    if (!s) return 0;
+    f = net_lock();
+    r = s->pcb && tcp_sndbuf(s->pcb) > 0;
+    net_unlock(f);
+    return r;
+}
 
 int ksock_tcp_accept_ready(ksock_tcp_t* lst) {
-    return lst && lst->is_listener && (lst->acc_tail != lst->acc_head);
+    int r; uint32_t f;
+    if (!lst || !lst->is_listener) return 0;
+    f = net_lock();
+    r = (lst->acc_tail != lst->acc_head);
+    net_unlock(f);
+    return r;
 }
 
 void ksock_tcp_set_nodelay(ksock_tcp_t* s, int on) {
+    uint32_t f;
     if (!s || !s->pcb) return;
-    if (on) tcp_nagle_disable(s->pcb); else tcp_nagle_enable(s->pcb);
+    f = net_lock();
+    if (s->pcb) { if (on) tcp_nagle_disable(s->pcb); else tcp_nagle_enable(s->pcb); }
+    net_unlock(f);
 }
 
 int ksock_tcp_send(ksock_tcp_t* s, const void* buf, uint16_t len, uint32_t timeout_ms, int nonblock) {
@@ -129,21 +177,31 @@ int ksock_tcp_send(ksock_tcp_t* s, const void* buf, uint16_t len, uint32_t timeo
     const uint8_t* p = (const uint8_t*)buf;
     if (!s || !s->pcb) return -1;
     while (sent < len) {
-        if (s->err) return -1;
-        u16_t space = tcp_sndbuf(s->pcb);
+        uint32_t f;
+        int err;
+        u16_t space;
+        err_t e = ERR_OK;
+        uint16_t chunk = 0;
+
+        f = net_lock();
+        err = s->err;
+        space = err ? 0 : tcp_sndbuf(s->pcb);
+        if (!err && space > 0) {
+            chunk = (uint16_t)((len - sent) < space ? (len - sent) : space);
+            e = tcp_write(s->pcb, p + sent, chunk, TCP_WRITE_FLAG_COPY);
+            if (e == ERR_OK) tcp_output(s->pcb);
+        }
+        net_unlock(f);
+
+        if (err) return -1;
         if (space == 0) {
             if (nonblock) return sent > 0 ? (int)sent : KSOCK_TCP_WOULDBLOCK;
             if (timeout_ms && (uint32_t)pit_get_uptime_ms() - start >= timeout_ms) return sent > 0 ? (int)sent : KSOCK_TCP_WOULDBLOCK;
             net_service_tick(); task_yield(); continue;
         }
-        {
-            u16_t chunk = (uint16_t)((len - sent) < space ? (len - sent) : space);
-            err_t e = tcp_write(s->pcb, p + sent, chunk, TCP_WRITE_FLAG_COPY);
-            if (e == ERR_MEM) { net_service_tick(); task_yield(); continue; }
-            if (e != ERR_OK) return -1;
-            sent += chunk;
-            tcp_output(s->pcb);
-        }
+        if (e == ERR_MEM) { net_service_tick(); task_yield(); continue; }
+        if (e != ERR_OK) return -1;
+        sent += chunk;
     }
     return (int)sent;
 }
@@ -153,9 +211,18 @@ int ksock_tcp_recv(ksock_tcp_t* s, void* buf, uint16_t cap, uint16_t* out_len,
     uint32_t start = (uint32_t)pit_get_uptime_ms();
     if (!s) return -1;
     for (;;) {
-        if (s->rx_len > 0) {
-            uint16_t n = s->rx_len < cap ? (uint16_t)s->rx_len : cap;
+        uint32_t f;
+        uint32_t rx_len;
+        int peer_closed, err;
+        uint16_t n = 0;
+
+        f = net_lock();
+        rx_len = s->rx_len;
+        peer_closed = s->peer_closed;
+        err = s->err;
+        if (rx_len > 0) {
             uint16_t off = 0;
+            n = rx_len < cap ? (uint16_t)rx_len : cap;
             while (off < n) {
                 uint16_t chunk = (uint16_t)(TCP_RXBUF - s->rx_head);
                 if (chunk > (uint16_t)(n - off)) chunk = (uint16_t)(n - off);
@@ -164,11 +231,15 @@ int ksock_tcp_recv(ksock_tcp_t* s, void* buf, uint16_t cap, uint16_t* out_len,
                 off += chunk;
             }
             s->rx_len -= n;
+        }
+        net_unlock(f);
+
+        if (rx_len > 0) {
             if (out_len) *out_len = n;
             return (int)n;
         }
-        if (s->peer_closed) { if (out_len) *out_len = 0; return 0; }
-        if (s->err) return -1;
+        if (peer_closed) { if (out_len) *out_len = 0; return 0; }
+        if (err) return -1;
         if (nonblock) return KSOCK_TCP_WOULDBLOCK;
         if (timeout_ms && (uint32_t)pit_get_uptime_ms() - start >= timeout_ms) { if (out_len) *out_len = 0; return KSOCK_TCP_WOULDBLOCK; }
         net_service_tick(); task_yield();
@@ -198,23 +269,32 @@ static err_t on_accept(void* arg, struct tcp_pcb* newpcb, err_t e) {
 }
 
 ksock_tcp_t* ksock_tcp_listen(uint16_t port, int backlog) {
-    struct tcp_pcb* pcb = tcp_new();
+    struct tcp_pcb* pcb;
     struct tcp_pcb* bound_pcb;
     ksock_tcp_t* s;
-    if (!pcb) return 0;
-    if (tcp_bind(pcb, IP_ANY_TYPE, port) != ERR_OK) { tcp_abort(pcb); return 0; }
+    uint32_t f;
+
+    f = net_lock();
+    pcb = tcp_new();
+    if (!pcb) { net_unlock(f); return 0; }
+    if (tcp_bind(pcb, IP_ANY_TYPE, port) != ERR_OK) { tcp_abort(pcb); net_unlock(f); return 0; }
     /* tcp_listen_with_backlog() frees the original pcb and returns a new one
      * on success, but on failure (NULL) it does NOT free the original pcb -
      * capture it beforehand so we can abort it ourselves. */
     bound_pcb = pcb;
     pcb = tcp_listen_with_backlog(pcb, (u8_t)(backlog > 0 ? backlog : 1));
-    if (!pcb) { tcp_abort(bound_pcb); return 0; }
+    if (!pcb) { tcp_abort(bound_pcb); net_unlock(f); return 0; }
+    net_unlock(f);
+
     s = (ksock_tcp_t*)kmalloc(sizeof(*s));
-    if (!s) { tcp_abort(pcb); return 0; }
+    if (!s) { f = net_lock(); tcp_abort(pcb); net_unlock(f); return 0; }
     memset(s, 0, sizeof(*s));
     s->pcb = pcb; s->is_listener = 1;
+
+    f = net_lock();
     tcp_arg(pcb, s);
     tcp_accept(pcb, on_accept);
+    net_unlock(f);
     return s;
 }
 
@@ -222,11 +302,14 @@ ksock_tcp_t* ksock_tcp_accept(ksock_tcp_t* lst, uint32_t timeout_ms, int nonbloc
     uint32_t start = (uint32_t)pit_get_uptime_ms();
     if (!lst || !lst->is_listener) return 0;
     for (;;) {
+        ksock_tcp_t* s = 0;
+        uint32_t f = net_lock();
         if (lst->acc_tail != lst->acc_head) {
-            ksock_tcp_t* s = lst->acc_q[lst->acc_tail];
+            s = lst->acc_q[lst->acc_tail];
             lst->acc_tail = (lst->acc_tail + 1u) % ACCEPT_Q;
-            return s;
         }
+        net_unlock(f);
+        if (s) return s;
         if (nonblock) return 0;
         if (timeout_ms && (uint32_t)pit_get_uptime_ms() - start >= timeout_ms) return 0;
         net_service_tick(); task_yield();
@@ -234,12 +317,16 @@ ksock_tcp_t* ksock_tcp_accept(ksock_tcp_t* lst, uint32_t timeout_ms, int nonbloc
 }
 
 int ksock_tcp_peer(ksock_tcp_t* s, uint8_t out_ip[4], uint16_t* out_port) {
+    uint32_t f, v;
+    uint16_t port;
     if (!s || !s->pcb) return -1;
-    {
-        uint32_t v = ip4_addr_get_u32(ip_2_ip4(&s->pcb->remote_ip));
-        out_ip[0]=(uint8_t)v; out_ip[1]=(uint8_t)(v>>8); out_ip[2]=(uint8_t)(v>>16); out_ip[3]=(uint8_t)(v>>24);
-        if (out_port) *out_port = s->pcb->remote_port;
-    }
+    f = net_lock();
+    if (!s->pcb) { net_unlock(f); return -1; }
+    v = ip4_addr_get_u32(ip_2_ip4(&s->pcb->remote_ip));
+    port = s->pcb->remote_port;
+    net_unlock(f);
+    out_ip[0]=(uint8_t)v; out_ip[1]=(uint8_t)(v>>8); out_ip[2]=(uint8_t)(v>>16); out_ip[3]=(uint8_t)(v>>24);
+    if (out_port) *out_port = port;
     return 0;
 }
 
@@ -252,17 +339,31 @@ void ksock_tcp_close(ksock_tcp_t* s) {
          * pcbs. Each queue slot holds a distinct ksock_tcp_t with its own
          * pcb (never the listener's pcb and never aliased with another
          * queued entry), so recursing into ksock_tcp_close() per entry is
-         * safe and cannot double-free or touch a pcb freed elsewhere. */
-        while (s->acc_tail != s->acc_head) {
-            ksock_tcp_t* q = s->acc_q[s->acc_tail];
-            s->acc_tail = (s->acc_tail + 1u) % ACCEPT_Q;
+         * safe and cannot double-free or touch a pcb freed elsewhere.
+         * The lock is taken only around the queue-slot read/advance (no
+         * yield anywhere in this function, so nesting into the recursive
+         * ksock_tcp_close() call below — which takes/releases the lock
+         * again for its own raw calls — is safe either way). */
+        for (;;) {
+            ksock_tcp_t* q = 0;
+            uint32_t f = net_lock();
+            if (s->acc_tail != s->acc_head) {
+                q = s->acc_q[s->acc_tail];
+                s->acc_tail = (s->acc_tail + 1u) % ACCEPT_Q;
+            }
+            net_unlock(f);
+            if (!q) break;
             ksock_tcp_close(q);
         }
     }
     if (s->pcb) {
-        tcp_arg(s->pcb, NULL);
-        tcp_recv(s->pcb, NULL); tcp_sent(s->pcb, NULL); tcp_err(s->pcb, NULL);
-        if (tcp_close(s->pcb) != ERR_OK) { tcp_abort(s->pcb); }
+        uint32_t f = net_lock();
+        if (s->pcb) {
+            tcp_arg(s->pcb, NULL);
+            tcp_recv(s->pcb, NULL); tcp_sent(s->pcb, NULL); tcp_err(s->pcb, NULL);
+            if (tcp_close(s->pcb) != ERR_OK) { tcp_abort(s->pcb); }
+        }
+        net_unlock(f);
     }
     kfree(s);
 }
