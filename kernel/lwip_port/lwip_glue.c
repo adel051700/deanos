@@ -103,7 +103,6 @@ static void netif_status_cb(struct netif* netif) {
     *p++ = '.';
     p = fmt_uint(p, (unsigned)((v >> 24) & 0xffu));
     *p = '\0';
-    klog(line);
 }
 
 int net_lwip_start(void) {
@@ -118,7 +117,6 @@ int net_lwip_start(void) {
     netif_set_link_up(deanos_netif_default());
     dhcp_start(deanos_netif_default());
     g_started = 1;
-    klog("lwip: netif up, dhcp started");
     return 0;
 }
 
