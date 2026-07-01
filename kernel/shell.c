@@ -983,7 +983,7 @@ static void cmd_about(const char* args) {
     
     terminal_writestring("DeanOS - A minimal operating system\n");
     terminal_writestring("Created as a learning project\n");
-    terminal_writestring("Version 0.7\n");
+    terminal_writestring("Version 0.8\n");
 }
 
 static void cmd_dean(const char* args) {
