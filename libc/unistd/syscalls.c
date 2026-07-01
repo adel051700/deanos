@@ -195,27 +195,26 @@ int socket(int domain, int type, int protocol) {
 }
 
 int closesocket(int sockfd) {
-    return (int)syscall1(SYS_socket_close, (unsigned)sockfd);
+    return close(sockfd);
 }
 
-int bind(int sockfd, const struct sockaddr_in* addr) {
+int bind(int sockfd, const struct sockaddr_in* addr, socklen_t addrlen) {
     syscall_bind_args_t args;
-    if (!addr) return -1;
+    if (!addr || addrlen != (socklen_t)sizeof(struct sockaddr_in)) return -1;
     args.socket_id = sockfd;
     args.local_port = addr->sin_port;
     return (int)syscall1(SYS_bind, (unsigned)&args);
 }
 
-int connect(int sockfd, const struct sockaddr_in* addr, unsigned timeout_ms) {
+int connect(int sockfd, const struct sockaddr_in* addr, socklen_t addrlen) {
     syscall_connect_args_t args;
-    if (!addr) return -1;
+    if (!addr || addrlen != (socklen_t)sizeof(struct sockaddr_in)) return -1;
     args.socket_fd = sockfd;
     args.dst_ip[0] = addr->sin_addr.s_addr[0];
     args.dst_ip[1] = addr->sin_addr.s_addr[1];
     args.dst_ip[2] = addr->sin_addr.s_addr[2];
     args.dst_ip[3] = addr->sin_addr.s_addr[3];
     args.dst_port = addr->sin_port;
-    args.timeout_ms = timeout_ms;
     return (int)syscall1(SYS_connect, (unsigned)&args);
 }
 
@@ -227,14 +226,13 @@ int listen(int sockfd, int backlog) {
     return (int)syscall1(SYS_listen, (unsigned)&args);
 }
 
-int accept(int sockfd, struct sockaddr_in* addr, unsigned timeout_ms) {
+int accept(int sockfd, struct sockaddr_in* addr, socklen_t* addrlen) {
     syscall_accept_args_t args;
     uint8_t from_ip[4] = {0, 0, 0, 0};
     uint16_t from_port = 0;
     int fd;
 
     args.socket_fd = sockfd;
-    args.timeout_ms = timeout_ms;
     args.out_from_ip = from_ip;
     args.out_from_port = &from_port;
     fd = (int)syscall1(SYS_accept, (unsigned)&args);
@@ -245,21 +243,22 @@ int accept(int sockfd, struct sockaddr_in* addr, unsigned timeout_ms) {
         addr->sin_addr.s_addr[1] = from_ip[1];
         addr->sin_addr.s_addr[2] = from_ip[2];
         addr->sin_addr.s_addr[3] = from_ip[3];
+        if (addrlen) *addrlen = (socklen_t)sizeof(struct sockaddr_in);
     }
     return fd;
 }
 
-ssize_t send(int sockfd, const void* buf, size_t len, unsigned timeout_ms) {
+ssize_t send(int sockfd, const void* buf, size_t len, int flags) {
     syscall_send_args_t args;
     if (!buf && len > 0u) return -1;
     args.socket_fd = sockfd;
     args.payload = buf;
     args.payload_len = (uint32_t)len;
-    args.timeout_ms = timeout_ms;
+    args.flags = (uint32_t)flags;
     return (ssize_t)syscall1(SYS_send, (unsigned)&args);
 }
 
-ssize_t recv(int sockfd, void* buf, size_t len, unsigned timeout_ms) {
+ssize_t recv(int sockfd, void* buf, size_t len, int flags) {
     syscall_recv_args_t args;
     uint16_t out_len = 0;
     long ret;
@@ -267,15 +266,15 @@ ssize_t recv(int sockfd, void* buf, size_t len, unsigned timeout_ms) {
     args.out_payload = buf;
     args.payload_capacity = (uint32_t)len;
     args.out_payload_len = &out_len;
-    args.timeout_ms = timeout_ms;
+    args.flags = (uint32_t)flags;
     ret = syscall1(SYS_recv, (unsigned)&args);
     if (ret >= 0) return (ssize_t)out_len;
     return (ssize_t)ret;
 }
 
-ssize_t sendto(int sockfd, const void* buf, size_t len, const struct sockaddr_in* dest) {
+ssize_t sendto(int sockfd, const void* buf, size_t len, int flags, const struct sockaddr_in* dest, socklen_t addrlen) {
     syscall_sendto_args_t args;
-    if (!dest || (!buf && len > 0u)) return -1;
+    if (!dest || addrlen != (socklen_t)sizeof(struct sockaddr_in) || (!buf && len > 0u)) return -1;
     args.socket_id = sockfd;
     args.dst_ip[0] = dest->sin_addr.s_addr[0];
     args.dst_ip[1] = dest->sin_addr.s_addr[1];
@@ -284,10 +283,11 @@ ssize_t sendto(int sockfd, const void* buf, size_t len, const struct sockaddr_in
     args.dst_port = dest->sin_port;
     args.payload = buf;
     args.payload_len = (uint32_t)len;
+    args.flags = (uint32_t)flags;
     return (ssize_t)syscall1(SYS_sendto, (unsigned)&args);
 }
 
-ssize_t recvfrom(int sockfd, void* buf, size_t len, struct sockaddr_in* src, unsigned timeout_ms) {
+ssize_t recvfrom(int sockfd, void* buf, size_t len, int flags, struct sockaddr_in* src, socklen_t* addrlen) {
     syscall_recvfrom_args_t args;
     uint16_t out_len = 0;
     uint8_t from_ip[4] = {0, 0, 0, 0};
@@ -300,7 +300,7 @@ ssize_t recvfrom(int sockfd, void* buf, size_t len, struct sockaddr_in* src, uns
     args.out_payload_len = &out_len;
     args.out_from_ip = from_ip;
     args.out_from_port = &from_port;
-    args.timeout_ms = timeout_ms;
+    args.flags = (uint32_t)flags;
 
     ret = syscall1(SYS_recvfrom, (unsigned)&args);
     if (ret >= 0 && src) {
@@ -310,6 +310,7 @@ ssize_t recvfrom(int sockfd, void* buf, size_t len, struct sockaddr_in* src, uns
         src->sin_addr.s_addr[1] = from_ip[1];
         src->sin_addr.s_addr[2] = from_ip[2];
         src->sin_addr.s_addr[3] = from_ip[3];
+        if (addrlen) *addrlen = (socklen_t)sizeof(struct sockaddr_in);
     }
     return (ssize_t)ret;
 }

@@ -51,8 +51,7 @@ typedef struct ksock_node_impl {
 
 #define KSOCK_DEFAULT_TIMEOUT_MS 2000u
 
-static uint32_t ksock_effective_timeout(uint32_t impl_timeout_ms, uint32_t override_ms) {
-    if (override_ms != 0u) return override_ms;
+static uint32_t ksock_effective_timeout(uint32_t impl_timeout_ms) {
     if (impl_timeout_ms != 0u) return impl_timeout_ms;
     return KSOCK_DEFAULT_TIMEOUT_MS;
 }
@@ -68,7 +67,7 @@ static int32_t ksock_read(vfs_node_t* node, uint32_t offset, uint32_t size, uint
     if (!impl || impl->magic != KSOCK_NODE_MAGIC) return -1;
     if (impl->shut_rd) return 0;
     if (impl->role != KSOCK_ROLE_STREAM_CONN || !impl->tcp) return -1;
-    to = impl->nonblock ? 0u : ksock_effective_timeout(impl->rcv_timeout_ms, 0u);
+    to = impl->nonblock ? 0u : ksock_effective_timeout(impl->rcv_timeout_ms);
     rc = ksock_tcp_recv((ksock_tcp_t*)impl->tcp, buffer, (uint16_t)size, &out_len, to, impl->nonblock);
     if (rc >= 0) return (int32_t)out_len;              /* 0 => peer closed, same as old NET_TCP_ERR_CLOSED -> 0 */
     if (rc == KSOCK_TCP_WOULDBLOCK) return NET_TCP_ERR_WOULD_BLOCK; /* preserve old ksock_read's verbatim rc pass-through */
@@ -85,7 +84,7 @@ static int32_t ksock_write(vfs_node_t* node, uint32_t offset, uint32_t size, con
     if (!impl || impl->magic != KSOCK_NODE_MAGIC) return -1;
     if (impl->shut_wr) return -1;
     if (impl->role != KSOCK_ROLE_STREAM_CONN || !impl->tcp) return -1;
-    to = impl->nonblock ? 0u : ksock_effective_timeout(impl->snd_timeout_ms, 0u);
+    to = impl->nonblock ? 0u : ksock_effective_timeout(impl->snd_timeout_ms);
     rc = ksock_tcp_send((ksock_tcp_t*)impl->tcp, buffer, (uint16_t)size, to, impl->nonblock);
     /* ksock_tcp_send() commits bytes into lwIP's send buffer (tcp_write +
      * tcp_output) before returning, so any rc >= 0 -- full or partial -- means
@@ -653,7 +652,9 @@ static long sys_connect(const syscall_connect_args_t* args) {
     if (!impl) return -1;
     if (impl->role == KSOCK_ROLE_STREAM_LISTENER || impl->role == KSOCK_ROLE_DGRAM) return -1;
     if (impl->role == KSOCK_ROLE_STREAM_CONN) return NET_TCP_ERR_ALREADY;
-    timeout = ksock_effective_timeout(impl->snd_timeout_ms, args->timeout_ms);
+    /* No per-call timeout in the standard ABI: derive from SO_SNDTIMEO (falling
+     * back to KSOCK_DEFAULT_TIMEOUT_MS), same as send()/recv(). */
+    timeout = ksock_effective_timeout(impl->snd_timeout_ms);
     c = ksock_tcp_connect(args->dst_ip, args->dst_port, timeout);
     /* ksock_tcp_connect() collapses every failure mode (ARP, TX, no-sockets, timeout)
      * into a NULL return. NET_TCP_ERR_TIMEOUT is the old code's most common failure
@@ -663,10 +664,6 @@ static long sys_connect(const syscall_connect_args_t* args) {
     impl->tcp = c;
     if (impl->tcp_flags & KSOCK_T_NODELAY) ksock_tcp_set_nodelay(c, 1);
     /* keepalive: ksock_tcp.h exposes no hook; flag remains stored only (see setsockopt). */
-    if (args->timeout_ms != 0u) {
-        impl->rcv_timeout_ms = args->timeout_ms;
-        impl->snd_timeout_ms = args->timeout_ms;
-    }
     return 0;
 }
 
@@ -696,7 +693,7 @@ static long sys_accept(const syscall_accept_args_t* args) {
     impl = ksock_impl_from_fd(args->socket_fd);
     if (!impl || impl->role != KSOCK_ROLE_STREAM_LISTENER || !impl->tcp) return -1;
     timeout = impl->nonblock ? 0u
-                             : ksock_effective_timeout(impl->rcv_timeout_ms, args->timeout_ms);
+                             : ksock_effective_timeout(impl->rcv_timeout_ms);
     c = ksock_tcp_accept((ksock_tcp_t*)impl->tcp, timeout, impl->nonblock);
     /* ksock_tcp_accept() returns NULL uniformly for timeout, nonblock-empty, and no
      * pending connection -- exactly the case the old code signalled with
@@ -727,21 +724,31 @@ static long sys_accept(const syscall_accept_args_t* args) {
 
 static long sys_send(const syscall_send_args_t* args) {
     ksock_node_impl_t* impl;
+    uint8_t saved_nonblock;
+    long rc;
     if (!args || (!args->payload && args->payload_len > 0u)) return -1;
     impl = ksock_impl_from_fd(args->socket_fd);
     if (!impl || impl->role != KSOCK_ROLE_STREAM_CONN) return -1;
-    if (args->timeout_ms != 0u) impl->snd_timeout_ms = args->timeout_ms;
-    return (long)vfs_fd_write(args->socket_fd, (const uint8_t*)args->payload, args->payload_len);
+    /* vfs_fd_write() -> ksock_write() derives blocking purely from impl->nonblock;
+     * honor a per-call MSG_DONTWAIT by flipping it for just this call. */
+    saved_nonblock = impl->nonblock;
+    if (args->flags & KMSG_DONTWAIT) impl->nonblock = 1;
+    rc = (long)vfs_fd_write(args->socket_fd, (const uint8_t*)args->payload, args->payload_len);
+    impl->nonblock = saved_nonblock;
+    return rc;
 }
 
 static long sys_recv(const syscall_recv_args_t* args) {
     ksock_node_impl_t* impl;
+    uint8_t saved_nonblock;
     int32_t n;
     if (!args || (!args->out_payload && args->payload_capacity > 0u)) return -1;
     impl = ksock_impl_from_fd(args->socket_fd);
     if (!impl || impl->role != KSOCK_ROLE_STREAM_CONN) return -1;
-    if (args->timeout_ms != 0u) impl->rcv_timeout_ms = args->timeout_ms;
+    saved_nonblock = impl->nonblock;
+    if (args->flags & KMSG_DONTWAIT) impl->nonblock = 1;
     n = vfs_fd_read(args->socket_fd, (uint8_t*)args->out_payload, args->payload_capacity);
+    impl->nonblock = saved_nonblock;
     if (n >= 0 && args->out_payload_len) *args->out_payload_len = (uint16_t)n;
     return n;
 }
@@ -753,6 +760,7 @@ static long sys_sendto(const syscall_sendto_args_t* args) {
     impl = ksock_impl_from_fd(args->socket_id);
     if (!impl || impl->role != KSOCK_ROLE_DGRAM || !impl->udp) return -1;
     if (impl->shut_wr) return -1;
+    /* args->flags (e.g. MSG_DONTWAIT) has no effect: ksock_udp_sendto() never blocks. */
     rc = ksock_udp_sendto((ksock_udp_t*)impl->udp,
                           args->dst_ip,
                           args->dst_port,
@@ -770,6 +778,7 @@ static long sys_recvfrom(const syscall_recvfrom_args_t* args) {
     uint16_t from_port = 0u;
     uint16_t out_len = 0;
     uint32_t timeout;
+    int force_nonblock;
     int rc;
 
     if (!args) return -1;
@@ -780,15 +789,15 @@ static long sys_recvfrom(const syscall_recvfrom_args_t* args) {
         return 0;
     }
 
-    timeout = impl->nonblock ? 0u
-                             : ksock_effective_timeout(impl->rcv_timeout_ms, args->timeout_ms);
+    force_nonblock = (impl->nonblock || (args->flags & KMSG_DONTWAIT)) ? 1 : 0;
+    timeout = force_nonblock ? 0u : ksock_effective_timeout(impl->rcv_timeout_ms);
 
     rc = ksock_udp_recvfrom((ksock_udp_t*)impl->udp,
                             args->out_payload,
                             (uint16_t)args->payload_capacity,
                             &out_len,
                             from_ip, &from_port,
-                            timeout, impl->nonblock);
+                            timeout, force_nonblock);
     /* ksock_udp_recvfrom() returns 0 uniformly for timeout/would-block/nonblock-empty
      * (per its header contract) and -1 only for a null socket; map both to the old
      * NET_UDP_ERR_WOULD_BLOCK value used for the (overwhelmingly common) timeout case.

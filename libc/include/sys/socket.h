@@ -26,21 +26,26 @@ extern "C" {
 
 #define TCP_NODELAY 1
 
+/* recv/send/sendto/recvfrom flags */
+#define MSG_DONTWAIT 0x40
+
 typedef uint32_t socklen_t;
 
 int socket(int domain, int type, int protocol);
-int closesocket(int sockfd);
-int bind(int sockfd, const struct sockaddr_in* addr);
-int connect(int sockfd, const struct sockaddr_in* addr, unsigned timeout_ms);
+int bind(int sockfd, const struct sockaddr_in* addr, socklen_t addrlen);
+int connect(int sockfd, const struct sockaddr_in* addr, socklen_t addrlen);
 int listen(int sockfd, int backlog);
-int accept(int sockfd, struct sockaddr_in* addr, unsigned timeout_ms);
-ssize_t send(int sockfd, const void* buf, size_t len, unsigned timeout_ms);
-ssize_t recv(int sockfd, void* buf, size_t len, unsigned timeout_ms);
-ssize_t sendto(int sockfd, const void* buf, size_t len, const struct sockaddr_in* dest);
-ssize_t recvfrom(int sockfd, void* buf, size_t len, struct sockaddr_in* src, unsigned timeout_ms);
+int accept(int sockfd, struct sockaddr_in* addr, socklen_t* addrlen);
+ssize_t send(int sockfd, const void* buf, size_t len, int flags);
+ssize_t recv(int sockfd, void* buf, size_t len, int flags);
+ssize_t sendto(int sockfd, const void* buf, size_t len, int flags, const struct sockaddr_in* dest, socklen_t addrlen);
+ssize_t recvfrom(int sockfd, void* buf, size_t len, int flags, struct sockaddr_in* src, socklen_t* addrlen);
 int shutdown(int sockfd, int how);
 int setsockopt(int sockfd, int level, int optname, const void* optval, socklen_t optlen);
 int getsockopt(int sockfd, int level, int optname, void* optval, socklen_t* optlen);
+
+/* Deprecated alias kept for one transition; prefer close(). */
+int closesocket(int sockfd);
 
 #ifdef __cplusplus
 }

@@ -7,21 +7,11 @@ extern "C" {
 #endif
 typedef long ssize_t;
 
-#define AF_INET 2
-#define SOCK_STREAM 1
-#define SOCK_DGRAM 2
-#define IPPROTO_TCP 6
-#define IPPROTO_UDP 17
-
-struct in_addr {
-	uint8_t s_addr[4];
-};
-
-struct sockaddr_in {
-	uint16_t sin_family;
-	uint16_t sin_port;
-	struct in_addr sin_addr;
-};
+/* Legacy note: socket()/bind()/connect()/... used to be declared here with
+ * ad hoc struct in_addr/sockaddr_in copies. That duplicated (and, after the
+ * Task 11 ABI cleanup, conflicted with) the canonical declarations in
+ * <sys/socket.h> and <netinet/in.h>. Callers needing sockets should include
+ * <sys/socket.h> directly, per standard practice. */
 
 ssize_t read(int fd, void* buf, size_t count);
 ssize_t write(int fd, const void* buf, size_t count);
@@ -47,16 +37,6 @@ int tcsetpgrp(int fd, int pgrp);
 int tcgetpgrp(int fd);
 int chmod(const char* path, uint16_t mode);
 int chown(const char* path, uint32_t uid, uint32_t gid);
-int socket(int domain, int type, int protocol);
-int closesocket(int sockfd);
-int bind(int sockfd, const struct sockaddr_in* addr);
-int connect(int sockfd, const struct sockaddr_in* addr, unsigned timeout_ms);
-int listen(int sockfd, int backlog);
-int accept(int sockfd, struct sockaddr_in* addr, unsigned timeout_ms);
-ssize_t send(int sockfd, const void* buf, size_t len, unsigned timeout_ms);
-ssize_t recv(int sockfd, void* buf, size_t len, unsigned timeout_ms);
-ssize_t sendto(int sockfd, const void* buf, size_t len, const struct sockaddr_in* dest);
-ssize_t recvfrom(int sockfd, void* buf, size_t len, struct sockaddr_in* src, unsigned timeout_ms);
 #ifdef __cplusplus
 }
 #endif

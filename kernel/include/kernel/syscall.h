@@ -78,6 +78,9 @@ enum {
 /* TCP-level options */
 #define KTCP_NODELAY 1
 
+/* send/recv/recvfrom flags (subset understood by the kernel) */
+#define KMSG_DONTWAIT 0x40
+
 #define KSOCK_AF_INET      2u
 #define KSOCK_SOCK_STREAM  1u
 #define KSOCK_SOCK_DGRAM   2u
@@ -120,6 +123,7 @@ typedef struct syscall_sendto_args {
     uint16_t dst_port;
     const void* payload;
     uint32_t payload_len;
+    uint32_t flags;       /* accepted for ABI parity (e.g. MSG_DONTWAIT); UDP tx never blocks */
 } syscall_sendto_args_t;
 
 typedef struct syscall_recvfrom_args {
@@ -129,14 +133,13 @@ typedef struct syscall_recvfrom_args {
     uint16_t* out_payload_len;
     uint8_t* out_from_ip;
     uint16_t* out_from_port;
-    uint32_t timeout_ms;
+    uint32_t flags;       /* MSG_DONTWAIT forces this call nonblocking */
 } syscall_recvfrom_args_t;
 
 typedef struct syscall_connect_args {
     int32_t socket_fd;
     uint8_t dst_ip[4];
     uint16_t dst_port;
-    uint32_t timeout_ms;
 } syscall_connect_args_t;
 
 typedef struct syscall_listen_args {
@@ -146,7 +149,6 @@ typedef struct syscall_listen_args {
 
 typedef struct syscall_accept_args {
     int32_t socket_fd;
-    uint32_t timeout_ms;
     uint8_t* out_from_ip;
     uint16_t* out_from_port;
 } syscall_accept_args_t;
@@ -155,7 +157,7 @@ typedef struct syscall_send_args {
     int32_t socket_fd;
     const void* payload;
     uint32_t payload_len;
-    uint32_t timeout_ms;
+    uint32_t flags;       /* MSG_DONTWAIT forces this call nonblocking */
 } syscall_send_args_t;
 
 typedef struct syscall_recv_args {
@@ -163,7 +165,7 @@ typedef struct syscall_recv_args {
     void* out_payload;
     uint32_t payload_capacity;
     uint16_t* out_payload_len;
-    uint32_t timeout_ms;
+    uint32_t flags;       /* MSG_DONTWAIT forces this call nonblocking */
 } syscall_recv_args_t;
 
 typedef struct syscall_resolve_args {
