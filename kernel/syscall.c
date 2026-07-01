@@ -12,6 +12,9 @@
 #include "include/kernel/shell.h"
 #include "include/kernel/net.h"
 #include "include/kernel/net_lwip.h"
+#include "lwip_port/ksock_udp.h"
+#include "lwip_port/ksock_tcp.h"
+#include "lwip_port/ksock_dns.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -31,7 +34,10 @@ typedef struct ksock_node_impl {
     uint8_t  nonblock;
     uint8_t  shut_rd;
     uint8_t  shut_wr;
-    int32_t  id;
+    uint8_t  bound;         /* STREAM_LISTENER only: bind() captured a port, awaiting listen() */
+    void*    udp;           /* ksock_udp_t*  when role == DGRAM */
+    void*    tcp;           /* ksock_tcp_t*  when role == STREAM_CONN, or STREAM_LISTENER once listen() has run */
+    uint16_t bind_port;     /* STREAM_LISTENER only: port captured at bind(), consumed by listen() */
     uint32_t rcv_timeout_ms;
     uint32_t snd_timeout_ms;
     uint32_t refs;
@@ -61,12 +67,12 @@ static int32_t ksock_read(vfs_node_t* node, uint32_t offset, uint32_t size, uint
     impl = (ksock_node_impl_t*)node->impl;
     if (!impl || impl->magic != KSOCK_NODE_MAGIC) return -1;
     if (impl->shut_rd) return 0;
-    if (impl->role != KSOCK_ROLE_STREAM_CONN || impl->id < 0) return -1;
+    if (impl->role != KSOCK_ROLE_STREAM_CONN || !impl->tcp) return -1;
     to = impl->nonblock ? 0u : ksock_effective_timeout(impl->rcv_timeout_ms, 0u);
-    rc = net_tcp_client_recv(impl->id, buffer, (uint16_t)size, &out_len, to);
-    if (rc == NET_TCP_OK) return (int32_t)out_len;
-    if (rc == NET_TCP_ERR_CLOSED) return 0;
-    return rc;
+    rc = ksock_tcp_recv((ksock_tcp_t*)impl->tcp, buffer, (uint16_t)size, &out_len, to, impl->nonblock);
+    if (rc >= 0) return (int32_t)out_len;              /* 0 => peer closed, same as old NET_TCP_ERR_CLOSED -> 0 */
+    if (rc == KSOCK_TCP_WOULDBLOCK) return NET_TCP_ERR_WOULD_BLOCK; /* preserve old ksock_read's verbatim rc pass-through */
+    return -1;
 }
 
 static int32_t ksock_write(vfs_node_t* node, uint32_t offset, uint32_t size, const uint8_t* buffer) {
@@ -78,11 +84,17 @@ static int32_t ksock_write(vfs_node_t* node, uint32_t offset, uint32_t size, con
     impl = (ksock_node_impl_t*)node->impl;
     if (!impl || impl->magic != KSOCK_NODE_MAGIC) return -1;
     if (impl->shut_wr) return -1;
-    if (impl->role != KSOCK_ROLE_STREAM_CONN || impl->id < 0) return -1;
+    if (impl->role != KSOCK_ROLE_STREAM_CONN || !impl->tcp) return -1;
     to = impl->nonblock ? 0u : ksock_effective_timeout(impl->snd_timeout_ms, 0u);
-    rc = net_tcp_client_send(impl->id, buffer, (uint16_t)size, to);
-    if (rc == NET_TCP_OK) return (int32_t)size;
-    return rc;
+    rc = ksock_tcp_send((ksock_tcp_t*)impl->tcp, buffer, (uint16_t)size, to, impl->nonblock);
+    if (rc == (int)size) return (int32_t)size;
+    /* The old stack's client-send helper was all-or-nothing: it looped internally until
+     * every byte was sent, or returned NET_TCP_ERR_WOULD_BLOCK. ksock_tcp_send() can also
+     * return a partial count (0 <= rc < size) if the send buffer fills before size bytes
+     * go out; there is no old-API equivalent for "partial", so collapse both partial and
+     * KSOCK_TCP_WOULDBLOCK into the old WOULD_BLOCK value. */
+    if (rc >= 0 || rc == KSOCK_TCP_WOULDBLOCK) return NET_TCP_ERR_WOULD_BLOCK;
+    return -1;
 }
 
 static int ksock_open(vfs_node_t* node, uint32_t flags) {
@@ -106,18 +118,16 @@ static void ksock_close(vfs_node_t* node) {
     if (impl->refs > 0u) impl->refs--;
     if (impl->refs > 0u) return;
 
-    if (impl->role == KSOCK_ROLE_STREAM_CONN && impl->id >= 0) {
-        (void)net_tcp_client_close(impl->id, 1000u);
-    } else if (impl->role == KSOCK_ROLE_STREAM_LISTENER && impl->id >= 0) {
-        (void)net_tcp_listener_close(impl->id);
-    } else if (impl->role == KSOCK_ROLE_DGRAM && impl->id >= 0) {
-        (void)net_udp_socket_close(impl->id);
+    if ((impl->role == KSOCK_ROLE_STREAM_CONN || impl->role == KSOCK_ROLE_STREAM_LISTENER) && impl->tcp) {
+        ksock_tcp_close((ksock_tcp_t*)impl->tcp);
+    } else if (impl->role == KSOCK_ROLE_DGRAM && impl->udp) {
+        ksock_udp_close((ksock_udp_t*)impl->udp);
     }
     kfree(impl);
     kfree(node);
 }
 
-static vfs_node_t* ksock_make_node(uint8_t role, int32_t id, uint32_t timeout_ms) {
+static vfs_node_t* ksock_make_node(uint8_t role, uint32_t timeout_ms) {
     vfs_node_t* node = (vfs_node_t*)kmalloc(sizeof(vfs_node_t));
     ksock_node_impl_t* impl = (ksock_node_impl_t*)kmalloc(sizeof(ksock_node_impl_t));
     if (!node || !impl) {
@@ -130,7 +140,6 @@ static vfs_node_t* ksock_make_node(uint8_t role, int32_t id, uint32_t timeout_ms
     memset(impl, 0, sizeof(*impl));
     impl->magic = KSOCK_NODE_MAGIC;
     impl->role = role;
-    impl->id = id;
     impl->rcv_timeout_ms = timeout_ms;
     impl->snd_timeout_ms = timeout_ms;
     impl->refs = 0u;
@@ -327,14 +336,19 @@ static long sys_fcntl(uint32_t fd, uint32_t cmd, uint32_t arg) {
 static short ksock_poll_mask(ksock_node_impl_t* impl, short events) {
     short revents = 0;
     if (!impl) return 0;
-    if (impl->role == KSOCK_ROLE_DGRAM && impl->id >= 0) {
-        if ((events & KPOLLIN) && net_udp_socket_readable(impl->id)) revents |= KPOLLIN;
+    if (impl->role == KSOCK_ROLE_DGRAM && impl->udp) {
+        if ((events & KPOLLIN) && ksock_udp_readable((ksock_udp_t*)impl->udp)) revents |= KPOLLIN;
         if (events & KPOLLOUT) revents |= KPOLLOUT;
-    } else if (impl->role == KSOCK_ROLE_STREAM_CONN && impl->id >= 0) {
-        if ((events & KPOLLIN) && net_tcp_client_readable(impl->id)) revents |= KPOLLIN;
-        if ((events & KPOLLOUT) && net_tcp_client_writable(impl->id)) revents |= KPOLLOUT;
-    } else if (impl->role == KSOCK_ROLE_STREAM_LISTENER && impl->id >= 0) {
-        if ((events & KPOLLIN) && net_tcp_listener_readable(impl->id)) revents |= KPOLLIN;
+    } else if (impl->role == KSOCK_ROLE_STREAM_CONN && impl->tcp) {
+        if ((events & KPOLLIN) && ksock_tcp_readable((ksock_tcp_t*)impl->tcp)) revents |= KPOLLIN;
+        if ((events & KPOLLOUT) && ksock_tcp_writable((ksock_tcp_t*)impl->tcp)) revents |= KPOLLOUT;
+    } else if (impl->role == KSOCK_ROLE_STREAM_LISTENER && impl->tcp) {
+        /* NOTE: ksock_tcp.h exposes no accept-queue-peek; ksock_tcp_readable()
+         * reflects rx_len/peer_closed, which are never set on a listener's
+         * ksock_tcp_t (only accepted connections get tcp_recv wired up). A
+         * listening socket therefore never reports KPOLLIN here even when a
+         * connection is queued -- see task-9-report.md for detail. */
+        if ((events & KPOLLIN) && ksock_tcp_readable((ksock_tcp_t*)impl->tcp)) revents |= KPOLLIN;
     }
     if (impl->shut_rd && (events & KPOLLIN)) revents |= KPOLLHUP;
     return revents;
@@ -420,9 +434,7 @@ static long sys_setsockopt(const syscall_sockopt_args_t* args) {
             case KSO_KEEPALIVE:
                 if (value) impl->sock_flags |= KSOCK_F_KEEPALIVE;
                 else impl->sock_flags &= ~KSOCK_F_KEEPALIVE;
-                if (impl->role == KSOCK_ROLE_STREAM_CONN && impl->id >= 0) {
-                    (void)net_tcp_set_keepalive(impl->id, value ? 1 : 0);
-                }
+                /* ksock_tcp.h exposes no keepalive hook; stored as a flag only, per brief. */
                 return 0;
             case KSO_RCVTIMEO:
                 impl->rcv_timeout_ms = (value < 0) ? 0u : (uint32_t)value;
@@ -437,8 +449,8 @@ static long sys_setsockopt(const syscall_sockopt_args_t* args) {
             case KTCP_NODELAY:
                 if (value) impl->tcp_flags |= KSOCK_T_NODELAY;
                 else impl->tcp_flags &= ~KSOCK_T_NODELAY;
-                if (impl->role == KSOCK_ROLE_STREAM_CONN && impl->id >= 0) {
-                    (void)net_tcp_set_nodelay(impl->id, value ? 1 : 0);
+                if (impl->role == KSOCK_ROLE_STREAM_CONN && impl->tcp) {
+                    ksock_tcp_set_nodelay((ksock_tcp_t*)impl->tcp, value ? 1 : 0);
                 }
                 return 0;
             default: return -1;
@@ -480,11 +492,13 @@ static long sys_getsockopt(const syscall_sockopt_args_t* args) {
 }
 
 static long sys_resolve(const syscall_resolve_args_t* args) {
+    int rc;
     if (!args || !args->hostname || !args->out_ip) return NET_DNS_ERR_INVALID;
-    return (long)net_dns_query_a(args->hostname,
-                                 args->dns_server_ip,
-                                 args->out_ip,
-                                 args->timeout_ms);
+    /* args->dns_server_ip (custom server override) has no equivalent in ksock_dns_query_a(),
+     * which always resolves through lwIP's configured resolver; the field is accepted but
+     * unused, matching this task's scope of leaving the ABI/struct untouched. */
+    rc = ksock_dns_query_a(args->hostname, args->out_ip, args->timeout_ms != 0u ? args->timeout_ms : 5000u);
+    return rc == 0 ? 0 : NET_DNS_ERR_NOT_FOUND;
 }
 
 static long sys_pipe(int32_t* out_fds) {
@@ -574,25 +588,26 @@ static long sys_socket(uint32_t domain, uint32_t type, uint32_t protocol) {
     if (domain != KSOCK_AF_INET) return -1;
     if (type == KSOCK_SOCK_DGRAM) {
         vfs_node_t* node;
-        int udp_id;
+        ksock_udp_t* u;
         int fd;
         if (protocol != 0u && protocol != KSOCK_IPPROTO_UDP) return -1;
-        udp_id = net_udp_socket_open();
-        if (udp_id < 0) return (long)udp_id;
-        node = ksock_make_node(KSOCK_ROLE_DGRAM, udp_id, KSOCK_DEFAULT_TIMEOUT_MS);
+        u = ksock_udp_open();
+        if (!u) return -1;
+        node = ksock_make_node(KSOCK_ROLE_DGRAM, KSOCK_DEFAULT_TIMEOUT_MS);
         if (!node) {
-            (void)net_udp_socket_close(udp_id);
+            ksock_udp_close(u);
             return -1;
         }
+        ((ksock_node_impl_t*)node->impl)->udp = u;
         fd = vfs_fd_install_node(node, VFS_O_RDWR, 0u);
-        /* vfs_fd_install_node cleans up node on failure; udp_id is freed by ksock_close. */
+        /* vfs_fd_install_node cleans up node on failure; u is freed by ksock_close. */
         return (long)fd;
     }
     if (type == KSOCK_SOCK_STREAM) {
         vfs_node_t* node;
         int fd;
         if (protocol != 0u && protocol != KSOCK_IPPROTO_TCP) return -1;
-        node = ksock_make_node(KSOCK_ROLE_NONE, -1, KSOCK_DEFAULT_TIMEOUT_MS);
+        node = ksock_make_node(KSOCK_ROLE_NONE, KSOCK_DEFAULT_TIMEOUT_MS);
         if (!node) return -1;
         fd = vfs_fd_install_node(node, VFS_O_RDWR, 0u);
         return (long)fd;
@@ -606,41 +621,46 @@ static long sys_socket_close(int32_t socket_id) {
 
 static long sys_bind(const syscall_bind_args_t* args) {
     ksock_node_impl_t* impl;
-    int lid;
     if (!args) return -1;
     impl = ksock_impl_from_fd(args->socket_id);
     if (!impl) return -1;
     if (impl->role == KSOCK_ROLE_STREAM_CONN) return -1;
     if (impl->role == KSOCK_ROLE_DGRAM) {
-        if (impl->id < 0) return -1;
-        return (long)net_udp_socket_bind(impl->id, args->local_port);
+        if (!impl->udp) return -1;
+        return (long)ksock_udp_bind((ksock_udp_t*)impl->udp, args->local_port);
     }
     if (impl->role == KSOCK_ROLE_NONE) {
-        lid = net_tcp_listener_open();
-        if (lid < 0) return lid;
         impl->role = KSOCK_ROLE_STREAM_LISTENER;
-        impl->id = lid;
     }
-    return (long)net_tcp_listener_bind(impl->id, args->local_port);
+    if (impl->role != KSOCK_ROLE_STREAM_LISTENER) return -1;
+    /* ksock_tcp.h has no standalone bind step: the pcb is created, bound, and put into
+     * LISTEN state in one call (ksock_tcp_listen()) once the backlog is known at listen()
+     * time. Stash the requested port here; sys_listen() below performs the actual
+     * ksock_tcp_listen() call. */
+    impl->bind_port = args->local_port;
+    impl->bound = 1;
+    return 0;
 }
 
 static long sys_connect(const syscall_connect_args_t* args) {
     ksock_node_impl_t* impl;
     uint32_t timeout;
-    int sid;
-    int rc;
+    ksock_tcp_t* c;
     if (!args) return -1;
     impl = ksock_impl_from_fd(args->socket_fd);
     if (!impl) return -1;
     if (impl->role == KSOCK_ROLE_STREAM_LISTENER || impl->role == KSOCK_ROLE_DGRAM) return -1;
     if (impl->role == KSOCK_ROLE_STREAM_CONN) return NET_TCP_ERR_ALREADY;
     timeout = ksock_effective_timeout(impl->snd_timeout_ms, args->timeout_ms);
-    rc = net_tcp_client_connect(args->dst_ip, args->dst_port, timeout, &sid);
-    if (rc != NET_TCP_OK) return rc;
+    c = ksock_tcp_connect(args->dst_ip, args->dst_port, timeout);
+    /* ksock_tcp_connect() collapses every failure mode (ARP, TX, no-sockets, timeout)
+     * into a NULL return. NET_TCP_ERR_TIMEOUT is the old code's most common failure
+     * value for this call and the best single stand-in available. */
+    if (!c) return NET_TCP_ERR_TIMEOUT;
     impl->role = KSOCK_ROLE_STREAM_CONN;
-    impl->id = sid;
-    if (impl->tcp_flags & KSOCK_T_NODELAY) (void)net_tcp_set_nodelay(sid, 1);
-    if (impl->sock_flags & KSOCK_F_KEEPALIVE) (void)net_tcp_set_keepalive(sid, 1);
+    impl->tcp = c;
+    if (impl->tcp_flags & KSOCK_T_NODELAY) ksock_tcp_set_nodelay(c, 1);
+    /* keepalive: ksock_tcp.h exposes no hook; flag remains stored only (see setsockopt). */
     if (args->timeout_ms != 0u) {
         impl->rcv_timeout_ms = args->timeout_ms;
         impl->snd_timeout_ms = args->timeout_ms;
@@ -650,45 +670,54 @@ static long sys_connect(const syscall_connect_args_t* args) {
 
 static long sys_listen(const syscall_listen_args_t* args) {
     ksock_node_impl_t* impl;
+    ksock_tcp_t* lst;
     if (!args) return -1;
     impl = ksock_impl_from_fd(args->socket_fd);
-    if (!impl || impl->role != KSOCK_ROLE_STREAM_LISTENER) return -1;
-    return (long)net_tcp_listener_listen(impl->id, args->backlog);
+    if (!impl || impl->role != KSOCK_ROLE_STREAM_LISTENER || !impl->bound) return -1;
+    if (impl->tcp) return 0; /* already listening */
+    lst = ksock_tcp_listen(impl->bind_port, (int)args->backlog);
+    if (!lst) return -1;
+    impl->tcp = lst;
+    return 0;
 }
 
 static long sys_accept(const syscall_accept_args_t* args) {
     ksock_node_impl_t* impl;
     ksock_node_impl_t* new_impl;
     uint32_t timeout;
-    int sid;
-    int rc;
+    ksock_tcp_t* c;
     vfs_node_t* node;
     int fd;
     uint8_t peer_ip[4] = {0, 0, 0, 0};
     uint16_t peer_port = 0u;
     if (!args) return -1;
     impl = ksock_impl_from_fd(args->socket_fd);
-    if (!impl || impl->role != KSOCK_ROLE_STREAM_LISTENER) return -1;
+    if (!impl || impl->role != KSOCK_ROLE_STREAM_LISTENER || !impl->tcp) return -1;
     timeout = impl->nonblock ? 0u
                              : ksock_effective_timeout(impl->rcv_timeout_ms, args->timeout_ms);
-    rc = net_tcp_listener_accept(impl->id, timeout, &sid);
-    if (rc != NET_TCP_OK) return rc;
+    c = ksock_tcp_accept((ksock_tcp_t*)impl->tcp, timeout, impl->nonblock);
+    /* ksock_tcp_accept() returns NULL uniformly for timeout, nonblock-empty, and no
+     * pending connection -- exactly the case the old code signalled with
+     * NET_TCP_ERR_WOULD_BLOCK (the old listener-accept helper also returns that value
+     * regardless of nonblock, since it treats timeout==0 the same way). */
+    if (!c) return NET_TCP_ERR_WOULD_BLOCK;
 
-    node = ksock_make_node(KSOCK_ROLE_STREAM_CONN, sid, impl->rcv_timeout_ms);
+    node = ksock_make_node(KSOCK_ROLE_STREAM_CONN, impl->rcv_timeout_ms);
     if (!node) {
-        (void)net_tcp_client_close(sid, 100u);
+        ksock_tcp_close(c);
         return -1;
     }
     new_impl = (ksock_node_impl_t*)node->impl;
+    new_impl->tcp = c;
     new_impl->snd_timeout_ms = impl->snd_timeout_ms;
     new_impl->sock_flags = impl->sock_flags;
     new_impl->tcp_flags = impl->tcp_flags;
-    if (new_impl->tcp_flags & KSOCK_T_NODELAY) (void)net_tcp_set_nodelay(sid, 1);
-    if (new_impl->sock_flags & KSOCK_F_KEEPALIVE) (void)net_tcp_set_keepalive(sid, 1);
+    if (new_impl->tcp_flags & KSOCK_T_NODELAY) ksock_tcp_set_nodelay(c, 1);
+    /* keepalive: no backend hook; flag remains stored only (see setsockopt). */
     fd = vfs_fd_install_node(node, VFS_O_RDWR, 0u);
     if (fd < 0) return -1;
 
-    (void)net_tcp_socket_peer(sid, peer_ip, &peer_port);
+    (void)ksock_tcp_peer(c, peer_ip, &peer_port);
     if (args->out_from_ip) memcpy(args->out_from_ip, peer_ip, 4);
     if (args->out_from_port) *args->out_from_port = peer_port;
     return fd;
@@ -720,27 +749,30 @@ static long sys_sendto(const syscall_sendto_args_t* args) {
     int rc;
     if (!args) return -1;
     impl = ksock_impl_from_fd(args->socket_id);
-    if (!impl || impl->role != KSOCK_ROLE_DGRAM || impl->id < 0) return -1;
+    if (!impl || impl->role != KSOCK_ROLE_DGRAM || !impl->udp) return -1;
     if (impl->shut_wr) return -1;
-    rc = net_udp_socket_sendto(impl->id,
-                               args->dst_ip,
-                               args->dst_port,
-                               args->payload,
-                               (uint16_t)args->payload_len);
-    if (rc == NET_UDP_OK) return (long)args->payload_len;
-    return (long)rc;
+    rc = ksock_udp_sendto((ksock_udp_t*)impl->udp,
+                          args->dst_ip,
+                          args->dst_port,
+                          args->payload,
+                          (uint16_t)args->payload_len);
+    if (rc == (int)args->payload_len) return (long)args->payload_len;
+    /* ksock_udp_sendto() collapses every failure (alloc, ARP, tx) into a single -1;
+     * NET_UDP_ERR_TX is the closest old single-value stand-in. */
+    return (long)NET_UDP_ERR_TX;
 }
 
 static long sys_recvfrom(const syscall_recvfrom_args_t* args) {
     ksock_node_impl_t* impl;
-    net_udp_endpoint_t from;
+    uint8_t from_ip[4] = {0, 0, 0, 0};
+    uint16_t from_port = 0u;
     uint16_t out_len = 0;
     uint32_t timeout;
     int rc;
 
     if (!args) return -1;
     impl = ksock_impl_from_fd(args->socket_id);
-    if (!impl || impl->role != KSOCK_ROLE_DGRAM || impl->id < 0) return -1;
+    if (!impl || impl->role != KSOCK_ROLE_DGRAM || !impl->udp) return -1;
     if (impl->shut_rd) {
         if (args->out_payload_len) *args->out_payload_len = 0;
         return 0;
@@ -749,21 +781,24 @@ static long sys_recvfrom(const syscall_recvfrom_args_t* args) {
     timeout = impl->nonblock ? 0u
                              : ksock_effective_timeout(impl->rcv_timeout_ms, args->timeout_ms);
 
-    rc = net_udp_socket_recvfrom(impl->id,
-                                 args->out_payload,
-                                 (uint16_t)args->payload_capacity,
-                                 &out_len,
-                                 &from,
-                                 timeout);
-    if (rc != NET_UDP_OK && rc != NET_UDP_ERR_MSG_TRUNC) {
-        return (long)rc;
-    }
+    rc = ksock_udp_recvfrom((ksock_udp_t*)impl->udp,
+                            args->out_payload,
+                            (uint16_t)args->payload_capacity,
+                            &out_len,
+                            from_ip, &from_port,
+                            timeout, impl->nonblock);
+    /* ksock_udp_recvfrom() returns 0 uniformly for timeout/would-block/nonblock-empty
+     * (per its header contract) and -1 only for a null socket; map both to the old
+     * NET_UDP_ERR_WOULD_BLOCK value used for the (overwhelmingly common) timeout case.
+     * Note: this also means a genuine 0-length UDP datagram is now indistinguishable
+     * from a timeout -- an existing ksock_udp.c API limitation, not something this
+     * task's syscall.c changes can recover. NET_UDP_ERR_MSG_TRUNC can likewise no
+     * longer be detected since ksock_udp_recvfrom() truncates silently. */
+    if (rc <= 0) return (long)NET_UDP_ERR_WOULD_BLOCK;
 
     if (args->out_payload_len) *args->out_payload_len = out_len;
-    if (args->out_from_ip) memcpy(args->out_from_ip, from.ip, 4);
-    if (args->out_from_port) *args->out_from_port = from.port;
-
-    if (rc == NET_UDP_ERR_MSG_TRUNC) return NET_UDP_ERR_MSG_TRUNC;
+    if (args->out_from_ip) memcpy(args->out_from_ip, from_ip, 4);
+    if (args->out_from_port) *args->out_from_port = from_port;
     return (long)out_len;
 }
 
