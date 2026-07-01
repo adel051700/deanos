@@ -1,6 +1,7 @@
 #include "include/kernel/signal.h"
 #include "include/kernel/interrupt.h"
 #include "include/kernel/task.h"
+#include "include/kernel/paging.h"
 #include <string.h>
 
 static int signal_can_install_handler(int sig) {
@@ -99,12 +100,21 @@ int signal_dispatch_current(struct registers* regs) {
         return 0;
     }
 
+    uint32_t new_sp = regs->useresp - 8u;
+    /* The user controls useresp; refuse to push the signal frame if the target
+     * stack slot is not writable user memory, so a bogus esp can never make the
+     * kernel scribble on its own address space. Leave the task state untouched
+     * so it simply continues without the handler. */
+    if (new_sp > regs->useresp || !paging_access_ok((uintptr_t)new_sp, 8u, 1)) {
+        t->pending_signals |= bit;
+        return 0;
+    }
+
     t->pending_signals &= ~bit;
     memcpy(&t->signal_saved_regs, regs, sizeof(struct registers));
     t->signal_in_handler = 1;
     t->signal_active = (uint32_t)sig;
 
-    uint32_t new_sp = regs->useresp - 8u;
     uint32_t* usp = (uint32_t*)(uintptr_t)new_sp;
     usp[0] = (uint32_t)restorer;
     usp[1] = (uint32_t)sig;

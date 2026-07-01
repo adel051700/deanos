@@ -8,6 +8,7 @@
 #include "include/kernel/signal.h"
 #include "include/kernel/kheap.h"
 #include "include/kernel/elf.h"
+#include "include/kernel/paging.h"
 #include "include/kernel/vfs.h"
 #include "include/kernel/shell.h"
 #include "include/kernel/net.h"
@@ -20,6 +21,64 @@
 #include <string.h>
 
 #define KSOCK_NODE_MAGIC 0x4B534F43u
+
+/* Returned to userspace when a syscall is handed a pointer/buffer that is not
+ * fully readable/writable user memory (Linux EFAULT convention). */
+#define EFAULT 14
+
+/* Upper bound for a copied-in path string, including the NUL terminator. */
+#define SYS_PATH_MAX VFS_PATH_MAX
+
+/* --- user-pointer validation & copy helpers ---------------------------------
+ * Every syscall that dereferences a user-supplied pointer routes through these.
+ * access_ok_* confirms the whole range is user-accessible before the kernel
+ * touches it; copy_* additionally move the bytes. All copies happen while the
+ * faulting task's address space is active (we are in its syscall context), and
+ * this is a single-CPU kernel with no preemption mid-copy, so a range that
+ * validates stays valid for the duration of the copy. */
+
+static inline int access_ok_r(const void* uptr, uint32_t len) {
+    return paging_access_ok((uintptr_t)uptr, len, 0);
+}
+
+static inline int access_ok_w(const void* uptr, uint32_t len) {
+    return paging_access_ok((uintptr_t)uptr, len, 1);
+}
+
+static int copy_from_user(void* kdst, const void* usrc, uint32_t len) {
+    if (len == 0u) return 0;
+    if (!access_ok_r(usrc, len)) return -EFAULT;
+    memcpy(kdst, usrc, len);
+    return 0;
+}
+
+static int copy_to_user(void* udst, const void* ksrc, uint32_t len) {
+    if (len == 0u) return 0;
+    if (!access_ok_w(udst, len)) return -EFAULT;
+    memcpy(udst, ksrc, len);
+    return 0;
+}
+
+/* Copy a NUL-terminated user string into kdst (capacity bytes, always NUL
+ * terminated on success). Validates one page at a time so an unmapped page
+ * past the string is not required to be present. Returns 0 on success,
+ * -EFAULT if a page is not readable user memory, -1 if the string does not
+ * fit in `capacity`. */
+static int copy_user_string(char* kdst, const char* usrc, uint32_t capacity) {
+    if (capacity == 0u) return -1;
+    uintptr_t p = (uintptr_t)usrc;
+    uint32_t i = 0;
+    for (;;) {
+        /* Validate the byte at p is readable before dereferencing it. Checking
+         * a single byte forces a per-page walk at each page boundary. */
+        if (!paging_access_ok(p, 1u, 0)) return -EFAULT;
+        char c = *(const char*)p;
+        kdst[i] = c;
+        if (c == '\0') return 0;
+        if (++i >= capacity) return -1; /* no room for the terminator */
+        p++;
+    }
+}
 
 typedef enum ksock_role {
     KSOCK_ROLE_NONE = 0,
@@ -172,6 +231,7 @@ static ksock_node_impl_t* ksock_impl_from_fd(int32_t fd) {
 
 static long sys_write(uint32_t fd, const char* buf, size_t len) {
     if (!buf || len == 0) return 0;
+    if (!access_ok_r(buf, (uint32_t)len)) return -EFAULT;
 
     task_t* t = task_current();
     int fd_bound = 0;
@@ -192,6 +252,7 @@ static long sys_write(uint32_t fd, const char* buf, size_t len) {
 
 static long sys_read(uint32_t fd, char* buf, size_t len) {
     if (!buf || len == 0) return 0;
+    if (!access_ok_w(buf, (uint32_t)len)) return -EFAULT;
 
     task_t* t = task_current();
     int fd_bound = 0;
@@ -222,7 +283,9 @@ static long sys_read(uint32_t fd, char* buf, size_t len) {
 
 static long sys_time(uint32_t* out) {
     uint32_t seconds = rtc_get_wallclock_seconds();
-    if (out) *out = seconds;
+    if (out) {
+        if (copy_to_user(out, &seconds, sizeof(seconds)) < 0) return -EFAULT;
+    }
     return (long)seconds;
 }
 
@@ -262,7 +325,21 @@ static long sys_kill(int32_t pid, int32_t sig) {
 }
 
 static long sys_sigaction(int32_t sig, const ksigaction_t* act, ksigaction_t* oldact) {
-    return (long)signal_set_action_current((int)sig, act, oldact);
+    ksigaction_t kact;
+    ksigaction_t koldact;
+    const ksigaction_t* actp = NULL;
+
+    if (act) {
+        if (copy_from_user(&kact, act, sizeof(kact)) < 0) return -EFAULT;
+        actp = &kact;
+    }
+    if (oldact && !access_ok_w(oldact, sizeof(*oldact))) return -EFAULT;
+
+    long rc = (long)signal_set_action_current((int)sig, actp, oldact ? &koldact : NULL);
+    if (rc >= 0 && oldact) {
+        if (copy_to_user(oldact, &koldact, sizeof(koldact)) < 0) return -EFAULT;
+    }
+    return rc;
 }
 
 static long sys_signal(int32_t sig, uintptr_t handler, uintptr_t restorer) {
@@ -288,21 +365,32 @@ static long sys_fork(struct registers* r) {
 }
 
 static long sys_execve(const char* path, struct registers* r) {
+    char kpath[SYS_PATH_MAX];
     if (!path || !r) return -1;
     if ((r->cs & 0x3u) != 0x3u) return -38;
-    return (long)elf_execve_current(path, r);
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+    return (long)elf_execve_current(kpath, r);
 }
 
 static long sys_waitpid(int32_t pid, int32_t* status, uint32_t options) {
     int st = 0;
+    if (status && !access_ok_w(status, sizeof(*status))) return -EFAULT;
     int ret = task_waitpid((int)pid, status ? &st : NULL, options);
-    if (ret > 0 && status) *status = st;
+    if (ret > 0 && status) {
+        if (copy_to_user(status, &st, sizeof(st)) < 0) return -EFAULT;
+    }
     return (long)ret;
 }
 
 static long sys_open(const char* path, uint32_t flags) {
+    char kpath[SYS_PATH_MAX];
     if (!path) return -1;
-    return (long)vfs_fd_open(path, flags);
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+    return (long)vfs_fd_open(kpath, flags);
 }
 
 static long sys_close(uint32_t fd) {
@@ -310,8 +398,14 @@ static long sys_close(uint32_t fd) {
 }
 
 static long sys_fstat(uint32_t fd, vfs_stat_t* st) {
+    vfs_stat_t kst;
     if (!st) return -1;
-    return (long)vfs_fd_stat((int)fd, st);
+    if (!access_ok_w(st, sizeof(*st))) return -EFAULT;
+    long rc = (long)vfs_fd_stat((int)fd, &kst);
+    if (rc >= 0) {
+        if (copy_to_user(st, &kst, sizeof(kst)) < 0) return -EFAULT;
+    }
+    return rc;
 }
 
 static long sys_fcntl(uint32_t fd, uint32_t cmd, uint32_t arg) {
@@ -355,7 +449,8 @@ static short ksock_poll_mask(ksock_node_impl_t* impl, short events) {
     return revents;
 }
 
-static long sys_poll(const syscall_poll_args_t* args) {
+static long sys_poll(const syscall_poll_args_t* uargs) {
+    syscall_poll_args_t args;
     task_t* t;
     syscall_pollfd_t* fds;
     uint32_t nfds;
@@ -363,13 +458,20 @@ static long sys_poll(const syscall_poll_args_t* args) {
     uint32_t elapsed = 0;
     long ready;
 
-    if (!args || !args->fds) return -1;
-    if (args->nfds == 0u) return 0;
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (!args.fds) return -1;
+    if (args.nfds == 0u) return 0;
+    /* The fds array is read and its revents fields written in place across
+     * poll iterations, so validate the whole array (read+write) once up front.
+     * Guard the size computation against 32-bit overflow. */
+    if (args.nfds > 0xFFFFFFFFu / sizeof(syscall_pollfd_t)) return -EFAULT;
+    if (!access_ok_w(args.fds, args.nfds * (uint32_t)sizeof(syscall_pollfd_t))) return -EFAULT;
     t = task_current();
     if (!t) return -1;
-    fds = args->fds;
-    nfds = args->nfds;
-    timeout = args->timeout_ms;
+    fds = args.fds;
+    nfds = args.nfds;
+    timeout = args.timeout_ms;
 
     for (;;) {
         ready = 0;
@@ -415,19 +517,22 @@ static long sys_shutdown(int32_t fd, int32_t how) {
     return 0;
 }
 
-static long sys_setsockopt(const syscall_sockopt_args_t* args) {
+static long sys_setsockopt(const syscall_sockopt_args_t* uargs) {
+    syscall_sockopt_args_t args;
     ksock_node_impl_t* impl;
     int value;
     uint32_t len;
-    if (!args || !args->optval || !args->optlen) return -1;
-    len = *args->optlen;
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (!args.optval || !args.optlen) return -1;
+    if (copy_from_user(&len, args.optlen, sizeof(len)) < 0) return -EFAULT;
     if (len != sizeof(int)) return -1;
-    impl = ksock_impl_from_fd(args->socket_fd);
+    impl = ksock_impl_from_fd(args.socket_fd);
     if (!impl) return -1;
-    value = *(const int*)args->optval;
+    if (copy_from_user(&value, args.optval, sizeof(value)) < 0) return -EFAULT;
 
-    if (args->level == KSOL_SOCKET) {
-        switch (args->optname) {
+    if (args.level == KSOL_SOCKET) {
+        switch (args.optname) {
             case KSO_REUSEADDR:
                 if (value) impl->sock_flags |= KSOCK_F_REUSEADDR;
                 else impl->sock_flags &= ~KSOCK_F_REUSEADDR;
@@ -445,8 +550,8 @@ static long sys_setsockopt(const syscall_sockopt_args_t* args) {
                 return 0;
             default: return -1;
         }
-    } else if (args->level == KSOL_TCP) {
-        switch (args->optname) {
+    } else if (args.level == KSOL_TCP) {
+        switch (args.optname) {
             case KTCP_NODELAY:
                 if (value) impl->tcp_flags |= KSOCK_T_NODELAY;
                 else impl->tcp_flags &= ~KSOCK_T_NODELAY;
@@ -460,26 +565,30 @@ static long sys_setsockopt(const syscall_sockopt_args_t* args) {
     return -1;
 }
 
-static long sys_getsockopt(const syscall_sockopt_args_t* args) {
+static long sys_getsockopt(const syscall_sockopt_args_t* uargs) {
+    syscall_sockopt_args_t args;
     ksock_node_impl_t* impl;
     int value = 0;
     uint32_t len;
-    if (!args || !args->optval || !args->optlen) return -1;
-    len = *args->optlen;
+    uint32_t out_len = sizeof(int);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (!args.optval || !args.optlen) return -1;
+    if (copy_from_user(&len, args.optlen, sizeof(len)) < 0) return -EFAULT;
     if (len < sizeof(int)) return -1;
-    impl = ksock_impl_from_fd(args->socket_fd);
+    impl = ksock_impl_from_fd(args.socket_fd);
     if (!impl) return -1;
 
-    if (args->level == KSOL_SOCKET) {
-        switch (args->optname) {
+    if (args.level == KSOL_SOCKET) {
+        switch (args.optname) {
             case KSO_REUSEADDR: value = (impl->sock_flags & KSOCK_F_REUSEADDR) ? 1 : 0; break;
             case KSO_KEEPALIVE: value = (impl->sock_flags & KSOCK_F_KEEPALIVE) ? 1 : 0; break;
             case KSO_RCVTIMEO: value = (int)impl->rcv_timeout_ms; break;
             case KSO_SNDTIMEO: value = (int)impl->snd_timeout_ms; break;
             default: return -1;
         }
-    } else if (args->level == KSOL_TCP) {
-        switch (args->optname) {
+    } else if (args.level == KSOL_TCP) {
+        switch (args.optname) {
             case KTCP_NODELAY: value = (impl->tcp_flags & KSOCK_T_NODELAY) ? 1 : 0; break;
             default: return -1;
         }
@@ -487,30 +596,42 @@ static long sys_getsockopt(const syscall_sockopt_args_t* args) {
         return -1;
     }
 
-    *(int*)args->optval = value;
-    *args->optlen = sizeof(int);
+    if (copy_to_user(args.optval, &value, sizeof(value)) < 0) return -EFAULT;
+    if (copy_to_user(args.optlen, &out_len, sizeof(out_len)) < 0) return -EFAULT;
     return 0;
 }
 
-static long sys_resolve(const syscall_resolve_args_t* args) {
-    int rc;
-    if (!args || !args->hostname || !args->out_ip) return NET_DNS_ERR_INVALID;
-    /* args->dns_server_ip (custom server override) has no equivalent in ksock_dns_query_a(),
+static long sys_resolve(const syscall_resolve_args_t* uargs) {
+    syscall_resolve_args_t args;
+    char khost[256];
+    uint8_t kip[4];
+    int rc, cs;
+    if (!uargs) return NET_DNS_ERR_INVALID;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (!args.hostname || !args.out_ip) return NET_DNS_ERR_INVALID;
+    cs = copy_user_string(khost, args.hostname, sizeof(khost));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return NET_DNS_ERR_INVALID;
+    if (!access_ok_w(args.out_ip, sizeof(kip))) return -EFAULT;
+    /* args.dns_server_ip (custom server override) has no equivalent in ksock_dns_query_a(),
      * which always resolves through lwIP's configured resolver; the field is accepted but
      * unused, matching this task's scope of leaving the ABI/struct untouched. */
-    rc = ksock_dns_query_a(args->hostname, args->out_ip, args->timeout_ms != 0u ? args->timeout_ms : 5000u);
-    return rc == 0 ? 0 : NET_DNS_ERR_NOT_FOUND;
+    rc = ksock_dns_query_a(khost, kip, args.timeout_ms != 0u ? args.timeout_ms : 5000u);
+    if (rc != 0) return NET_DNS_ERR_NOT_FOUND;
+    if (copy_to_user(args.out_ip, kip, sizeof(kip)) < 0) return -EFAULT;
+    return 0;
 }
 
 static long sys_pipe(int32_t* out_fds) {
     if (!out_fds) return -1;
+    if (!access_ok_w(out_fds, 2u * sizeof(int32_t))) return -EFAULT;
 
     int fds[2] = {-1, -1};
     int rc = vfs_fd_pipe(fds);
     if (rc < 0) return rc;
 
-    out_fds[0] = fds[0];
-    out_fds[1] = fds[1];
+    int32_t out[2] = { (int32_t)fds[0], (int32_t)fds[1] };
+    if (copy_to_user(out_fds, out, sizeof(out)) < 0) return -EFAULT;
     return 0;
 }
 
@@ -553,23 +674,38 @@ static long sys_tcgetpgrp(uint32_t fd) {
 }
 
 static long sys_mkdir(const char* path) {
+    char kpath[SYS_PATH_MAX];
     if (!path) return -1;
-    return (long)vfs_create_path(path, VFS_DIRECTORY);
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+    return (long)vfs_create_path(kpath, VFS_DIRECTORY);
 }
 
 static long sys_chmod(const char* path, uint32_t mode) {
+    char kpath[SYS_PATH_MAX];
     if (!path) return -1;
-    return (long)vfs_chmod_path(path, (uint16_t)mode);
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+    return (long)vfs_chmod_path(kpath, (uint16_t)mode);
 }
 
 static long sys_chown(const char* path, uint32_t uid, uint32_t gid) {
+    char kpath[SYS_PATH_MAX];
     if (!path) return -1;
-    return (long)vfs_chown_path(path, uid, gid);
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+    return (long)vfs_chown_path(kpath, uid, gid);
 }
 
 static long sys_mmap(const syscall_mmap_args_t* args) {
+    syscall_mmap_args_t kargs;
     uintptr_t out = 0;
-    if (task_mmap_current(args, &out) < 0) return -1;
+    if (!args) return -1;
+    if (copy_from_user(&kargs, args, sizeof(kargs)) < 0) return -EFAULT;
+    if (task_mmap_current(&kargs, &out) < 0) return -1;
     return (long)out;
 }
 
@@ -620,15 +756,17 @@ static long sys_socket_close(int32_t socket_id) {
     return (long)vfs_fd_close((int)socket_id);
 }
 
-static long sys_bind(const syscall_bind_args_t* args) {
+static long sys_bind(const syscall_bind_args_t* uargs) {
+    syscall_bind_args_t args;
     ksock_node_impl_t* impl;
-    if (!args) return -1;
-    impl = ksock_impl_from_fd(args->socket_id);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    impl = ksock_impl_from_fd(args.socket_id);
     if (!impl) return -1;
     if (impl->role == KSOCK_ROLE_STREAM_CONN) return -1;
     if (impl->role == KSOCK_ROLE_DGRAM) {
         if (!impl->udp) return -1;
-        return (long)ksock_udp_bind((ksock_udp_t*)impl->udp, args->local_port);
+        return (long)ksock_udp_bind((ksock_udp_t*)impl->udp, args.local_port);
     }
     if (impl->role == KSOCK_ROLE_NONE) {
         impl->role = KSOCK_ROLE_STREAM_LISTENER;
@@ -638,24 +776,26 @@ static long sys_bind(const syscall_bind_args_t* args) {
      * LISTEN state in one call (ksock_tcp_listen()) once the backlog is known at listen()
      * time. Stash the requested port here; sys_listen() below performs the actual
      * ksock_tcp_listen() call. */
-    impl->bind_port = args->local_port;
+    impl->bind_port = args.local_port;
     impl->bound = 1;
     return 0;
 }
 
-static long sys_connect(const syscall_connect_args_t* args) {
+static long sys_connect(const syscall_connect_args_t* uargs) {
+    syscall_connect_args_t args;
     ksock_node_impl_t* impl;
     uint32_t timeout;
     ksock_tcp_t* c;
-    if (!args) return -1;
-    impl = ksock_impl_from_fd(args->socket_fd);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    impl = ksock_impl_from_fd(args.socket_fd);
     if (!impl) return -1;
     if (impl->role == KSOCK_ROLE_STREAM_LISTENER || impl->role == KSOCK_ROLE_DGRAM) return -1;
     if (impl->role == KSOCK_ROLE_STREAM_CONN) return NET_TCP_ERR_ALREADY;
     /* No per-call timeout in the standard ABI: derive from SO_SNDTIMEO (falling
      * back to KSOCK_DEFAULT_TIMEOUT_MS), same as send()/recv(). */
     timeout = ksock_effective_timeout(impl->snd_timeout_ms);
-    c = ksock_tcp_connect(args->dst_ip, args->dst_port, timeout);
+    c = ksock_tcp_connect(args.dst_ip, args.dst_port, timeout);
     /* ksock_tcp_connect() collapses every failure mode (ARP, TX, no-sockets, timeout)
      * into a NULL return. NET_TCP_ERR_TIMEOUT is the old code's most common failure
      * value for this call and the best single stand-in available. */
@@ -667,20 +807,23 @@ static long sys_connect(const syscall_connect_args_t* args) {
     return 0;
 }
 
-static long sys_listen(const syscall_listen_args_t* args) {
+static long sys_listen(const syscall_listen_args_t* uargs) {
+    syscall_listen_args_t args;
     ksock_node_impl_t* impl;
     ksock_tcp_t* lst;
-    if (!args) return -1;
-    impl = ksock_impl_from_fd(args->socket_fd);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    impl = ksock_impl_from_fd(args.socket_fd);
     if (!impl || impl->role != KSOCK_ROLE_STREAM_LISTENER || !impl->bound) return -1;
     if (impl->tcp) return 0; /* already listening */
-    lst = ksock_tcp_listen(impl->bind_port, (int)args->backlog);
+    lst = ksock_tcp_listen(impl->bind_port, (int)args.backlog);
     if (!lst) return -1;
     impl->tcp = lst;
     return 0;
 }
 
-static long sys_accept(const syscall_accept_args_t* args) {
+static long sys_accept(const syscall_accept_args_t* uargs) {
+    syscall_accept_args_t args;
     ksock_node_impl_t* impl;
     ksock_node_impl_t* new_impl;
     uint32_t timeout;
@@ -689,8 +832,11 @@ static long sys_accept(const syscall_accept_args_t* args) {
     int fd;
     uint8_t peer_ip[4] = {0, 0, 0, 0};
     uint16_t peer_port = 0u;
-    if (!args) return -1;
-    impl = ksock_impl_from_fd(args->socket_fd);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (args.out_from_ip && !access_ok_w(args.out_from_ip, 4u)) return -EFAULT;
+    if (args.out_from_port && !access_ok_w(args.out_from_port, sizeof(uint16_t))) return -EFAULT;
+    impl = ksock_impl_from_fd(args.socket_fd);
     if (!impl || impl->role != KSOCK_ROLE_STREAM_LISTENER || !impl->tcp) return -1;
     timeout = impl->nonblock ? 0u
                              : ksock_effective_timeout(impl->rcv_timeout_ms);
@@ -717,62 +863,79 @@ static long sys_accept(const syscall_accept_args_t* args) {
     if (fd < 0) return -1;
 
     (void)ksock_tcp_peer(c, peer_ip, &peer_port);
-    if (args->out_from_ip) memcpy(args->out_from_ip, peer_ip, 4);
-    if (args->out_from_port) *args->out_from_port = peer_port;
+    if (args.out_from_ip) (void)copy_to_user(args.out_from_ip, peer_ip, 4u);
+    if (args.out_from_port) (void)copy_to_user(args.out_from_port, &peer_port, sizeof(peer_port));
     return fd;
 }
 
-static long sys_send(const syscall_send_args_t* args) {
+static long sys_send(const syscall_send_args_t* uargs) {
+    syscall_send_args_t args;
     ksock_node_impl_t* impl;
     uint8_t saved_nonblock;
     long rc;
-    if (!args || (!args->payload && args->payload_len > 0u)) return -1;
-    impl = ksock_impl_from_fd(args->socket_fd);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (!args.payload && args.payload_len > 0u) return -1;
+    if (args.payload_len > 0u && !access_ok_r(args.payload, args.payload_len)) return -EFAULT;
+    impl = ksock_impl_from_fd(args.socket_fd);
     if (!impl || impl->role != KSOCK_ROLE_STREAM_CONN) return -1;
     /* vfs_fd_write() -> ksock_write() derives blocking purely from impl->nonblock;
      * honor a per-call MSG_DONTWAIT by flipping it for just this call. */
     saved_nonblock = impl->nonblock;
-    if (args->flags & KMSG_DONTWAIT) impl->nonblock = 1;
-    rc = (long)vfs_fd_write(args->socket_fd, (const uint8_t*)args->payload, args->payload_len);
+    if (args.flags & KMSG_DONTWAIT) impl->nonblock = 1;
+    rc = (long)vfs_fd_write(args.socket_fd, (const uint8_t*)args.payload, args.payload_len);
     impl->nonblock = saved_nonblock;
     return rc;
 }
 
-static long sys_recv(const syscall_recv_args_t* args) {
+static long sys_recv(const syscall_recv_args_t* uargs) {
+    syscall_recv_args_t args;
     ksock_node_impl_t* impl;
     uint8_t saved_nonblock;
     int32_t n;
-    if (!args || (!args->out_payload && args->payload_capacity > 0u)) return -1;
-    impl = ksock_impl_from_fd(args->socket_fd);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (!args.out_payload && args.payload_capacity > 0u) return -1;
+    if (args.payload_capacity > 0u && !access_ok_w(args.out_payload, args.payload_capacity)) return -EFAULT;
+    if (args.out_payload_len && !access_ok_w(args.out_payload_len, sizeof(uint16_t))) return -EFAULT;
+    impl = ksock_impl_from_fd(args.socket_fd);
     if (!impl || impl->role != KSOCK_ROLE_STREAM_CONN) return -1;
     saved_nonblock = impl->nonblock;
-    if (args->flags & KMSG_DONTWAIT) impl->nonblock = 1;
-    n = vfs_fd_read(args->socket_fd, (uint8_t*)args->out_payload, args->payload_capacity);
+    if (args.flags & KMSG_DONTWAIT) impl->nonblock = 1;
+    n = vfs_fd_read(args.socket_fd, (uint8_t*)args.out_payload, args.payload_capacity);
     impl->nonblock = saved_nonblock;
-    if (n >= 0 && args->out_payload_len) *args->out_payload_len = (uint16_t)n;
+    if (n >= 0 && args.out_payload_len) {
+        uint16_t nn = (uint16_t)n;
+        (void)copy_to_user(args.out_payload_len, &nn, sizeof(nn));
+    }
     return n;
 }
 
-static long sys_sendto(const syscall_sendto_args_t* args) {
+static long sys_sendto(const syscall_sendto_args_t* uargs) {
+    syscall_sendto_args_t args;
     ksock_node_impl_t* impl;
     int rc;
-    if (!args) return -1;
-    impl = ksock_impl_from_fd(args->socket_id);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (!args.payload && args.payload_len > 0u) return -1;
+    if (args.payload_len > 0u && !access_ok_r(args.payload, args.payload_len)) return -EFAULT;
+    impl = ksock_impl_from_fd(args.socket_id);
     if (!impl || impl->role != KSOCK_ROLE_DGRAM || !impl->udp) return -1;
     if (impl->shut_wr) return -1;
-    /* args->flags (e.g. MSG_DONTWAIT) has no effect: ksock_udp_sendto() never blocks. */
+    /* args.flags (e.g. MSG_DONTWAIT) has no effect: ksock_udp_sendto() never blocks. */
     rc = ksock_udp_sendto((ksock_udp_t*)impl->udp,
-                          args->dst_ip,
-                          args->dst_port,
-                          args->payload,
-                          (uint16_t)args->payload_len);
-    if (rc == (int)args->payload_len) return (long)args->payload_len;
+                          args.dst_ip,
+                          args.dst_port,
+                          args.payload,
+                          (uint16_t)args.payload_len);
+    if (rc == (int)args.payload_len) return (long)args.payload_len;
     /* ksock_udp_sendto() collapses every failure (alloc, ARP, tx) into a single -1;
      * NET_UDP_ERR_TX is the closest old single-value stand-in. */
     return (long)NET_UDP_ERR_TX;
 }
 
-static long sys_recvfrom(const syscall_recvfrom_args_t* args) {
+static long sys_recvfrom(const syscall_recvfrom_args_t* uargs) {
+    syscall_recvfrom_args_t args;
     ksock_node_impl_t* impl;
     uint8_t from_ip[4] = {0, 0, 0, 0};
     uint16_t from_port = 0u;
@@ -781,20 +944,29 @@ static long sys_recvfrom(const syscall_recvfrom_args_t* args) {
     int force_nonblock;
     int rc;
 
-    if (!args) return -1;
-    impl = ksock_impl_from_fd(args->socket_id);
+    if (!uargs) return -1;
+    if (copy_from_user(&args, uargs, sizeof(args)) < 0) return -EFAULT;
+    if (!args.out_payload && args.payload_capacity > 0u) return -1;
+    if (args.payload_capacity > 0u && !access_ok_w(args.out_payload, args.payload_capacity)) return -EFAULT;
+    if (args.out_payload_len && !access_ok_w(args.out_payload_len, sizeof(uint16_t))) return -EFAULT;
+    if (args.out_from_ip && !access_ok_w(args.out_from_ip, 4u)) return -EFAULT;
+    if (args.out_from_port && !access_ok_w(args.out_from_port, sizeof(uint16_t))) return -EFAULT;
+    impl = ksock_impl_from_fd(args.socket_id);
     if (!impl || impl->role != KSOCK_ROLE_DGRAM || !impl->udp) return -1;
     if (impl->shut_rd) {
-        if (args->out_payload_len) *args->out_payload_len = 0;
+        if (args.out_payload_len) {
+            uint16_t zero = 0;
+            (void)copy_to_user(args.out_payload_len, &zero, sizeof(zero));
+        }
         return 0;
     }
 
-    force_nonblock = (impl->nonblock || (args->flags & KMSG_DONTWAIT)) ? 1 : 0;
+    force_nonblock = (impl->nonblock || (args.flags & KMSG_DONTWAIT)) ? 1 : 0;
     timeout = force_nonblock ? 0u : ksock_effective_timeout(impl->rcv_timeout_ms);
 
     rc = ksock_udp_recvfrom((ksock_udp_t*)impl->udp,
-                            args->out_payload,
-                            (uint16_t)args->payload_capacity,
+                            args.out_payload,
+                            (uint16_t)args.payload_capacity,
                             &out_len,
                             from_ip, &from_port,
                             timeout, force_nonblock);
@@ -807,9 +979,9 @@ static long sys_recvfrom(const syscall_recvfrom_args_t* args) {
      * longer be detected since ksock_udp_recvfrom() truncates silently. */
     if (rc <= 0) return (long)NET_UDP_ERR_WOULD_BLOCK;
 
-    if (args->out_payload_len) *args->out_payload_len = out_len;
-    if (args->out_from_ip) memcpy(args->out_from_ip, from_ip, 4);
-    if (args->out_from_port) *args->out_from_port = from_port;
+    if (args.out_payload_len) (void)copy_to_user(args.out_payload_len, &out_len, sizeof(out_len));
+    if (args.out_from_ip) (void)copy_to_user(args.out_from_ip, from_ip, 4u);
+    if (args.out_from_port) (void)copy_to_user(args.out_from_port, &from_port, sizeof(from_port));
     return (long)out_len;
 }
 

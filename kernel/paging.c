@@ -650,6 +650,68 @@ static void page_fault_handler(struct registers* r) {
 uintptr_t paging_heap_base(void) { return (uintptr_t)KHEAP_BASE; }
 uintptr_t paging_heap_size(void) { return (uintptr_t)KHEAP_SIZE; }
 
+/*
+ * Validate that every page spanning [addr, addr+len) is user-accessible in the
+ * *current* address space. A page qualifies when it is:
+ *   - present with PTE_U (and, for writes, either PTE_W or a COW page that the
+ *     fault handler will copy on first write), or
+ *   - swapped out with PTE_U preserved in its saved flags (and PTE_W for writes),
+ *   - or inside a registered demand region carrying PTE_U (covers lazily-mapped
+ *     ELF segments and anonymous demand memory).
+ * This mirrors exactly what the page-fault handler is able to resolve, so it
+ * never rejects legitimate lazy/swapped user memory, while rejecting any pointer
+ * into the kernel heap, identity-mapped low memory, or page tables (none of
+ * which carry PTE_U).
+ * Returns 1 if the whole range is accessible, 0 otherwise. A zero-length range
+ * is trivially accessible.
+ */
+int paging_access_ok(uintptr_t addr, uint32_t len, int write) {
+    if (len == 0u) return 1;
+    uintptr_t end = addr + len;
+    if (end < addr) return 0; /* address range wraps past 4 GiB */
+
+    uint32_t* pd = pd_from_phys(g_current_cr3);
+    uintptr_t page = addr & ~0xFFFu;
+    uintptr_t last = (end - 1u) & ~0xFFFu;
+
+    for (;;) {
+        uint32_t dir_idx = (page >> 22) & 0x3FFu;
+        uint32_t pt_idx  = (page >> 12) & 0x3FFu;
+        uint32_t* pt = get_pt_from_pd(pd, dir_idx);
+        int ok = 0;
+
+        if (pt) {
+            uint32_t pte = pt[pt_idx];
+            if (pte & PTE_P) {
+                if (pte & PTE_U) {
+                    /* Present user page: writable directly, or a COW page the
+                     * fault handler duplicates on the first write. */
+                    ok = !write || (pte & PTE_W) || (pte & PTE_COW);
+                }
+            } else if (pte_is_swapped(pte)) {
+                uint32_t f = pte_swap_flags(pte);
+                if (f & PTE_U) {
+                    ok = !write || (f & PTE_W) || (f & PTE_COW);
+                }
+            }
+        }
+
+        if (!ok) {
+            /* Not currently mapped/swapped as user; a demand region can still
+             * make this a legitimate user address the fault handler will fill. */
+            demand_region_t* region = find_demand_region(page);
+            if (region && (region->flags & PTE_U)) {
+                ok = !write || (region->flags & PTE_W);
+            }
+        }
+
+        if (!ok) return 0;
+        if (page == last) break;
+        page += PAGE_SIZE;
+    }
+    return 1;
+}
+
 int paging_map_user(uintptr_t vaddr) {
     uint32_t pd_idx = (vaddr >> 22) & 0x3FF;
     uint32_t pt_idx = (vaddr >> 12) & 0x3FF;

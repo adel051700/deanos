@@ -51,6 +51,14 @@ int paging_mark_cow(uintptr_t vaddr);
 /* Query VM hook counters for diagnostics. */
 void paging_get_stats(paging_stats_t* out);
 
+/*
+ * Validate that [addr, addr+len) is entirely user-accessible in the current
+ * address space (see paging.c for the exact acceptance rules). Pass write=1 to
+ * require write permission. Returns 1 if accessible, 0 otherwise; len==0 is
+ * always accessible.
+ */
+int paging_access_ok(uintptr_t addr, uint32_t len, int write);
+
 /* Active address-space helpers. */
 uint32_t paging_current_cr3(void);
 void paging_switch_mm(uint32_t cr3_phys);
