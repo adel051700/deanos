@@ -6,6 +6,22 @@
 struct gdt_entry gdt[6];
 struct gdt_ptr   gp;
 
+/*
+ * W^X for the user stack (non-executable stack) on non-PAE i386.
+ *
+ * There is no per-page NX bit without PAE, so we make the stack non-executable
+ * by capping the ring-3 *code* segment's limit below it. User code and heap
+ * live low (ELF at 0x08048000); the user stack sits high (~0xBFFF4000). With
+ * 4 KiB granularity a limit field of 0xBEFFF yields a code-fetch ceiling of
+ * 0xBEFFFFFF, so any instruction fetch from the stack raises #GP (handled in
+ * fault.c by killing just that task). The ring-3 *data* segment keeps the full
+ * 4 GiB limit, so the stack stays readable/writable.
+ *
+ * Trade-off: everything at/above 0xBF000000 is non-executable, not only the
+ * stack — acceptable for this layout (nothing else lives up there).
+ */
+#define USER_CODE_LIMIT_PAGES 0xBEFFFu   /* exec ceiling 0xBEFFFFFF (< 0xBF000000) */
+
 // External assembly function to load the GDT
 extern void gdt_flush(uint32_t);
 
@@ -43,7 +59,8 @@ void gdt_initialize() {
     gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);
     
     // Index 3: User code segment (selector 0x18, RPL 3 → 0x1B)
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);
+    // Limit capped below the user stack so the stack is non-executable (W^X).
+    gdt_set_gate(3, 0, USER_CODE_LIMIT_PAGES, 0xFA, 0xCF);
     
     // Index 4: User data segment (selector 0x20, RPL 3 → 0x23)
     gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);

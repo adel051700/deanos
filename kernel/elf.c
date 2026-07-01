@@ -162,6 +162,8 @@ extern const uint8_t _binary_build_user_shmtest_elf_start[];
 extern const uint8_t _binary_build_user_shmtest_elf_end[];
 extern const uint8_t _binary_build_user_faulttest_elf_start[];
 extern const uint8_t _binary_build_user_faulttest_elf_end[];
+extern const uint8_t _binary_build_user_nxstacktest_elf_start[];
+extern const uint8_t _binary_build_user_nxstacktest_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -435,4 +437,10 @@ void elf_install_test_programs(void) {
     if (!faulttest) return;
     uint32_t faulttest_size = (uint32_t)(_binary_build_user_faulttest_elf_end - _binary_build_user_faulttest_elf_start);
     vfs_write(faulttest, 0, faulttest_size, _binary_build_user_faulttest_elf_start);
+
+    vfs_create(bin, "nxstacktest", VFS_FILE);
+    vfs_node_t* nxstacktest = vfs_finddir(bin, "nxstacktest");
+    if (!nxstacktest) return;
+    uint32_t nxstacktest_size = (uint32_t)(_binary_build_user_nxstacktest_elf_end - _binary_build_user_nxstacktest_elf_start);
+    vfs_write(nxstacktest, 0, nxstacktest_size, _binary_build_user_nxstacktest_elf_start);
 }

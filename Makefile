@@ -84,6 +84,8 @@ kernel/elf.c \
 kernel/pci.c \
 kernel/e1000.c \
 kernel/rtl8139.c \
+kernel/stack_protector.c \
+kernel/fault.c \
 kernel/context_switch.s
 
 ARCH_C_SRCS = \
@@ -118,8 +120,8 @@ KERNEL_OBJS += build/kernel/context_switch.o
 LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(filter libc/%.c,$(LIBC_SRCS)))
 ARCH_C_OBJS = $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(ARCH_C_SRCS))
 ARCH_ASM_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(ARCH_ASM_SRCS))
-USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUILD_DIR)/execvetest.elf $(USER_BUILD_DIR)/waittest.elf $(USER_BUILD_DIR)/waitstress.elf $(USER_BUILD_DIR)/waitstressbg.elf $(USER_BUILD_DIR)/catfd.elf $(USER_BUILD_DIR)/sigtest.elf $(USER_BUILD_DIR)/mmaptest.elf $(USER_BUILD_DIR)/shmtest.elf
-USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o $(USER_BUILD_DIR)/faulttest_blob.o
+USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUILD_DIR)/execvetest.elf $(USER_BUILD_DIR)/waittest.elf $(USER_BUILD_DIR)/waitstress.elf $(USER_BUILD_DIR)/waitstressbg.elf $(USER_BUILD_DIR)/catfd.elf $(USER_BUILD_DIR)/sigtest.elf $(USER_BUILD_DIR)/mmaptest.elf $(USER_BUILD_DIR)/shmtest.elf $(USER_BUILD_DIR)/nxstacktest.elf
+USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o $(USER_BUILD_DIR)/faulttest_blob.o $(USER_BUILD_DIR)/nxstacktest_blob.o
 
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
 ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LWIP_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
@@ -162,9 +164,11 @@ $(LWIP_BUILD_DIR)/port/%.o: kernel/lwip_port/%.c | directories
 	@mkdir -p $(dir $@)
 	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS) -Wno-unused-parameter
 
-# Compile C files from kernel directory
+# Compile C files from kernel directory.
+# Kernel C code is built with stack canaries; the freestanding runtime for them
+# lives in kernel/stack_protector.c. (libc/lwip/arch stay unprotected.)
 $(KERNEL_BUILD_DIR)/%.o: kernel/%.c | directories
-	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
+	$(CC) -MD -c $< -o $@ $(CFLAGS) -fstack-protector-strong $(CPPFLAGS)
 
 $(KERNEL_BUILD_DIR)/%.o: kernel/%.s | directories
 	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
@@ -212,6 +216,9 @@ $(USER_BUILD_DIR)/shmtest.o: user/shmtest.s | directories
 	$(AS) $< -o $@
 
 $(USER_BUILD_DIR)/faulttest.o: user/faulttest.s | directories
+	$(AS) $< -o $@
+
+$(USER_BUILD_DIR)/nxstacktest.o: user/nxstacktest.s | directories
 	$(AS) $< -o $@
 
 $(USER_BUILD_DIR)/anim.elf: $(USER_BUILD_DIR)/anim.o user/linker.ld | directories
@@ -278,6 +285,12 @@ $(USER_BUILD_DIR)/faulttest.elf: $(USER_BUILD_DIR)/faulttest.o user/linker.ld | 
 	$(CC) -T user/linker.ld -o $@ $(USER_BUILD_DIR)/faulttest.o -ffreestanding -fno-pie -nostdlib -nostartfiles -Wl,-n
 
 $(USER_BUILD_DIR)/faulttest_blob.o: $(USER_BUILD_DIR)/faulttest.elf | directories
+	$(LD) -r -m elf_i386 -b binary $< -o $@
+
+$(USER_BUILD_DIR)/nxstacktest.elf: $(USER_BUILD_DIR)/nxstacktest.o user/linker.ld | directories
+	$(CC) -T user/linker.ld -o $@ $(USER_BUILD_DIR)/nxstacktest.o -ffreestanding -fno-pie -nostdlib -nostartfiles -Wl,-n
+
+$(USER_BUILD_DIR)/nxstacktest_blob.o: $(USER_BUILD_DIR)/nxstacktest.elf | directories
 	$(LD) -r -m elf_i386 -b binary $< -o $@
 
 

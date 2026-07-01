@@ -20,6 +20,8 @@
 #include "include/kernel/mbr.h"
 #include "include/kernel/paging.h"
 #include "include/kernel/net_lwip.h"
+#include "include/kernel/stack_protector.h"
+#include "include/kernel/fault.h"
 
 #include <stdint.h>
 
@@ -37,6 +39,10 @@ static void shell_task(void) {
 
 
 void kernel_main(void) {
+    /* Reseed the stack-canary guard first, before any protected frame that
+     * later returns is live (kernel_main itself never returns). */
+    stack_protector_init();
+
     serial_initialize();
     klog_init();
     serial_write_buf("Serial initialized.\n", 20);
@@ -44,6 +50,7 @@ void kernel_main(void) {
     gdt_initialize();
     tss_initialize(0x10, 0);    /* kernel SS=0x10, ESP0 updated per-task */
     idt_initialize();
+    fault_initialize();
     syscall_initialize();
     pit_initialize(100);
     keyboard_initialize();
