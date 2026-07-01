@@ -7,6 +7,11 @@
 typedef struct ksock_tcp ksock_tcp_t;
 
 ksock_tcp_t* ksock_tcp_connect(const uint8_t ip[4], uint16_t port, uint32_t timeout_ms);
+/* Returns: bytes sent (>0) on partial or full success; KSOCK_TCP_WOULDBLOCK
+ * if nothing could be sent (no send-buffer space, whether because nonblock
+ * was requested or the timeout expired before any bytes went out); <0 on
+ * error. Callers must not treat a KSOCK_TCP_WOULDBLOCK return as EOF/error -
+ * it means "retry later", uniformly regardless of nonblock vs timeout. */
 int  ksock_tcp_send(ksock_tcp_t*, const void* buf, uint16_t len, uint32_t timeout_ms, int nonblock);
 int  ksock_tcp_recv(ksock_tcp_t*, void* buf, uint16_t cap, uint16_t* out_len, uint32_t timeout_ms, int nonblock);
 int  ksock_tcp_readable(ksock_tcp_t*);

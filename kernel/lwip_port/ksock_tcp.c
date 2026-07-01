@@ -54,18 +54,32 @@ static err_t on_recv(void* arg, struct tcp_pcb* pcb, struct pbuf* p, err_t e) {
     if (!p) { s->peer_closed = 1; return ERR_OK; }   /* FIN */
     {
         uint16_t avail = (uint16_t)(TCP_RXBUF - s->rx_len);
-        uint16_t take = p->tot_len < avail ? p->tot_len : avail;
-        uint16_t off = 0, wpos = (uint16_t)((s->rx_head + s->rx_len) % TCP_RXBUF);
-        while (off < take) {
-            uint16_t chunk = (uint16_t)(TCP_RXBUF - wpos);
-            if (chunk > (uint16_t)(take - off)) chunk = (uint16_t)(take - off);
-            pbuf_copy_partial(p, s->rx + wpos, chunk, off);
-            wpos = (uint16_t)((wpos + chunk) % TCP_RXBUF);
-            off += chunk;
+        /* All-or-nothing: if the whole pbuf doesn't fit, refuse it untouched
+         * (return ERR_MEM). lwIP stores the pbuf as pcb->refused_data
+         * (tcp_in.c) and retries delivery via tcp_process_refused_data() on
+         * a later tcp_fasttmr() tick (tcp.c), i.e. the next net_service_tick()
+         * pump after the app has drained the ring via ksock_tcp_recv(). Since
+         * we neither call tcp_recved() nor advance rcv_nxt for the refused
+         * data, rcv_wnd stays closed and the peer will not send data we can't
+         * yet buffer. We must NOT copy partial data, call tcp_recved(), or
+         * pbuf_free() on this path. */
+        if (p->tot_len > avail) {
+            return ERR_MEM;
         }
-        s->rx_len += take;
-        tcp_recved(pcb, take);
-        pbuf_free(p);
+        {
+            uint16_t off = 0, wpos = (uint16_t)((s->rx_head + s->rx_len) % TCP_RXBUF);
+            uint16_t take = p->tot_len;
+            while (off < take) {
+                uint16_t chunk = (uint16_t)(TCP_RXBUF - wpos);
+                if (chunk > (uint16_t)(take - off)) chunk = (uint16_t)(take - off);
+                pbuf_copy_partial(p, s->rx + wpos, chunk, off);
+                wpos = (uint16_t)((wpos + chunk) % TCP_RXBUF);
+                off += chunk;
+            }
+            s->rx_len += take;
+            tcp_recved(pcb, take);
+            pbuf_free(p);
+        }
     }
     return ERR_OK;
 }
@@ -115,7 +129,7 @@ int ksock_tcp_send(ksock_tcp_t* s, const void* buf, uint16_t len, uint32_t timeo
         u16_t space = tcp_sndbuf(s->pcb);
         if (space == 0) {
             if (nonblock) return sent > 0 ? (int)sent : KSOCK_TCP_WOULDBLOCK;
-            if (timeout_ms && (uint32_t)pit_get_uptime_ms() - start >= timeout_ms) return sent > 0 ? (int)sent : 0;
+            if (timeout_ms && (uint32_t)pit_get_uptime_ms() - start >= timeout_ms) return sent > 0 ? (int)sent : KSOCK_TCP_WOULDBLOCK;
             net_service_tick(); task_yield(); continue;
         }
         {
@@ -162,10 +176,16 @@ static err_t on_accept(void* arg, struct tcp_pcb* newpcb, err_t e) {
     uint32_t next;
     if (e != ERR_OK || !newpcb) return ERR_VAL;
     next = (lst->acc_head + 1u) % ACCEPT_Q;
-    if (next == lst->acc_tail) return ERR_ABRT;     /* backlog full */
+    /* Per tcp.h accept_fn doc + tcp_in.c: "Only return ERR_ABRT if you have
+     * called tcp_abort from within the callback function!" tcp_in.c's
+     * caller does `if (err != ERR_ABRT) tcp_abort(pcb);` — so returning
+     * ERR_ABRT here without aborting ourselves would tell lwIP we already
+     * handled it, leaking/orphaning the established pcb. Return ERR_MEM
+     * instead so lwIP calls tcp_abort(newpcb) for us and RSTs the peer. */
+    if (next == lst->acc_tail) return ERR_MEM;      /* backlog full */
     {
         ksock_tcp_t* s = alloc_sock(newpcb);
-        if (!s) return ERR_ABRT;
+        if (!s) return ERR_MEM;
         s->connected = 1;
         lst->acc_q[lst->acc_head] = s;
         lst->acc_head = next;
@@ -175,11 +195,16 @@ static err_t on_accept(void* arg, struct tcp_pcb* newpcb, err_t e) {
 
 ksock_tcp_t* ksock_tcp_listen(uint16_t port, int backlog) {
     struct tcp_pcb* pcb = tcp_new();
+    struct tcp_pcb* bound_pcb;
     ksock_tcp_t* s;
     if (!pcb) return 0;
     if (tcp_bind(pcb, IP_ANY_TYPE, port) != ERR_OK) { tcp_abort(pcb); return 0; }
+    /* tcp_listen_with_backlog() frees the original pcb and returns a new one
+     * on success, but on failure (NULL) it does NOT free the original pcb -
+     * capture it beforehand so we can abort it ourselves. */
+    bound_pcb = pcb;
     pcb = tcp_listen_with_backlog(pcb, (u8_t)(backlog > 0 ? backlog : 1));
-    if (!pcb) return 0;
+    if (!pcb) { tcp_abort(bound_pcb); return 0; }
     s = (ksock_tcp_t*)kmalloc(sizeof(*s));
     if (!s) { tcp_abort(pcb); return 0; }
     memset(s, 0, sizeof(*s));
@@ -216,11 +241,24 @@ int ksock_tcp_peer(ksock_tcp_t* s, uint8_t out_ip[4], uint16_t* out_port) {
 
 void ksock_tcp_close(ksock_tcp_t* s) {
     if (!s) return;
+    if (s->is_listener) {
+        /* Drain any established-but-never-accepted sockets sitting in the
+         * accept queue: they are already alloc_sock'd with live pcbs, so
+         * closing the listener without draining them would orphan those
+         * pcbs. Each queue slot holds a distinct ksock_tcp_t with its own
+         * pcb (never the listener's pcb and never aliased with another
+         * queued entry), so recursing into ksock_tcp_close() per entry is
+         * safe and cannot double-free or touch a pcb freed elsewhere. */
+        while (s->acc_tail != s->acc_head) {
+            ksock_tcp_t* q = s->acc_q[s->acc_tail];
+            s->acc_tail = (s->acc_tail + 1u) % ACCEPT_Q;
+            ksock_tcp_close(q);
+        }
+    }
     if (s->pcb) {
         tcp_arg(s->pcb, NULL);
         tcp_recv(s->pcb, NULL); tcp_sent(s->pcb, NULL); tcp_err(s->pcb, NULL);
-        if (s->is_listener) { tcp_close(s->pcb); }
-        else if (tcp_close(s->pcb) != ERR_OK) { tcp_abort(s->pcb); }
+        if (tcp_close(s->pcb) != ERR_OK) { tcp_abort(s->pcb); }
     }
     kfree(s);
 }
