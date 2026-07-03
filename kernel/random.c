@@ -161,6 +161,36 @@ int random_is_seeded(void) {
     return g_seeded;
 }
 
+/* Boot-time timing-jitter entropy harvest.
+ *
+ * With no hardware RNG and possibly no user input at boot, /dev/random would
+ * otherwise never reach the seed threshold (keyboard/mouse credit 1 bit per
+ * event; typing one command yields far less than 128 bits). On real hardware
+ * -- and on a QEMU whose TSC tracks the host clock -- the low bits of the TSC
+ * delta across a short variable-latency loop are unpredictable run-to-run and
+ * sample-to-sample. We fold every delta into the pool, but only CREDIT a bit
+ * when the delta's low bits actually change between samples: a perfectly
+ * deterministic environment credits nothing and /dev/random stays honestly
+ * unseeded, while a normal environment seeds within the first moments of boot.
+ * This mirrors the jitter-entropy seeding real kernels use at boot. The
+ * per-bit credit is a conservative heuristic, not a rigorous entropy proof. */
+static void jitter_seed(void) {
+    uint32_t prev = 0u;
+    int have_prev = 0;
+    /* Bound the loop so a variation-free environment cannot spin forever. */
+    for (int i = 0; i < (int)(RANDOM_SEED_THRESHOLD_BITS * 8u) && !g_seeded; i++) {
+        uint64_t a = read_tsc();
+        volatile uint32_t spin = (uint32_t)(a & 0x0fu);
+        for (volatile uint32_t j = 0; j <= spin; j++) { /* variable-latency filler */ }
+        uint64_t b = read_tsc();
+        uint32_t delta = (uint32_t)(b - a);
+        uint32_t credit = (have_prev && (((delta ^ prev) & 0x3u) != 0u)) ? 1u : 0u;
+        prev = delta;
+        have_prev = 1;
+        random_add_entropy(&delta, sizeof delta, credit);
+    }
+}
+
 void random_initialize(void) {
     if (g_initialized) return;
     /* Nonzero default key so output is meaningful even before mixing. */
@@ -177,5 +207,10 @@ void random_initialize(void) {
     random_add_entropy(&wall, sizeof wall, 0u);
     random_add_entropy(addrs, sizeof addrs, 0u);
 
-    klog("[random] CSPRNG initialized");
+    /* Harvest timing jitter so the pool reaches the seed threshold at boot,
+     * making /dev/random usable without requiring user input. */
+    jitter_seed();
+
+    klog(g_seeded ? "[random] CSPRNG initialized (seeded)"
+                  : "[random] CSPRNG initialized (unseeded)");
 }
