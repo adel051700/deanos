@@ -19,11 +19,23 @@
 
 typedef int32_t (*devrandom_read_fn)(vfs_node_t*, uint32_t, uint32_t, uint8_t*);
 
+/* random_bytes()/random_add_entropy() each run inside their own irq_save/
+ * irq_restore critical section, whose duration scales with the byte count.
+ * Slice large requests into chunks so interrupts get a chance to re-enable
+ * between slices instead of staying off for the whole transfer. */
+#define DEVRANDOM_CHUNK 512u
+
 static int32_t devrandom_read_urandom(vfs_node_t* node, uint32_t offset,
                                       uint32_t size, uint8_t* buf) {
     (void)node; (void)offset;
     if (!buf || size == 0u) return 0;
-    random_bytes(buf, size);
+    uint32_t done = 0u;
+    while (done < size) {
+        uint32_t chunk = size - done;
+        if (chunk > DEVRANDOM_CHUNK) chunk = DEVRANDOM_CHUNK;
+        random_bytes(buf + done, chunk);
+        done += chunk;
+    }
     return (int32_t)size;   /* character device: never EOF */
 }
 
@@ -32,7 +44,13 @@ static int32_t devrandom_read_random(vfs_node_t* node, uint32_t offset,
     (void)node; (void)offset;
     if (!buf || size == 0u) return 0;
     while (!random_is_seeded()) task_sleep_ms(10);
-    random_bytes(buf, size);
+    uint32_t done = 0u;
+    while (done < size) {
+        uint32_t chunk = size - done;
+        if (chunk > DEVRANDOM_CHUNK) chunk = DEVRANDOM_CHUNK;
+        random_bytes(buf + done, chunk);
+        done += chunk;
+    }
     return (int32_t)size;   /* character device: never EOF */
 }
 
@@ -40,7 +58,13 @@ static int32_t devrandom_write(vfs_node_t* node, uint32_t offset,
                                uint32_t size, const uint8_t* buf) {
     (void)node; (void)offset;
     if (!buf) return -1;
-    random_add_entropy(buf, size, 0u);   /* adds mixing material, not estimate */
+    uint32_t done = 0u;
+    while (done < size) {
+        uint32_t chunk = size - done;
+        if (chunk > DEVRANDOM_CHUNK) chunk = DEVRANDOM_CHUNK;
+        random_add_entropy(buf + done, chunk, 0u);   /* adds mixing material, not estimate */
+        done += chunk;
+    }
     return (int32_t)size;
 }
 
