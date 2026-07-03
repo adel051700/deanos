@@ -16,6 +16,12 @@
 #define RTC_STATUS_A 0x0A
 #define RTC_STATUS_B 0x0B
 
+#define RTC_RESYNC_INTERVAL_MS (30u * 60u * 1000u)
+
+static uint32_t synced_epoch_s = 0;
+static uint64_t synced_mono_ms = 0;
+static int synced = 0;
+
 static int century_register = 0x00;
 
 /**
@@ -133,6 +139,7 @@ void get_uptime(uptime_t* uptime) {
  * Initialize RTC
  */
 void rtc_initialize(void) {
+    rtc_resync_tick();
 }
 
 static int is_leap_year(uint32_t year) {
@@ -174,6 +181,16 @@ static uint32_t rtc_read_epoch_now(void) {
     return rtc_time_to_epoch_seconds(&t);
 }
 
+void rtc_resync_tick(void) {
+    uint64_t now_ms = pit_get_uptime_ms();
+    if (synced && (now_ms - synced_mono_ms) < RTC_RESYNC_INTERVAL_MS) return;
+    synced_epoch_s = rtc_read_epoch_now();
+    synced_mono_ms = now_ms;
+    synced = 1;
+}
+
 uint32_t rtc_get_wallclock_seconds(void) {
-    return rtc_read_epoch_now();
+    if (!synced) return rtc_read_epoch_now();
+    uint64_t elapsed_ms = pit_get_uptime_ms() - synced_mono_ms;
+    return synced_epoch_s + (uint32_t)(elapsed_ms / 1000u);
 }

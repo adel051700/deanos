@@ -23,5 +23,6 @@ void rtc_initialize(void);
 void rtc_read_time(rtc_time_t* time);
 void get_uptime(uptime_t* uptime);
 uint32_t rtc_get_wallclock_seconds(void);
+void rtc_resync_tick(void);
 
 #endif
