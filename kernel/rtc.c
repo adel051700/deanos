@@ -1,5 +1,6 @@
 #include "include/kernel/rtc.h"
 #include "include/kernel/io.h"
+#include "include/kernel/pit.h"
 #include <stdint.h>
 
 #define CMOS_ADDRESS 0x70
@@ -16,10 +17,6 @@
 #define RTC_STATUS_B 0x0B
 
 static int century_register = 0x00;
-
-// Store boot time
-static rtc_time_t boot_time;
-static int boot_time_initialized = 0;
 
 /**
  * Read a value from a CMOS register
@@ -121,57 +118,21 @@ void rtc_read_time(rtc_time_t* time) {
 }
 
 /**
- * Get system uptime by comparing current time with boot time
+ * Get system uptime from monotonic PIT clock
  */
 void get_uptime(uptime_t* uptime) {
-    if (!boot_time_initialized) {
-        uptime->days = 0;
-        uptime->hours = 0;
-        uptime->minutes = 0;
-        uptime->seconds = 0;
-        return;
-    }
-    
-    rtc_time_t current_time;
-    rtc_read_time(&current_time);
-    
-    // Calculate difference in seconds
-    int32_t total_seconds = 0;
-    
-    total_seconds += (current_time.second - boot_time.second);
-    total_seconds += (current_time.minute - boot_time.minute) * 60;
-    total_seconds += (current_time.hour - boot_time.hour) * 3600;
-    
-    // Handle day overflow
-    int32_t day_diff = current_time.day - boot_time.day;
-    if (day_diff < 0) {
-        day_diff += 30;
-    }
-    total_seconds += day_diff * 86400;
-    
-    // Handle negative seconds
-    if (total_seconds < 0) {
-        total_seconds = 0;
-    }
-    
-    uptime->seconds = total_seconds % 60;
-    total_seconds /= 60;
-    
-    uptime->minutes = total_seconds % 60;
-    total_seconds /= 60;
-    
-    uptime->hours = total_seconds % 24;
-    total_seconds /= 24;
-    
-    uptime->days = total_seconds;
+    uint64_t total_seconds = pit_get_uptime_ms() / 1000u;
+
+    uptime->seconds = (uint32_t)(total_seconds % 60u); total_seconds /= 60u;
+    uptime->minutes = (uint32_t)(total_seconds % 60u); total_seconds /= 60u;
+    uptime->hours   = (uint32_t)(total_seconds % 24u); total_seconds /= 24u;
+    uptime->days    = (uint32_t)total_seconds;
 }
 
 /**
- * Initialize RTC and save boot time
+ * Initialize RTC
  */
 void rtc_initialize(void) {
-    rtc_read_time(&boot_time);
-    boot_time_initialized = 1;
 }
 
 static int is_leap_year(uint32_t year) {
