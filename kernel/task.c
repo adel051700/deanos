@@ -20,6 +20,7 @@
 #include "include/kernel/vfs.h"
 #include "include/kernel/blockdev.h"
 #include "include/kernel/net_lwip.h"
+#include "include/kernel/rtc.h"
 #include "../libc/include/string.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -346,6 +347,7 @@ static int task_lazy_elf_install(task_t* t,
 static void idle_thread(void) {
     for (;;) {
         net_service_tick();
+        rtc_resync_tick();
         __asm__ __volatile__("hlt");
     }
 }
