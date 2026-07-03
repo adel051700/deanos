@@ -26,6 +26,9 @@ void random_bytes(void* out, uint32_t n);
 /* Nonzero once enough entropy has been collected to consider the pool seeded. */
 int random_is_seeded(void);
 
+/* Create /dev/random and /dev/urandom in the VFS. Call after ramfs_initialize(). */
+void devrandom_initialize(void);
+
 #ifdef __cplusplus
 }
 #endif

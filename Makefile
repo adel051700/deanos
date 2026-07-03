@@ -86,6 +86,7 @@ kernel/e1000.c \
 kernel/rtl8139.c \
 kernel/stack_protector.c \
 kernel/random.c \
+kernel/devrandom.c \
 kernel/fault.c \
 kernel/context_switch.s
 

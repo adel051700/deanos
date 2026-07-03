@@ -86,6 +86,7 @@ void kernel_main(void) {
     /* Filesystem: must come after kheap (initialized in constructor) */
     vfs_initialize();
     ramfs_initialize();
+    devrandom_initialize();
     minfs_auto_mount();
     (void)fat32_auto_mount((uint32_t)-1);
     elf_install_test_programs();
