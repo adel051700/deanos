@@ -14,6 +14,11 @@ void* realloc(void* ptr, size_t size);
 
 int atoi(const char* s);
 
+#define RAND_MAX 0x7fffffff
+
+int rand(void);
+void srand(unsigned seed);
+
 void abort(void);
 void exit(int status);
 

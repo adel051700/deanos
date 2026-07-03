@@ -105,6 +105,7 @@ libc/stdio/itoa.c \
 libc/stdio/printf.c \
 libc/stdlib/malloc.c \
 libc/stdlib/atoi.c \
+libc/stdlib/rand.c \
 libc/unistd/syscalls.c \
 libc/netdb/resolve.c \
 libc/string/memset.c \

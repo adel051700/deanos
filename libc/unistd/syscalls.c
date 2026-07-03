@@ -366,4 +366,7 @@ void _exit(int status) {
     }
 }
 
+long getrandom(void* buf, unsigned long len, unsigned int flags) {
+    return syscall3(SYS_getrandom, (unsigned)buf, (unsigned)len, (unsigned)flags);
+}
 
