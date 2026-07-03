@@ -54,7 +54,12 @@ enum {
     SYS_setsockopt = 47,
     SYS_getsockopt = 48,
     SYS_poll = 49,
+    SYS_getrandom = 50,
 };
+
+/* getrandom() flags */
+#define GRND_NONBLOCK 0x0001u
+#define GRND_RANDOM   0x0002u
 
 #define KPOLLIN   0x0001
 #define KPOLLOUT  0x0004

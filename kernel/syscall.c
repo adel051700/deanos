@@ -13,6 +13,7 @@
 #include "include/kernel/shell.h"
 #include "include/kernel/net.h"
 #include "include/kernel/net_lwip.h"
+#include "include/kernel/random.h"
 #include "lwip_port/ksock_udp.h"
 #include "lwip_port/ksock_tcp.h"
 #include "lwip_port/ksock_dns.h"
@@ -25,6 +26,13 @@
 /* Returned to userspace when a syscall is handed a pointer/buffer that is not
  * fully readable/writable user memory (Linux EFAULT convention). */
 #define EFAULT 14
+
+#ifndef EAGAIN
+#define EAGAIN 11
+#endif
+#ifndef EINVAL
+#define EINVAL 22
+#endif
 
 /* Upper bound for a copied-in path string, including the NUL terminator. */
 #define SYS_PATH_MAX VFS_PATH_MAX
@@ -507,6 +515,31 @@ static long sys_poll(const syscall_poll_args_t* uargs) {
         pit_sleep(10u);
         elapsed += 10u;
     }
+}
+
+#define RANDOM_GETRANDOM_MAX (1u << 20)   /* clamp a single call to 1 MiB */
+
+static long sys_getrandom(void* buf, uint32_t len, uint32_t flags) {
+    if (flags & ~(uint32_t)(GRND_NONBLOCK | GRND_RANDOM)) return -EINVAL;
+    if (len == 0u) return 0;
+    if (len > RANDOM_GETRANDOM_MAX) len = RANDOM_GETRANDOM_MAX;
+    if (!access_ok_w(buf, len)) return -EFAULT;
+
+    if ((flags & GRND_RANDOM) && !random_is_seeded()) {
+        if (flags & GRND_NONBLOCK) return -EAGAIN;
+        while (!random_is_seeded()) task_sleep_ms(10);
+    }
+
+    uint8_t tmp[128];
+    uint32_t done = 0u;
+    while (done < len) {
+        uint32_t chunk = len - done;
+        if (chunk > sizeof tmp) chunk = sizeof tmp;
+        random_bytes(tmp, chunk);
+        if (copy_to_user((uint8_t*)buf + done, tmp, chunk) < 0) return -EFAULT;
+        done += chunk;
+    }
+    return (long)done;
 }
 
 static long sys_shutdown(int32_t fd, int32_t how) {
@@ -1036,6 +1069,7 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_setsockopt: return sys_setsockopt((const syscall_sockopt_args_t*)a1);
         case SYS_getsockopt: return sys_getsockopt((const syscall_sockopt_args_t*)a1);
         case SYS_poll: return sys_poll((const syscall_poll_args_t*)a1);
+        case SYS_getrandom: return sys_getrandom((void*)a1, a2, a3);
         default:        return -38; /* ENOSYS */
     }
 }
