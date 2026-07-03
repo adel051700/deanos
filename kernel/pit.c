@@ -4,6 +4,7 @@
 #include "include/kernel/tty.h"
 #include "include/kernel/task.h"
 #include "include/kernel/pic.h"
+#include "include/kernel/random.h"
 
 #include <stdio.h>
 
@@ -31,6 +32,7 @@ static void pit_isr(struct registers* r);
 static void pit_irq_handler(struct registers* regs) {
     (void)regs;
     pit_ticks++;
+    if ((pit_ticks & 0x3Fu) == 0u) random_add_entropy(NULL, 0, 0);  /* stir tsc, no estimate */
     terminal_cursor_blink_tick();
 
     /* Send EOI BEFORE scheduler_tick — context_switch may not return

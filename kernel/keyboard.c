@@ -3,6 +3,7 @@
 #include "include/kernel/irq.h"
 #include "include/kernel/signal.h"
 #include "include/kernel/tty.h"
+#include "include/kernel/random.h"
 #include <stdint.h>
 
 // dk-latin1 keyboard mapping (Set 1 scancodes)
@@ -59,6 +60,7 @@ static void keyboard_buffer_enqueue_str(const char* s);
 static void keyboard_irq_handler(struct registers* regs) {
     (void)regs;
     uint8_t scancode = inb(0x60);
+    random_add_entropy(&scancode, 1, 1);   /* IRQ timing is the real entropy */
 
     if (scancode == 0xE0) {
         e0_prefix = 1;
