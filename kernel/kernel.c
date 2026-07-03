@@ -22,6 +22,7 @@
 #include "include/kernel/net_lwip.h"
 #include "include/kernel/stack_protector.h"
 #include "include/kernel/fault.h"
+#include "include/kernel/random.h"
 
 #include <stdint.h>
 
@@ -55,6 +56,7 @@ void kernel_main(void) {
     pit_initialize(100);
     keyboard_initialize();
     mouse_initialize();
+    random_initialize();
 
     blockdev_initialize();
     mbr_initialize();
