@@ -21,9 +21,6 @@ static int century_register = 0x00;
 static rtc_time_t boot_time;
 static int boot_time_initialized = 0;
 
-// Add timezone offset (CET = UTC+1, CEST = UTC+2)
-#define TIMEZONE_OFFSET_HOURS 1
-
 /**
  * Read a value from a CMOS register
  */
@@ -114,19 +111,12 @@ void rtc_read_time(rtc_time_t* time) {
     if (!(registerB & 0x02) && (time->hour & 0x80)) {
         time->hour = ((time->hour & 0x7F) + 12) % 24;
     }
-    
+
     // Calculate full year
     if (century_register != 0) {
         time->year += century * 100;
     } else {
         time->year += 2000;
-    }
-    
-    // Apply timezone offset
-    time->hour += TIMEZONE_OFFSET_HOURS;
-    if (time->hour >= 24) {
-        time->hour -= 24;
-        time->day += 1;
     }
 }
 
@@ -188,34 +178,41 @@ static int is_leap_year(uint32_t year) {
     return ((year % 4u) == 0u && (year % 100u) != 0u) || ((year % 400u) == 0u);
 }
 
-uint32_t rtc_get_wallclock_seconds(void) {
+static uint32_t rtc_time_to_epoch_seconds(const rtc_time_t* t) {
     static const uint16_t days_before_month[12] = {
         0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
     };
 
-    rtc_time_t t;
-    rtc_read_time(&t);
-
-    if (t.year < 1970 || t.month < 1 || t.month > 12 || t.day < 1 || t.day > 31 ||
-        t.hour > 23 || t.minute > 59 || t.second > 59) {
+    if (t->year < 1970 || t->month < 1 || t->month > 12 || t->day < 1 || t->day > 31 ||
+        t->hour > 23 || t->minute > 59 || t->second > 59) {
         return 0;
     }
 
     uint32_t days = 0;
 
-    for (uint32_t y = 1970; y < t.year; ++y) {
+    for (uint32_t y = 1970; y < t->year; ++y) {
         days += is_leap_year(y) ? 366u : 365u;
     }
 
-    days += days_before_month[t.month - 1];
-    if (t.month > 2 && is_leap_year(t.year)) {
+    days += days_before_month[t->month - 1];
+    if (t->month > 2 && is_leap_year(t->year)) {
         days += 1;
     }
 
-    days += (uint32_t)(t.day - 1);
+    days += (uint32_t)(t->day - 1);
 
     return days * 86400u +
-           (uint32_t)t.hour * 3600u +
-           (uint32_t)t.minute * 60u +
-           (uint32_t)t.second;
+           (uint32_t)t->hour * 3600u +
+           (uint32_t)t->minute * 60u +
+           (uint32_t)t->second;
+}
+
+static uint32_t rtc_read_epoch_now(void) {
+    rtc_time_t t;
+    rtc_read_time(&t);
+    return rtc_time_to_epoch_seconds(&t);
+}
+
+uint32_t rtc_get_wallclock_seconds(void) {
+    return rtc_read_epoch_now();
 }
