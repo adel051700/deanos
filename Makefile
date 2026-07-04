@@ -117,14 +117,39 @@ libc/string/strchr.c \
 libc/string/strspn.c \
 libc/string/strpbrk.c
 
+# Userspace-linkable libc (built separately from the kernel's own LIBC_OBJS
+# above — reuses the same sources, since they're already thin int 0x80
+# wrappers, except malloc.c which calls the kernel-only kmalloc()).
+USER_CFLAGS = -O2 -g -ffreestanding -Wall -Wextra -fno-pie -fno-stack-protector
+USER_CPPFLAGS = -Ikernel/include -Ilibc/include
+LIBC_USER_BUILD_DIR = $(BUILD_DIR)/libc_user
+LIBC_USER_SRCS = \
+libc/stdio/itoa.c \
+libc/stdio/printf.c \
+libc/stdlib/atoi.c \
+libc/stdlib/rand.c \
+libc/stdlib/malloc_user.c \
+libc/unistd/syscalls.c \
+libc/string/memset.c \
+libc/string/memcmp.c \
+libc/string/strlen.c \
+libc/string/strcpy.c \
+libc/string/strcat.c \
+libc/string/strchr.c \
+libc/string/strspn.c \
+libc/string/strpbrk.c
+LIBC_USER_OBJS = $(patsubst libc/%.c,$(LIBC_USER_BUILD_DIR)/%.o,$(LIBC_USER_SRCS))
+LIBC_USER_ARCHIVE = $(LIBC_USER_BUILD_DIR)/libc_user.a
+AR = /home/adel/opt/cross/bin/i686-elf-ar
+
 # Convert source paths to object paths in build directory
 KERNEL_OBJS = $(patsubst kernel/%.c,$(KERNEL_BUILD_DIR)/%.o,$(filter kernel/%.c,$(KERNEL_SRCS)))
 KERNEL_OBJS += build/kernel/context_switch.o
 LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(filter libc/%.c,$(LIBC_SRCS)))
 ARCH_C_OBJS = $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(ARCH_C_SRCS))
 ARCH_ASM_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(ARCH_ASM_SRCS))
-USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUILD_DIR)/execvetest.elf $(USER_BUILD_DIR)/waittest.elf $(USER_BUILD_DIR)/waitstress.elf $(USER_BUILD_DIR)/waitstressbg.elf $(USER_BUILD_DIR)/catfd.elf $(USER_BUILD_DIR)/sigtest.elf $(USER_BUILD_DIR)/mmaptest.elf $(USER_BUILD_DIR)/shmtest.elf $(USER_BUILD_DIR)/nxstacktest.elf $(USER_BUILD_DIR)/randtest.elf
-USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o $(USER_BUILD_DIR)/faulttest_blob.o $(USER_BUILD_DIR)/nxstacktest_blob.o $(USER_BUILD_DIR)/randtest_blob.o
+USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUILD_DIR)/execvetest.elf $(USER_BUILD_DIR)/waittest.elf $(USER_BUILD_DIR)/waitstress.elf $(USER_BUILD_DIR)/waitstressbg.elf $(USER_BUILD_DIR)/catfd.elf $(USER_BUILD_DIR)/sigtest.elf $(USER_BUILD_DIR)/mmaptest.elf $(USER_BUILD_DIR)/shmtest.elf $(USER_BUILD_DIR)/nxstacktest.elf $(USER_BUILD_DIR)/randtest.elf $(USER_BUILD_DIR)/argvtest.elf
+USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o $(USER_BUILD_DIR)/faulttest_blob.o $(USER_BUILD_DIR)/nxstacktest_blob.o $(USER_BUILD_DIR)/randtest_blob.o $(USER_BUILD_DIR)/argvtest_blob.o
 
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
 ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LWIP_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
@@ -156,6 +181,10 @@ directories:
 	@mkdir -p $(ARCH_BUILD_DIR)/boot
 	@mkdir -p $(USER_BUILD_DIR)
 	@mkdir -p $(LWIP_BUILD_DIR)
+	@mkdir -p $(LIBC_USER_BUILD_DIR)/stdio
+	@mkdir -p $(LIBC_USER_BUILD_DIR)/stdlib
+	@mkdir -p $(LIBC_USER_BUILD_DIR)/unistd
+	@mkdir -p $(LIBC_USER_BUILD_DIR)/string
 
 # Compile lwIP core source files
 $(LWIP_BUILD_DIR)/%.o: $(LWIP_DIR)/src/%.c | directories
@@ -179,6 +208,16 @@ $(KERNEL_BUILD_DIR)/%.o: kernel/%.s | directories
 # Compile C files from libc directory
 $(LIBC_BUILD_DIR)/%.o: libc/%.c | directories
 	$(CC) -MD -c $< -o $@ $(CFLAGS) $(CPPFLAGS)
+
+# Compile C files for the userspace-linkable libc, and archive it
+$(LIBC_USER_BUILD_DIR)/%.o: libc/%.c | directories
+	$(CC) -MD -c $< -o $@ $(USER_CFLAGS) $(USER_CPPFLAGS)
+
+$(LIBC_USER_ARCHIVE): $(LIBC_USER_OBJS) | directories
+	$(AR) rcs $@ $(LIBC_USER_OBJS)
+
+$(USER_BUILD_DIR)/crt0.o: user/crt0.s | directories
+	$(AS) $< -o $@
 
 # Compile C files from arch directory
 $(ARCH_BUILD_DIR)/%.o: arch/i386/%.c | directories
@@ -303,6 +342,15 @@ $(USER_BUILD_DIR)/randtest.elf: $(USER_BUILD_DIR)/randtest.o user/linker.ld | di
 	$(CC) -T user/linker.ld -o $@ $(USER_BUILD_DIR)/randtest.o -ffreestanding -fno-pie -nostdlib -nostartfiles -Wl,-n
 
 $(USER_BUILD_DIR)/randtest_blob.o: $(USER_BUILD_DIR)/randtest.elf | directories
+	$(LD) -r -m elf_i386 -b binary $< -o $@
+
+$(USER_BUILD_DIR)/argvtest.o: user/argvtest.c | directories
+	$(CC) -c $< -o $@ $(USER_CFLAGS) $(USER_CPPFLAGS)
+
+$(USER_BUILD_DIR)/argvtest.elf: $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/argvtest.o $(LIBC_USER_ARCHIVE) user/linker.ld | directories
+	$(CC) -T user/linker.ld -o $@ $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/argvtest.o $(LIBC_USER_ARCHIVE) -ffreestanding -fno-pie -nostdlib -nostartfiles -Wl,-n
+
+$(USER_BUILD_DIR)/argvtest_blob.o: $(USER_BUILD_DIR)/argvtest.elf | directories
 	$(LD) -r -m elf_i386 -b binary $< -o $@
 
 

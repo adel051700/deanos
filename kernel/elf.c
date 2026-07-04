@@ -230,6 +230,8 @@ extern const uint8_t _binary_build_user_nxstacktest_elf_start[];
 extern const uint8_t _binary_build_user_nxstacktest_elf_end[];
 extern const uint8_t _binary_build_user_randtest_elf_start[];
 extern const uint8_t _binary_build_user_randtest_elf_end[];
+extern const uint8_t _binary_build_user_argvtest_elf_start[];
+extern const uint8_t _binary_build_user_argvtest_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -530,4 +532,10 @@ void elf_install_test_programs(void) {
     if (!randtest) return;
     uint32_t randtest_size = (uint32_t)(_binary_build_user_randtest_elf_end - _binary_build_user_randtest_elf_start);
     vfs_write(randtest, 0, randtest_size, _binary_build_user_randtest_elf_start);
+
+    vfs_create(bin, "argvtest", VFS_FILE);
+    vfs_node_t* argvtest = vfs_finddir(bin, "argvtest");
+    if (!argvtest) return;
+    uint32_t argvtest_size = (uint32_t)(_binary_build_user_argvtest_elf_end - _binary_build_user_argvtest_elf_start);
+    vfs_write(argvtest, 0, argvtest_size, _binary_build_user_argvtest_elf_start);
 }
