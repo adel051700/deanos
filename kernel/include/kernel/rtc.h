@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define RTC_RESYNC_INTERVAL_MS (30u * 60u * 1000u)
+
 typedef struct {
     uint8_t second;
     uint8_t minute;

@@ -16,8 +16,6 @@
 #define RTC_STATUS_A 0x0A
 #define RTC_STATUS_B 0x0B
 
-#define RTC_RESYNC_INTERVAL_MS (30u * 60u * 1000u)
-
 static uint32_t synced_epoch_s = 0;
 static uint64_t synced_mono_ms = 0;
 static int synced = 0;

@@ -38,6 +38,13 @@ static void shell_task(void) {
     }
 }
 
+static void rtc_resync_task(void) {
+    for (;;) {
+        pit_sleep(RTC_RESYNC_INTERVAL_MS);
+        rtc_resync_tick();
+    }
+}
+
 
 void kernel_main(void) {
     /* Reseed the stack-canary guard first, before any protected frame that
@@ -95,6 +102,9 @@ void kernel_main(void) {
     tasking_initialize();
     if (task_create_named(shell_task, 0, TASK_DEFAULT_QUANTUM, "shell") < 0) {
         klog("shell task creation failed");
+    }
+    if (task_create_named(rtc_resync_task, 0, TASK_DEFAULT_QUANTUM, "rtc_resync") < 0) {
+        klog("rtc_resync task creation failed");
     }
 
     interrupts_enable();
