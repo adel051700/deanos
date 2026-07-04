@@ -210,7 +210,4 @@ void random_initialize(void) {
     /* Harvest timing jitter so the pool reaches the seed threshold at boot,
      * making /dev/random usable without requiring user input. */
     jitter_seed();
-
-    klog(g_seeded ? "[random] CSPRNG initialized (seeded)"
-                  : "[random] CSPRNG initialized (unseeded)");
 }
