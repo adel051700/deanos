@@ -336,7 +336,8 @@ int elf_exec(const char* path, int wait) {
     return elf_exec_with_stdio(path, wait, -1, -1, NULL, 0);
 }
 
-int elf_execve_current(const char* path, struct registers* r) {
+int elf_execve_current(const char* path, const char* const argv[], int argc,
+                        struct registers* r) {
     if (!path || !r) return -1;
 
     uint8_t* buf = NULL;
@@ -375,7 +376,14 @@ int elf_execve_current(const char* path, struct registers* r) {
         return -7;
     }
 
-    uint32_t user_esp = (uint32_t)(ustk + ELF_USER_STACK_SIZE) & ~0xFu;
+    uint32_t user_esp = 0;
+    if (elf_build_argv_stack(ustk, argv, argc, &user_esp) < 0) {
+        paging_switch_mm(old_mm);
+        paging_release_mm(new_mm);
+        kfree(buf);
+        return -12;
+    }
+
     r->eip = eh->e_entry;
     r->useresp = user_esp;
     r->eax = 0;

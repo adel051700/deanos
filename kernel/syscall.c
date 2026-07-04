@@ -372,14 +372,34 @@ static long sys_fork(struct registers* r) {
     return (long)task_fork_user(r->eip, r->useresp, r->eflags);
 }
 
-static long sys_execve(const char* path, struct registers* r) {
+static long sys_execve(const char* path, const char* const* uargv, uint32_t argc,
+                        struct registers* r) {
     char kpath[SYS_PATH_MAX];
+    char argbuf[ELF_ARGV_BYTES_MAX];
+    const char* kargv[ELF_ARGV_MAX];
+
     if (!path || !r) return -1;
     if ((r->cs & 0x3u) != 0x3u) return -38;
     int cs = copy_user_string(kpath, path, sizeof(kpath));
     if (cs == -EFAULT) return -EFAULT;
     if (cs < 0) return -1;
-    return (long)elf_execve_current(kpath, r);
+
+    if (argc > (uint32_t)ELF_ARGV_MAX) return -EINVAL;
+    if (argc > 0u && !uargv) return -EINVAL;
+
+    uint32_t used = 0;
+    for (uint32_t i = 0; i < argc; i++) {
+        const char* uptr = NULL;
+        if (copy_from_user(&uptr, &uargv[i], sizeof(uptr)) < 0) return -EFAULT;
+        if (used >= sizeof(argbuf)) return -EINVAL;
+        int alen = copy_user_string(&argbuf[used], uptr, sizeof(argbuf) - used);
+        if (alen == -EFAULT) return -EFAULT;
+        if (alen < 0) return -EINVAL;
+        kargv[i] = &argbuf[used];
+        used += (uint32_t)strlen(&argbuf[used]) + 1u;
+    }
+
+    return (long)elf_execve_current(kpath, kargv, (int)argc, r);
 }
 
 static long sys_waitpid(int32_t pid, int32_t* status, uint32_t options) {
@@ -1036,7 +1056,7 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_getgid: return sys_getgid();
         case SYS_kill: return sys_kill((int32_t)a1, (int32_t)a2);
         case SYS_fork: return sys_fork(r);
-        case SYS_execve: return sys_execve((const char*)a1, r);
+        case SYS_execve: return sys_execve((const char*)a1, (const char* const*)a2, a3, r);
         case SYS_waitpid: return sys_waitpid((int32_t)a1, (int32_t*)a2, a3);
         case SYS_fcntl: return sys_fcntl(a1, a2, a3);
         case SYS_pipe: return sys_pipe((int32_t*)a1);

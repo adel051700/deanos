@@ -107,7 +107,8 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd,
                          const char* const argv[], int argc);
 
 /* Replace current task's user image and return through same PID context. */
-int elf_execve_current(const char* path, struct registers* r);
+int elf_execve_current(const char* path, const char* const argv[], int argc,
+                        struct registers* r);
 
 /*
  * Write built-in demo ELF programs into the ramfs so the user can run

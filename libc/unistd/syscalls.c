@@ -120,8 +120,10 @@ int fork(void) {
     return (int)syscall1(SYS_fork, 0);
 }
 
-int execve(const char* path) {
-    return (int)syscall1(SYS_execve, (unsigned)path);
+int execve(const char* path, char* const argv[]) {
+    unsigned argc = 0;
+    if (argv) { while (argv[argc]) argc++; }
+    return (int)syscall3(SYS_execve, (unsigned)path, (unsigned)argv, argc);
 }
 
 int pipe(int pipefd[2]) {

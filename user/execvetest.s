@@ -13,9 +13,11 @@ _start:
     movl $msg_before_len, %edx
     int $0x80
 
-    /* execve("/bin/hello") should replace this process image */
+    /* execve("/bin/hello") should replace this process image, with no args */
     movl $15, %eax          /* SYS_execve */
     movl $path_hello, %ebx
+    xorl %ecx, %ecx         /* argv = NULL */
+    xorl %edx, %edx         /* argc = 0 */
     int $0x80
 
     /* If execve returns, it failed */

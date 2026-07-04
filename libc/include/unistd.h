@@ -26,7 +26,7 @@ int getuid(void);
 int getgid(void);
 int kill(int pid, int sig);
 int fork(void);
-int execve(const char* path);
+int execve(const char* path, char* const argv[]);
 int pipe(int pipefd[2]);
 int wait(int* status);
 int waitpid(int pid, int* status, int options);
