@@ -560,6 +560,8 @@ typedef struct {
     int  has_in;
     int  has_out;
     int  append_out;
+    char argv_extra[ELF_ARGV_MAX][VFS_PATH_MAX]; /* tokens after the path; argv[0] is the path itself */
+    int  argc_extra;
 } shell_stage_spec_t;
 
 static size_t shell_stage_next_token(const char** p_in, char* out, size_t out_sz) {
@@ -667,12 +669,16 @@ static int shell_stage_parse(char* segment, shell_stage_spec_t* spec) {
             continue;
         }
 
-        if (spec->path[0] != '\0') {
-            return -1;
+        if (spec->path[0] == '\0') {
+            strncpy(spec->path, token, sizeof(spec->path) - 1);
+            spec->path[sizeof(spec->path) - 1] = '\0';
+        } else {
+            if (spec->argc_extra >= ELF_ARGV_MAX - 1) return -1; /* argv[0] reserved for path */
+            strncpy(spec->argv_extra[spec->argc_extra], token,
+                    sizeof(spec->argv_extra[0]) - 1);
+            spec->argv_extra[spec->argc_extra][sizeof(spec->argv_extra[0]) - 1] = '\0';
+            spec->argc_extra++;
         }
-
-        strncpy(spec->path, token, sizeof(spec->path) - 1);
-        spec->path[sizeof(spec->path) - 1] = '\0';
     }
 
     return (spec->path[0] != '\0') ? 0 : -1;
@@ -787,7 +793,14 @@ static void shell_execute_pipeline(const char* command) {
             out_fd = opened_out_fd;
         }
 
-        int pid = elf_exec_with_stdio(path, 0, in_fd, out_fd, NULL, 0);
+        const char* stage_argv[ELF_ARGV_MAX];
+        int stage_argc = 0;
+        stage_argv[stage_argc++] = path;
+        for (int a = 0; a < specs[i].argc_extra && stage_argc < ELF_ARGV_MAX; a++) {
+            stage_argv[stage_argc++] = specs[i].argv_extra[a];
+        }
+
+        int pid = elf_exec_with_stdio(path, 0, in_fd, out_fd, stage_argv, stage_argc);
         if (opened_in_fd >= 0) vfs_fd_close(opened_in_fd);
         if (opened_out_fd >= 0) vfs_fd_close(opened_out_fd);
         if (pid < 0) {
@@ -3894,14 +3907,36 @@ static void cmd_exec(const char* args) {
         }
     }
 
+    char tokens[ELF_ARGV_MAX][VFS_PATH_MAX];
+    int token_count = 0;
+    {
+        const char* p = argbuf;
+        while (*p && token_count < ELF_ARGV_MAX) {
+            while (*p == ' ') p++;
+            if (*p == '\0') break;
+            size_t tn = copy_token(p, tokens[token_count], sizeof(tokens[token_count]));
+            if (tn == 0) break;
+            p += tn;
+            token_count++;
+        }
+    }
+    if (token_count == 0) {
+        terminal_writestring("usage: exec <path> [&]\n");
+        return;
+    }
+
     char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(argbuf, pathbuf, sizeof(pathbuf));
+    const char* path = resolve_shell_path(tokens[0], pathbuf, sizeof(pathbuf));
 
     terminal_writestring("Loading ELF: ");
     terminal_writestring(path);
     terminal_writestring("\n");
 
-    int ret = elf_exec(path, 0);
+    const char* exec_argv[ELF_ARGV_MAX];
+    exec_argv[0] = path;
+    for (int i = 1; i < token_count; i++) exec_argv[i] = tokens[i];
+
+    int ret = elf_exec_with_stdio(path, 0, -1, -1, exec_argv, token_count);
     if (ret < 0) {
         terminal_writestring("exec: failed (error ");
         char buf[16];
