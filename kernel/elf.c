@@ -122,7 +122,7 @@ static int elf_map_user_stack(uintptr_t* out_base) {
  * malformed or the ELF_ARGV_MAX / ELF_ARGV_BYTES_MAX / stack-size budgets
  * are exceeded.
  */
-static int __attribute__((unused)) elf_build_argv_stack(uintptr_t ustk, const char* const argv[],
+static int elf_build_argv_stack(uintptr_t ustk, const char* const argv[],
                                  int argc, uint32_t* out_esp) {
     if (!out_esp) return -1;
     if (argc < 0 || argc > ELF_ARGV_MAX) return -2;
@@ -168,18 +168,18 @@ typedef struct {
     int       in_use;
     int       task_id;
     uint32_t  entry;
-    uintptr_t ustk;
+    uint32_t  user_esp;
 } elf_launch_slot_t;
 
 static elf_launch_slot_t g_elf_launch_slots[TASK_MAX];
 
-static int elf_launch_slot_set(int task_id, uint32_t entry, uintptr_t ustk) {
+static int elf_launch_slot_set(int task_id, uint32_t entry, uint32_t user_esp) {
     for (int i = 0; i < TASK_MAX; ++i) {
         if (g_elf_launch_slots[i].in_use) continue;
         g_elf_launch_slots[i].in_use = 1;
         g_elf_launch_slots[i].task_id = task_id;
         g_elf_launch_slots[i].entry = entry;
-        g_elf_launch_slots[i].ustk = ustk;
+        g_elf_launch_slots[i].user_esp = user_esp;
         return 0;
     }
     return -1;
@@ -239,13 +239,11 @@ static void elf_task_wrapper(void) {
         return;
     }
 
-    uint32_t  entry    = slot->entry;
-    uintptr_t ustk     = slot->ustk;
-    uint32_t  user_esp = (uint32_t)(ustk + ELF_USER_STACK_SIZE) & ~0xFu;
-    enter_usermode(entry, user_esp);
+    enter_usermode(slot->entry, slot->user_esp);
 }
 
-int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd) {
+int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd,
+                         const char* const argv[], int argc) {
     uint8_t* buf = NULL;
     uint32_t size = 0;
     int io = elf_read_from_vfs(path, &buf, &size);
@@ -285,6 +283,15 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd)
         return -7;
     }
 
+    uint32_t user_esp = 0;
+    if (elf_build_argv_stack(ustk, argv, argc, &user_esp) < 0) {
+        paging_switch_mm(old_mm);
+        paging_release_mm(new_mm);
+        task_kill(tid);
+        kfree(buf);
+        return -12;
+    }
+
     paging_switch_mm(old_mm);
     if (task_adopt_elf_lazy_layout(tid, buf, size, lazy_regions, lazy_region_count) < 0) {
         paging_release_mm(new_mm);
@@ -302,7 +309,7 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd)
     paging_release_mm(new_mm);
     buf = NULL;
 
-    if (elf_launch_slot_set(tid, entry, ustk) < 0) {
+    if (elf_launch_slot_set(tid, entry, user_esp) < 0) {
         task_kill(tid);
         return -10;
     }
@@ -326,7 +333,7 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd)
 }
 
 int elf_exec(const char* path, int wait) {
-    return elf_exec_with_stdio(path, wait, -1, -1);
+    return elf_exec_with_stdio(path, wait, -1, -1, NULL, 0);
 }
 
 int elf_execve_current(const char* path, struct registers* r) {

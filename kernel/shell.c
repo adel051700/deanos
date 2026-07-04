@@ -787,7 +787,7 @@ static void shell_execute_pipeline(const char* command) {
             out_fd = opened_out_fd;
         }
 
-        int pid = elf_exec_with_stdio(path, 0, in_fd, out_fd);
+        int pid = elf_exec_with_stdio(path, 0, in_fd, out_fd, NULL, 0);
         if (opened_in_fd >= 0) vfs_fd_close(opened_in_fd);
         if (opened_out_fd >= 0) vfs_fd_close(opened_out_fd);
         if (pid < 0) {
