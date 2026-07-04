@@ -100,6 +100,70 @@ static int elf_map_user_stack(uintptr_t* out_base) {
     *out_base = base;
     return 0;
 }
+
+/*
+ * Write argc/argv onto the top of an already-writable stack-sized region
+ * starting at `ustk` (size ELF_USER_STACK_SIZE), growing downward per the
+ * i386 process-entry convention:
+ *
+ *   [out_esp]      argc
+ *   [out_esp+4]    argv[0]
+ *   ...
+ *   [out_esp+4*argc]  NULL
+ *                  <argv string bytes>
+ *
+ * `ustk` need not be an actual mapped user stack — the caller for the
+ * spawn/execve paths ensures the target address space is active first, but
+ * this function only ever does raw pointer writes within
+ * [ustk, ustk + ELF_USER_STACK_SIZE), so a plain kmalloc'd buffer of that
+ * size works too (used by this task's own self-test).
+ *
+ * Returns 0 on success. Returns negative (never crashes) if argc/argv are
+ * malformed or the ELF_ARGV_MAX / ELF_ARGV_BYTES_MAX / stack-size budgets
+ * are exceeded.
+ */
+static int elf_build_argv_stack(uintptr_t ustk, const char* const argv[],
+                                 int argc, uint32_t* out_esp) {
+    if (!out_esp) return -1;
+    if (argc < 0 || argc > ELF_ARGV_MAX) return -2;
+    if (argc > 0 && !argv) return -2;
+
+    uintptr_t top = (ustk + ELF_USER_STACK_SIZE) & ~0xFu;
+    uintptr_t p = top;
+    uint32_t str_ptrs[ELF_ARGV_MAX];
+    uint32_t total_bytes = 0;
+
+    for (int i = argc - 1; i >= 0; i--) {
+        const char* s = argv[i] ? argv[i] : "";
+        size_t len = strlen(s) + 1u;
+        total_bytes += (uint32_t)len;
+        if (total_bytes > ELF_ARGV_BYTES_MAX) return -3;
+        if (p < ustk + len) return -3;
+        p -= len;
+        memcpy((void*)p, s, len);
+        str_ptrs[i] = (uint32_t)p;
+    }
+
+    p &= ~0x3u; /* 4-byte align before the pointer array */
+
+    uintptr_t needed = (uintptr_t)(argc + 2) * 4u; /* argv[] + NULL + argc */
+    if (p < ustk + needed) return -3;
+
+    p -= 4u;
+    *(uint32_t*)p = 0u; /* argv[argc] = NULL */
+
+    for (int i = argc - 1; i >= 0; i--) {
+        p -= 4u;
+        *(uint32_t*)p = str_ptrs[i];
+    }
+
+    p -= 4u;
+    *(uint32_t*)p = (uint32_t)argc;
+
+    *out_esp = (uint32_t)p;
+    return 0;
+}
+
 typedef struct {
     int       in_use;
     int       task_id;

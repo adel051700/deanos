@@ -83,6 +83,12 @@ typedef struct {
 
 /* ---- Public API -------------------------------------------------------- */
 
+/* argv ABI limits shared by the spawn path (elf_exec_with_stdio) and the
+ * execve path (elf_execve_current) — see docs/superpowers/specs/
+ * 2026-07-04-argv-userspace-runtime-design.md */
+#define ELF_ARGV_MAX        16
+#define ELF_ARGV_BYTES_MAX  4096u
+
 /*
  * Validate raw ELF data: checks magic, class, endianness, type, machine.
  * Returns 0 on success, negative on error.
