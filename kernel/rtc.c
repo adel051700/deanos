@@ -24,6 +24,16 @@ static int synced = 0;
 
 static int century_register = 0x00;
 
+static inline uint32_t irq_save(void) {
+    uint32_t f;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(f) : : "memory");
+    return f;
+}
+
+static inline void irq_restore(uint32_t f) {
+    __asm__ __volatile__("push %0; popf" : : "r"(f) : "memory", "cc");
+}
+
 /**
  * Read a value from a CMOS register
  */
@@ -184,9 +194,15 @@ static uint32_t rtc_read_epoch_now(void) {
 void rtc_resync_tick(void) {
     uint64_t now_ms = pit_get_uptime_ms();
     if (synced && (now_ms - synced_mono_ms) < RTC_RESYNC_INTERVAL_MS) return;
-    synced_epoch_s = rtc_read_epoch_now();
+
+    uint32_t epoch = rtc_read_epoch_now();
+    if (epoch == 0) return;  /* invalid/garbage RTC read — keep retrying next call instead of caching a bad value */
+
+    uint32_t f = irq_save();
+    synced_epoch_s = epoch;
     synced_mono_ms = now_ms;
     synced = 1;
+    irq_restore(f);
 }
 
 uint32_t rtc_get_wallclock_seconds(void) {
