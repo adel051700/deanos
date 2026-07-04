@@ -21,6 +21,7 @@ static uint64_t synced_mono_ms = 0;
 static int synced = 0;
 
 static int century_register = 0x00;
+static int32_t tz_offset_hours = 0;  /* UTC offset, whole hours, range -12..+14 */
 
 static inline uint32_t irq_save(void) {
     uint32_t f;
@@ -240,4 +241,21 @@ uint32_t rtc_get_wallclock_seconds(void) {
     if (!synced) return rtc_read_epoch_now();
     uint64_t elapsed_ms = pit_get_uptime_ms() - synced_mono_ms;
     return synced_epoch_s + (uint32_t)(elapsed_ms / 1000u);
+}
+
+int32_t rtc_tz_get_hours(void) {
+    return tz_offset_hours;
+}
+
+int rtc_tz_set_hours(int32_t hours) {
+    if (hours < -12 || hours > 14) return -1;
+    tz_offset_hours = hours;
+    return 0;
+}
+
+void rtc_get_local_time(rtc_time_t* out) {
+    uint32_t utc = rtc_get_wallclock_seconds();
+    int64_t local = (int64_t)utc + (int64_t)tz_offset_hours * 3600;
+    if (local < 0) local = 0;  /* clamp rather than wrap to a bogus far-future date */
+    rtc_epoch_to_calendar((uint32_t)local, out);
 }

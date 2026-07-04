@@ -26,5 +26,8 @@ void rtc_read_time(rtc_time_t* time);
 void get_uptime(uptime_t* uptime);
 uint32_t rtc_get_wallclock_seconds(void);
 void rtc_resync_tick(void);
+int32_t rtc_tz_get_hours(void);
+int     rtc_tz_set_hours(int32_t hours);
+void    rtc_get_local_time(rtc_time_t* out);
 
 #endif
