@@ -122,7 +122,7 @@ static int elf_map_user_stack(uintptr_t* out_base) {
  * malformed or the ELF_ARGV_MAX / ELF_ARGV_BYTES_MAX / stack-size budgets
  * are exceeded.
  */
-static int elf_build_argv_stack(uintptr_t ustk, const char* const argv[],
+static int __attribute__((unused)) elf_build_argv_stack(uintptr_t ustk, const char* const argv[],
                                  int argc, uint32_t* out_esp) {
     if (!out_esp) return -1;
     if (argc < 0 || argc > ELF_ARGV_MAX) return -2;
