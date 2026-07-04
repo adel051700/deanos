@@ -92,6 +92,7 @@ static void cmd_cls(const char* args);
 static void cmd_about(const char* args);
 static void cmd_dean(const char* args);
 static void cmd_time(const char* args);
+static void cmd_tz(const char* args);
 static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
@@ -155,6 +156,7 @@ static const struct shell_command commands[] = {
     {"dean",   cmd_dean,   "Show DeanOS banner"},
     {"time",   cmd_time,   "Show current time/date"},
     {"uptime", cmd_uptime, "Show system uptime"},
+    {"tz",     cmd_tz,     "Show/set timezone: tz | tz set <+H|-H>"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
     {"tasks",  cmd_tasks,  "List all tasks and their state (with PPID)"},
     {"kill",   cmd_kill,   "Send signal by parent id: kill [-INT|-TERM|-KILL|-<num>] <ppid>"},
@@ -1001,55 +1003,107 @@ static void cmd_dean(const char* args) {
 }
 
 /**
+ * Time command helper - print RTC datetime in standard format
+ */
+static void print_rtc_datetime(const rtc_time_t* time) {
+    terminal_writestring("Date: ");
+    char buffer[16];
+
+    itoa(time->day, buffer, 10);
+    if (time->day < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring("/");
+
+    itoa(time->month, buffer, 10);
+    if (time->month < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring("/");
+
+    itoa(time->year, buffer, 10);
+    terminal_writestring(buffer);
+    terminal_writestring("\n");
+
+    terminal_writestring("Time: ");
+
+    itoa(time->hour, buffer, 10);
+    if (time->hour < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring(":");
+
+    itoa(time->minute, buffer, 10);
+    if (time->minute < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring(":");
+
+    itoa(time->second, buffer, 10);
+    if (time->second < 10) terminal_writestring("0");
+    terminal_writestring(buffer);
+    terminal_writestring("\n");
+}
+
+/**
  * Time command - display current time and date
  */
 static void cmd_time(const char* args) {
     (void)args; // Unused
-    
+
     rtc_time_t time;
-    rtc_read_time(&time);
-    
-    // Display date
-    terminal_writestring("Date: ");
+    rtc_get_local_time(&time);
+    print_rtc_datetime(&time);
+}
+
+/**
+ * Timezone helper - print timezone offset
+ */
+static void print_tz_offset(int32_t hours) {
+    terminal_writestring("UTC");
     char buffer[16];
-    
-    // Day
-    itoa(time.day, buffer, 10);
-    if (time.day < 10) terminal_writestring("0");
+    if (hours >= 0) terminal_writestring("+");
+    itoa((int)hours, buffer, 10);
     terminal_writestring(buffer);
-    terminal_writestring("/");
-    
-    // Month
-    itoa(time.month, buffer, 10);
-    if (time.month < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring("/");
-    
-    // Year
-    itoa(time.year, buffer, 10);
-    terminal_writestring(buffer);
-    terminal_writestring("\n");
-    
-    // Display time
-    terminal_writestring("Time: ");
-    
-    // Hour
-    itoa(time.hour, buffer, 10);
-    if (time.hour < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring(":");
-    
-    // Minute
-    itoa(time.minute, buffer, 10);
-    if (time.minute < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring(":");
-    
-    // Second
-    itoa(time.second, buffer, 10);
-    if (time.second < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring("\n");
+}
+
+/**
+ * Timezone command - show or set timezone
+ */
+static void cmd_tz(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("Timezone: ");
+        print_tz_offset(rtc_tz_get_hours());
+        terminal_writestring("\n");
+
+        rtc_time_t local;
+        rtc_get_local_time(&local);
+        print_rtc_datetime(&local);
+        return;
+    }
+
+    if (strncmp(args, "set ", 4) == 0) {
+        const char* val = args + 4;
+        while (*val == ' ') val++;
+        if (*val == '\0') {
+            terminal_writestring("usage: tz set <+H|-H>\n");
+            return;
+        }
+
+        int32_t hours = atoi(val);
+        int rc = rtc_tz_set_hours(hours);
+        if (rc < 0) {
+            terminal_writestring("tz: offset out of range (-12..+14)\n");
+            return;
+        }
+
+        terminal_writestring("Timezone set to ");
+        print_tz_offset(hours);
+        terminal_writestring("\n");
+
+        if (rc == 1) {
+            terminal_writestring("(warning: could not save to /timezone, active for this session only)\n");
+        }
+        return;
+    }
+
+    terminal_writestring("usage: tz | tz set <+H|-H>\n");
 }
 
 /**
