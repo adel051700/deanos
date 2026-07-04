@@ -21,6 +21,7 @@
 #define RTC_STATUS_B 0x0B
 
 #define TZ_FILE_PATH "/timezone"
+#define TZ_FILE_WIDTH 4
 
 static void rtc_tz_load(void);  /* forward decl: defined below, called from rtc_initialize() above its definition */
 
@@ -283,8 +284,14 @@ int rtc_tz_set_hours(int32_t hours) {
     if (hours < -12 || hours > 14) return -1;
     tz_offset_hours = hours;
 
-    char buf[16];
-    itoa((int)hours, buf, 10);
+    char num[16];
+    itoa((int)hours, num, 10);
+    size_t num_len = strlen(num);
+
+    char buf[TZ_FILE_WIDTH];
+    for (size_t i = 0; i < TZ_FILE_WIDTH; ++i) {
+        buf[i] = (i < num_len) ? num[i] : '\n';
+    }
 
     vfs_node_t* node = vfs_namei(TZ_FILE_PATH);
     if (!node) {
@@ -293,8 +300,7 @@ int rtc_tz_set_hours(int32_t hours) {
         if (!node) return 1;
     }
 
-    uint32_t len = (uint32_t)strlen(buf);
-    if (vfs_write(node, 0, len, (const uint8_t*)buf) < 0) return 1;
+    if (vfs_write(node, 0, TZ_FILE_WIDTH, (const uint8_t*)buf) < 0) return 1;
     return 0;
 }
 
