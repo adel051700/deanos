@@ -1,7 +1,11 @@
 #include "include/kernel/rtc.h"
 #include "include/kernel/io.h"
 #include "include/kernel/pit.h"
+#include "include/kernel/vfs.h"
 #include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
 #define CMOS_ADDRESS 0x70
 #define CMOS_DATA    0x71
@@ -15,6 +19,10 @@
 #define RTC_YEAR     0x09
 #define RTC_STATUS_A 0x0A
 #define RTC_STATUS_B 0x0B
+
+#define TZ_FILE_PATH "/timezone"
+
+static void rtc_tz_load(void);  /* forward decl: defined below, called from rtc_initialize() above its definition */
 
 static uint32_t synced_epoch_s = 0;
 static uint64_t synced_mono_ms = 0;
@@ -149,6 +157,7 @@ void get_uptime(uptime_t* uptime) {
  */
 void rtc_initialize(void) {
     rtc_resync_tick();
+    rtc_tz_load();
 }
 
 static int is_leap_year(uint32_t year) {
@@ -243,6 +252,29 @@ uint32_t rtc_get_wallclock_seconds(void) {
     return synced_epoch_s + (uint32_t)(elapsed_ms / 1000u);
 }
 
+static void rtc_tz_load(void) {
+    vfs_node_t* node = vfs_namei(TZ_FILE_PATH);
+    if (!node || !(node->type & VFS_FILE)) {
+        tz_offset_hours = 0;
+        return;
+    }
+
+    char buf[16];
+    int32_t n = vfs_read(node, 0, sizeof(buf) - 1, (uint8_t*)buf);
+    if (n <= 0) {
+        tz_offset_hours = 0;
+        return;
+    }
+    buf[n] = '\0';
+
+    int32_t parsed = atoi(buf);
+    if (parsed < -12 || parsed > 14) {
+        tz_offset_hours = 0;
+        return;
+    }
+    tz_offset_hours = parsed;
+}
+
 int32_t rtc_tz_get_hours(void) {
     return tz_offset_hours;
 }
@@ -250,6 +282,19 @@ int32_t rtc_tz_get_hours(void) {
 int rtc_tz_set_hours(int32_t hours) {
     if (hours < -12 || hours > 14) return -1;
     tz_offset_hours = hours;
+
+    char buf[16];
+    itoa((int)hours, buf, 10);
+
+    vfs_node_t* node = vfs_namei(TZ_FILE_PATH);
+    if (!node) {
+        if (vfs_create_path(TZ_FILE_PATH, VFS_FILE) < 0) return 1;
+        node = vfs_namei(TZ_FILE_PATH);
+        if (!node) return 1;
+    }
+
+    uint32_t len = (uint32_t)strlen(buf);
+    if (vfs_write(node, 0, len, (const uint8_t*)buf) < 0) return 1;
     return 0;
 }
 
