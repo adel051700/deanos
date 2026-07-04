@@ -183,6 +183,39 @@ static uint32_t rtc_time_to_epoch_seconds(const rtc_time_t* t) {
            (uint32_t)t->second;
 }
 
+static void rtc_epoch_to_calendar(uint32_t epoch, rtc_time_t* out) {
+    static const uint8_t month_lengths[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+
+    uint32_t days = epoch / 86400u;
+    uint32_t rem  = epoch % 86400u;
+
+    out->hour   = (uint8_t)(rem / 3600u);
+    out->minute = (uint8_t)((rem % 3600u) / 60u);
+    out->second = (uint8_t)(rem % 60u);
+
+    uint32_t year = 1970u;
+    for (;;) {
+        uint32_t year_days = is_leap_year(year) ? 366u : 365u;
+        if (days < year_days) break;
+        days -= year_days;
+        year++;
+    }
+    out->year = (uint16_t)year;
+
+    uint32_t month = 0;
+    for (;;) {
+        uint32_t len = month_lengths[month];
+        if (month == 1 && is_leap_year(year)) len = 29;  /* February */
+        if (days < len) break;
+        days -= len;
+        month++;
+    }
+    out->month = (uint8_t)(month + 1);
+    out->day   = (uint8_t)(days + 1);
+}
+
 static uint32_t rtc_read_epoch_now(void) {
     rtc_time_t t;
     rtc_read_time(&t);
