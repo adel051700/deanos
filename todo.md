@@ -71,7 +71,7 @@
 44. ~~Hardening: kernel/user pointer validation audit for all syscalls.~~
 45. ~~Hardening: stack canary support and non-executable user stacks.~~
 46. ~~Randomness: entropy collector + /dev/random and /dev/urandom devices.~~
-47. Timekeeping improvements: monotonic clock + RTC synchronization strategy.
+47. ~~Timekeeping improvements: monotonic clock + RTC synchronization strategy.~~
 48. TTY improvements: line discipline, canonical/raw mode, and control characters.
 49. Terminal UX: command history persistence and reverse search.
 50. Shell scripting mini-language: variables, simple loops, and conditionals.
