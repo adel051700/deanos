@@ -69,6 +69,8 @@ enum {
     SYS_readdir     = 62,
     SYS_unlink      = 63,
     SYS_stat        = 64,
+    SYS_dmesg_read  = 65,
+    SYS_dmesg_clear = 66,
 };
 
 /* getrandom() flags */

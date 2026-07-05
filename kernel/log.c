@@ -2,7 +2,6 @@
 #include "include/kernel/serial.h"
 #include "include/kernel/tty.h"
 
-#define KLOG_BUF_SZ 4096
 static char buf[KLOG_BUF_SZ];
 static volatile size_t head = 0;
 
@@ -67,6 +66,18 @@ void klog_dump(void) {
         char c = buf[(start + i) % KLOG_BUF_SZ];
         terminal_write(&c, 1);
     }
+}
+
+size_t klog_read(char* out, size_t out_len) {
+    if (!out || out_len == 0) return 0;
+    size_t end = head;
+    size_t window = (end > KLOG_BUF_SZ) ? KLOG_BUF_SZ : end;  /* bytes currently retained */
+    size_t start = end - window;                              /* oldest retained byte */
+    size_t count = (window < out_len) ? window : out_len;      /* how many we can actually copy */
+    for (size_t i = 0; i < count; ++i) {
+        out[i] = buf[(start + i) % KLOG_BUF_SZ];
+    }
+    return count;
 }
 
 void klog_clear(void) {

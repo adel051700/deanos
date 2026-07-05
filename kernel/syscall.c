@@ -15,6 +15,7 @@
 #include "include/kernel/net_lwip.h"
 #include "include/kernel/random.h"
 #include "include/kernel/mouse.h"
+#include "include/kernel/log.h"
 #include "lwip_port/ksock_udp.h"
 #include "lwip_port/ksock_tcp.h"
 #include "lwip_port/ksock_dns.h"
@@ -1206,6 +1207,21 @@ static long sys_stat(const char* path, vfs_stat_t* out) {
     return 0;
 }
 
+static long sys_dmesg_read(char* buf, uint32_t size) {
+    if (!buf) return -1;
+    char kbuf[KLOG_BUF_SZ];
+    size_t copied = klog_read(kbuf, sizeof(kbuf));
+    size_t to_copy = (size < copied) ? size : copied;
+    if (!access_ok_w(buf, to_copy)) return -EFAULT;
+    if (copy_to_user(buf, kbuf, to_copy) < 0) return -EFAULT;
+    return (long)to_copy;
+}
+
+static long sys_dmesg_clear(void) {
+    klog_clear();
+    return 0;
+}
+
 static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
@@ -1272,6 +1288,8 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_readdir: return sys_readdir((const char*)a1, a2, (vfs_dirent_t*)a3);
         case SYS_unlink: return sys_unlink((const char*)a1);
         case SYS_stat: return sys_stat((const char*)a1, (vfs_stat_t*)a2);
+        case SYS_dmesg_read: return sys_dmesg_read((char*)a1, a2);
+        case SYS_dmesg_clear: return sys_dmesg_clear();
         default:        return -38; /* ENOSYS */
     }
 }
