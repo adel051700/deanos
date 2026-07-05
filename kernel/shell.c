@@ -693,7 +693,7 @@ static void shell_execute_pipeline(const char* command) {
     line[sizeof(line) - 1] = '\0';
 
     char* stages[SHELL_PIPE_MAX_STAGES];
-    shell_stage_spec_t specs[SHELL_PIPE_MAX_STAGES];
+    static shell_stage_spec_t specs[SHELL_PIPE_MAX_STAGES];
     int stage_count = 0;
     char* cur = line;
 
@@ -3907,7 +3907,7 @@ static void cmd_exec(const char* args) {
         }
     }
 
-    char tokens[ELF_ARGV_MAX][VFS_PATH_MAX];
+    static char tokens[ELF_ARGV_MAX][VFS_PATH_MAX];
     int token_count = 0;
     {
         const char* p = argbuf;
