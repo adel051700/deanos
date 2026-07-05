@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/klog.h>
 #include <sys/mman.h>
 #include <sys/mouse.h>
 #include <sys/proc.h>
@@ -433,4 +434,12 @@ int dir_read(const char* path, unsigned index, struct dirent* out) {
 
 int stat(const char* path, struct stat* st) {
     return (int)syscall2(SYS_stat, (unsigned)path, (unsigned)st);
+}
+
+int dmesg_read(char* buf, unsigned size) {
+    return (int)syscall2(SYS_dmesg_read, (unsigned)buf, size);
+}
+
+int dmesg_clear(void) {
+    return (int)syscall1(SYS_dmesg_clear, 0u);
 }
