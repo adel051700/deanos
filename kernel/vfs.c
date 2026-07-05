@@ -605,6 +605,13 @@ int vfs_stat(vfs_node_t* node, vfs_stat_t* st) {
     return 0;
 }
 
+int vfs_stat_path(const char* path, vfs_stat_t* st) {
+    if (!path) return -1;
+    vfs_node_t* node = vfs_namei(path);
+    if (!node) return -1;
+    return vfs_stat(node, st);
+}
+
 /* ---- File-descriptor API ----------------------------------------------- */
 
 static int fd_alloc(void) {

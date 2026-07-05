@@ -632,11 +632,15 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
         t->pgid = g_tasks[g_current].pgid;
         t->uid = g_tasks[g_current].uid;
         t->gid = g_tasks[g_current].gid;
+        strncpy(t->cwd, g_tasks[g_current].cwd, sizeof(t->cwd) - 1);
+        t->cwd[sizeof(t->cwd) - 1] = '\0';
     } else {
         t->sid = t->id;
         t->pgid = t->id;
         t->uid = 0;
         t->gid = 0;
+        t->cwd[0] = '/';
+        t->cwd[1] = '\0';
     }
     t->fork_user_eip = 0;
     t->fork_user_esp = 0;

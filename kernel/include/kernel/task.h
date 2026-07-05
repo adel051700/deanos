@@ -5,6 +5,7 @@
 #include "signal.h"
 #include "interrupt.h"
 #include "syscall.h"
+#include "vfs.h"
 
 #define TASK_WAIT_NOHANG 0x1u
 #define TASK_FD_CLOEXEC 0x1u
@@ -113,6 +114,12 @@ typedef struct task {
     /* Security baseline credentials. */
     uint32_t        uid;
     uint32_t        gid;
+
+    /* Current working directory (path string, always absolute and
+     * normalized). Inherited from the creating task in
+     * task_create_named(); preserved across execve automatically since
+     * execve reuses the same task_t. */
+    char            cwd[VFS_PATH_MAX];
 
     /* Per-process file descriptor table. */
     task_fd_t       fds[TASK_MAX_FDS];

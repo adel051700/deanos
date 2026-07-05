@@ -152,6 +152,7 @@ int          vfs_unlink_path(const char* path);
 int          vfs_chmod_path(const char* path, uint16_t mode);
 int          vfs_chown_path(const char* path, uint32_t uid, uint32_t gid);
 int          vfs_stat(vfs_node_t* node, vfs_stat_t* st);
+int          vfs_stat_path(const char* path, vfs_stat_t* st);
 
 /* FD-based API (uses the current task's fd table) */
 int          vfs_fd_open(const char* path, uint32_t flags);
