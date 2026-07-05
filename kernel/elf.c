@@ -234,6 +234,8 @@ extern const uint8_t _binary_build_user_argvtest_elf_start[];
 extern const uint8_t _binary_build_user_argvtest_elf_end[];
 extern const uint8_t _binary_build_user_syscalltest_elf_start[];
 extern const uint8_t _binary_build_user_syscalltest_elf_end[];
+extern const uint8_t _binary_build_user_fstest_elf_start[];
+extern const uint8_t _binary_build_user_fstest_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -546,4 +548,10 @@ void elf_install_test_programs(void) {
     if (!syscalltest) return;
     uint32_t syscalltest_size = (uint32_t)(_binary_build_user_syscalltest_elf_end - _binary_build_user_syscalltest_elf_start);
     vfs_write(syscalltest, 0, syscalltest_size, _binary_build_user_syscalltest_elf_start);
+
+    vfs_create(bin, "fstest", VFS_FILE);
+    vfs_node_t* fstest = vfs_finddir(bin, "fstest");
+    if (!fstest) return;
+    uint32_t fstest_size = (uint32_t)(_binary_build_user_fstest_elf_end - _binary_build_user_fstest_elf_start);
+    vfs_write(fstest, 0, fstest_size, _binary_build_user_fstest_elf_start);
 }

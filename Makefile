@@ -148,8 +148,8 @@ KERNEL_OBJS += build/kernel/context_switch.o
 LIBC_OBJS = $(patsubst libc/%.c,$(LIBC_BUILD_DIR)/%.o,$(filter libc/%.c,$(LIBC_SRCS)))
 ARCH_C_OBJS = $(patsubst arch/i386/%.c,$(ARCH_BUILD_DIR)/%.o,$(ARCH_C_SRCS))
 ARCH_ASM_OBJS = $(patsubst arch/i386/%.s,$(ARCH_BUILD_DIR)/%.o,$(ARCH_ASM_SRCS))
-USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUILD_DIR)/execvetest.elf $(USER_BUILD_DIR)/waittest.elf $(USER_BUILD_DIR)/waitstress.elf $(USER_BUILD_DIR)/waitstressbg.elf $(USER_BUILD_DIR)/catfd.elf $(USER_BUILD_DIR)/sigtest.elf $(USER_BUILD_DIR)/mmaptest.elf $(USER_BUILD_DIR)/shmtest.elf $(USER_BUILD_DIR)/nxstacktest.elf $(USER_BUILD_DIR)/randtest.elf $(USER_BUILD_DIR)/argvtest.elf $(USER_BUILD_DIR)/syscalltest.elf
-USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o $(USER_BUILD_DIR)/faulttest_blob.o $(USER_BUILD_DIR)/nxstacktest_blob.o $(USER_BUILD_DIR)/randtest_blob.o $(USER_BUILD_DIR)/argvtest_blob.o $(USER_BUILD_DIR)/syscalltest_blob.o
+USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUILD_DIR)/execvetest.elf $(USER_BUILD_DIR)/waittest.elf $(USER_BUILD_DIR)/waitstress.elf $(USER_BUILD_DIR)/waitstressbg.elf $(USER_BUILD_DIR)/catfd.elf $(USER_BUILD_DIR)/sigtest.elf $(USER_BUILD_DIR)/mmaptest.elf $(USER_BUILD_DIR)/shmtest.elf $(USER_BUILD_DIR)/nxstacktest.elf $(USER_BUILD_DIR)/randtest.elf $(USER_BUILD_DIR)/argvtest.elf $(USER_BUILD_DIR)/syscalltest.elf $(USER_BUILD_DIR)/fstest.elf
+USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o $(USER_BUILD_DIR)/faulttest_blob.o $(USER_BUILD_DIR)/nxstacktest_blob.o $(USER_BUILD_DIR)/randtest_blob.o $(USER_BUILD_DIR)/argvtest_blob.o $(USER_BUILD_DIR)/syscalltest_blob.o $(USER_BUILD_DIR)/fstest_blob.o
 
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
 ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LWIP_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
@@ -360,6 +360,15 @@ $(USER_BUILD_DIR)/syscalltest.elf: $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/sy
 	$(CC) -T user/linker.ld -o $@ $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/syscalltest.o $(LIBC_USER_ARCHIVE) -ffreestanding -fno-pie -nostdlib -nostartfiles -Wl,-n
 
 $(USER_BUILD_DIR)/syscalltest_blob.o: $(USER_BUILD_DIR)/syscalltest.elf | directories
+	$(LD) -r -m elf_i386 -b binary $< -o $@
+
+$(USER_BUILD_DIR)/fstest.o: user/fstest.c | directories
+	$(CC) -c $< -o $@ $(USER_CFLAGS) $(USER_CPPFLAGS)
+
+$(USER_BUILD_DIR)/fstest.elf: $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/fstest.o $(LIBC_USER_ARCHIVE) user/linker.ld | directories
+	$(CC) -T user/linker.ld -o $@ $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/fstest.o $(LIBC_USER_ARCHIVE) -ffreestanding -fno-pie -nostdlib -nostartfiles -Wl,-n
+
+$(USER_BUILD_DIR)/fstest_blob.o: $(USER_BUILD_DIR)/fstest.elf | directories
 	$(LD) -r -m elf_i386 -b binary $< -o $@
 
 
