@@ -1116,6 +1116,96 @@ static long sys_vm_stats(paging_stats_t* out) {
     return 0;
 }
 
+static long sys_chdir(const char* path) {
+    char kpath[SYS_PATH_MAX];
+    char resolved[SYS_PATH_MAX];
+    if (!path) return -1;
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+
+    task_t* cur = task_current();
+    if (!cur) return -1;
+    if (vfs_normalize_path(cur->cwd, kpath, resolved, sizeof(resolved)) < 0) return -1;
+
+    vfs_node_t* node = vfs_namei(resolved);
+    if (!node) return -1;
+    if (!(node->type & VFS_DIRECTORY)) return -1;
+
+    strncpy(cur->cwd, resolved, sizeof(cur->cwd) - 1);
+    cur->cwd[sizeof(cur->cwd) - 1] = '\0';
+    return 0;
+}
+
+static long sys_getcwd(char* buf, uint32_t size) {
+    if (!buf) return -1;
+    task_t* cur = task_current();
+    if (!cur) return -1;
+    size_t len = strlen(cur->cwd);
+    if ((uint32_t)(len + 1) > size) return -1;
+    if (!access_ok_w(buf, len + 1)) return -EFAULT;
+    if (copy_to_user(buf, cur->cwd, len + 1) < 0) return -EFAULT;
+    return (long)len;
+}
+
+static long sys_readdir(const char* path, uint32_t index, vfs_dirent_t* out) {
+    char kpath[SYS_PATH_MAX];
+    char resolved[SYS_PATH_MAX];
+    if (!path || !out) return -1;
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+
+    task_t* cur = task_current();
+    if (!cur) return -1;
+    if (vfs_normalize_path(cur->cwd, kpath, resolved, sizeof(resolved)) < 0) return -1;
+
+    vfs_node_t* node = vfs_namei(resolved);
+    if (!node) return -1;
+    if (!(node->type & VFS_DIRECTORY)) return -1;
+
+    vfs_dirent_t entry;
+    int rc = vfs_readdir(node, index, &entry);
+    if (rc != 0) return -1;
+    if (copy_to_user(out, &entry, sizeof(entry)) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_unlink(const char* path) {
+    char kpath[SYS_PATH_MAX];
+    char resolved[SYS_PATH_MAX];
+    if (!path) return -1;
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+
+    task_t* cur = task_current();
+    if (!cur) return -1;
+    if (vfs_normalize_path(cur->cwd, kpath, resolved, sizeof(resolved)) < 0) return -1;
+
+    return (long)vfs_unlink_path(resolved);
+}
+
+static long sys_stat(const char* path, vfs_stat_t* out) {
+    char kpath[SYS_PATH_MAX];
+    char resolved[SYS_PATH_MAX];
+    if (!path || !out) return -1;
+    int cs = copy_user_string(kpath, path, sizeof(kpath));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+
+    task_t* cur = task_current();
+    if (!cur) return -1;
+    if (vfs_normalize_path(cur->cwd, kpath, resolved, sizeof(resolved)) < 0) return -1;
+
+    vfs_stat_t st;
+    if (vfs_stat_path(resolved, &st) < 0) return -1;
+    if (copy_to_user(out, &st, sizeof(st)) < 0) return -EFAULT;
+    return 0;
+}
+
 static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
@@ -1177,6 +1267,11 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_mouse_state: return sys_mouse_state((mouse_state_t*)a1);
         case SYS_mouse_reset: return sys_mouse_reset();
         case SYS_vm_stats: return sys_vm_stats((paging_stats_t*)a1);
+        case SYS_chdir: return sys_chdir((const char*)a1);
+        case SYS_getcwd: return sys_getcwd((char*)a1, a2);
+        case SYS_readdir: return sys_readdir((const char*)a1, a2, (vfs_dirent_t*)a3);
+        case SYS_unlink: return sys_unlink((const char*)a1);
+        case SYS_stat: return sys_stat((const char*)a1, (vfs_stat_t*)a2);
         default:        return -38; /* ENOSYS */
     }
 }

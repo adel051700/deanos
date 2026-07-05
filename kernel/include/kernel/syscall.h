@@ -64,6 +64,11 @@ enum {
     SYS_mouse_state = 57,
     SYS_mouse_reset = 58,
     SYS_vm_stats    = 59,
+    SYS_chdir       = 60,
+    SYS_getcwd      = 61,
+    SYS_readdir     = 62,
+    SYS_unlink      = 63,
+    SYS_stat        = 64,
 };
 
 /* getrandom() flags */
