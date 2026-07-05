@@ -55,6 +55,15 @@ enum {
     SYS_getsockopt = 48,
     SYS_poll = 49,
     SYS_getrandom = 50,
+    SYS_localtime   = 51,
+    SYS_tz_get      = 52,
+    SYS_tz_set      = 53,
+    SYS_uptime      = 54,
+    SYS_pit_stats   = 55,
+    SYS_task_list   = 56,
+    SYS_mouse_state = 57,
+    SYS_mouse_reset = 58,
+    SYS_vm_stats    = 59,
 };
 
 /* getrandom() flags */

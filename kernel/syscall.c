@@ -14,6 +14,7 @@
 #include "include/kernel/net.h"
 #include "include/kernel/net_lwip.h"
 #include "include/kernel/random.h"
+#include "include/kernel/mouse.h"
 #include "lwip_port/ksock_udp.h"
 #include "lwip_port/ksock_tcp.h"
 #include "lwip_port/ksock_dns.h"
@@ -1038,6 +1039,83 @@ static long sys_recvfrom(const syscall_recvfrom_args_t* uargs) {
     return (long)out_len;
 }
 
+static long sys_localtime(rtc_time_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    rtc_time_t t;
+    rtc_get_local_time(&t);
+    if (copy_to_user(out, &t, sizeof(t)) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_tz_get(void) {
+    return (long)rtc_tz_get_hours();
+}
+
+static long sys_tz_set(int32_t hours) {
+    return (long)rtc_tz_set_hours(hours);
+}
+
+static long sys_uptime(uptime_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    uptime_t u;
+    get_uptime(&u);
+    if (copy_to_user(out, &u, sizeof(u)) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_pit_stats(pit_stats_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    pit_stats_t st;
+    st.ticks = pit_get_ticks();
+    st.uptime_ms = pit_get_uptime_ms();
+    if (copy_to_user(out, &st, sizeof(st)) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_task_list(uint32_t index, task_info_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    if (index >= task_count()) return -1;
+    const task_t* t = task_get(index);
+    if (!t) return -1;
+    task_info_t info;
+    info.id = (int32_t)t->id;
+    info.parent_id = (int32_t)t->parent_id;
+    info.sid = (int32_t)t->sid;
+    info.pgid = (int32_t)t->pgid;
+    info.state = (int32_t)t->state;
+    info.quantum = t->quantum;
+    memcpy(info.name, t->name, sizeof(info.name));
+    if (copy_to_user(out, &info, sizeof(info)) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_mouse_state(mouse_state_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    mouse_state_t st;
+    mouse_get_state(&st);
+    if (copy_to_user(out, &st, sizeof(st)) < 0) return -EFAULT;
+    return (long)mouse_is_ready();
+}
+
+static long sys_mouse_reset(void) {
+    mouse_reset_counters();
+    return 0;
+}
+
+static long sys_vm_stats(paging_stats_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    paging_stats_t st;
+    paging_get_stats(&st);
+    if (copy_to_user(out, &st, sizeof(st)) < 0) return -EFAULT;
+    return 0;
+}
+
 static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
@@ -1090,6 +1168,15 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_getsockopt: return sys_getsockopt((const syscall_sockopt_args_t*)a1);
         case SYS_poll: return sys_poll((const syscall_poll_args_t*)a1);
         case SYS_getrandom: return sys_getrandom((void*)a1, a2, a3);
+        case SYS_localtime: return sys_localtime((rtc_time_t*)a1);
+        case SYS_tz_get: return sys_tz_get();
+        case SYS_tz_set: return sys_tz_set((int32_t)a1);
+        case SYS_uptime: return sys_uptime((uptime_t*)a1);
+        case SYS_pit_stats: return sys_pit_stats((pit_stats_t*)a1);
+        case SYS_task_list: return sys_task_list(a1, (task_info_t*)a2);
+        case SYS_mouse_state: return sys_mouse_state((mouse_state_t*)a1);
+        case SYS_mouse_reset: return sys_mouse_reset();
+        case SYS_vm_stats: return sys_vm_stats((paging_stats_t*)a1);
         default:        return -38; /* ENOSYS */
     }
 }

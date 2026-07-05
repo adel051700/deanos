@@ -133,6 +133,19 @@ typedef struct task {
     uint8_t         fork_resume_user;
 } task_t;
 
+/* Userspace-safe view of a task, exposed via SYS_task_list. Deliberately
+ * independent from task_t, which has kernel-only pointers/fd tables/fork
+ * state that must never reach userspace. */
+typedef struct {
+    int32_t  id;
+    int32_t  parent_id;
+    int32_t  sid;
+    int32_t  pgid;
+    int32_t  state;              /* mirrors task_state_t's numeric values */
+    uint32_t quantum;
+    char     name[TASK_NAME_LEN];
+} task_info_t;
+
 /* ---- Public API -------------------------------------------------------- */
 
 void tasking_initialize(void);

@@ -18,4 +18,9 @@ uint64_t pit_get_uptime_ms(void);
 // Sleep for specified milliseconds (blocking)
 void pit_sleep(uint32_t milliseconds);
 
+typedef struct {
+    uint64_t ticks;
+    uint64_t uptime_ms;
+} pit_stats_t;
+
 #endif
