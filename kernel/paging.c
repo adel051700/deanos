@@ -8,6 +8,7 @@
 #include "include/kernel/blockdev.h"
 #include "include/kernel/mbr.h"
 #include "include/kernel/kheap.h"
+#include "include/kernel/syscall.h"
 #include "../libc/include/stdio.h"
 
 #define PAGE_SIZE 4096
@@ -702,6 +703,38 @@ int paging_access_ok(uintptr_t addr, uint32_t len, int write) {
             demand_region_t* region = find_demand_region(page);
             if (region && (region->flags & PTE_U)) {
                 ok = !write || (region->flags & PTE_W);
+            }
+        }
+
+        if (!ok) {
+            /* Not resolved above; a lazily-mapped ELF segment (text/rodata/
+             * data not yet touched) is also a legitimate user address that
+             * handle_elf_lazy_fault will fill in on first access. Mirrors the
+             * per-task region list that fault handler consults. */
+            task_t* cur = task_current();
+            if (cur) {
+                for (uint32_t i = 0; i < cur->elf_region_count && i < TASK_ELF_LAZY_MAX; ++i) {
+                    const task_elf_lazy_region_t* reg = &cur->elf_regions[i];
+                    if (!reg->in_use) continue;
+                    if (page < reg->start || page >= reg->end) continue;
+                    ok = !write || (reg->flags & PAGING_FLAG_WRITE);
+                    break;
+                }
+            }
+        }
+
+        if (!ok) {
+            /* Same for a lazily-mapped mmap region (anonymous or file/shm
+             * backed) not yet touched — handle_mmap_fault will fill it in. */
+            task_t* cur = task_current();
+            if (cur) {
+                for (uint32_t i = 0; i < TASK_MMAP_MAX; ++i) {
+                    const task_mmap_region_t* reg = &cur->mmap_regions[i];
+                    if (!reg->in_use) continue;
+                    if (page < reg->start || page >= reg->end) continue;
+                    ok = !write || (reg->prot & MMAP_PROT_WRITE);
+                    break;
+                }
             }
         }
 
