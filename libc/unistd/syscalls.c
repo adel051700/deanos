@@ -1,3 +1,4 @@
+#include <dirent.h>
 #include <fcntl.h>
 #include <kernel/syscall.h>
 #include <poll.h>
@@ -412,3 +413,24 @@ int get_vm_stats(struct vm_stats* out) {
     return (int)syscall1(SYS_vm_stats, (unsigned)out);
 }
 
+int chdir(const char* path) {
+    return (int)syscall1(SYS_chdir, (unsigned)path);
+}
+
+char* getcwd(char* buf, size_t size) {
+    long rc = syscall2(SYS_getcwd, (unsigned)buf, (unsigned)size);
+    if (rc < 0) return NULL;
+    return buf;
+}
+
+int unlink(const char* path) {
+    return (int)syscall1(SYS_unlink, (unsigned)path);
+}
+
+int dir_read(const char* path, unsigned index, struct dirent* out) {
+    return (int)syscall3(SYS_readdir, (unsigned)path, index, (unsigned)out);
+}
+
+int stat(const char* path, struct stat* st) {
+    return (int)syscall2(SYS_stat, (unsigned)path, (unsigned)st);
+}

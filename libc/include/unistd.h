@@ -37,6 +37,9 @@ int tcsetpgrp(int fd, int pgrp);
 int tcgetpgrp(int fd);
 int chmod(const char* path, uint16_t mode);
 int chown(const char* path, uint32_t uid, uint32_t gid);
+int chdir(const char* path);
+char* getcwd(char* buf, size_t size);
+int unlink(const char* path);
 long getrandom(void* buf, unsigned long len, unsigned int flags);
 #define GRND_NONBLOCK 0x0001u
 #define GRND_RANDOM   0x0002u
