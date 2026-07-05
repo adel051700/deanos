@@ -1167,7 +1167,7 @@ static long sys_readdir(const char* path, uint32_t index, vfs_dirent_t* out) {
 
     vfs_dirent_t entry;
     int rc = vfs_readdir(node, index, &entry);
-    if (rc != 0) return -1;
+    if (rc != 0) return (long)rc;
     if (copy_to_user(out, &entry, sizeof(entry)) < 0) return -EFAULT;
     return 0;
 }
