@@ -657,12 +657,13 @@ uintptr_t paging_heap_size(void) { return (uintptr_t)KHEAP_SIZE; }
  *   - present with PTE_U (and, for writes, either PTE_W or a COW page that the
  *     fault handler will copy on first write), or
  *   - swapped out with PTE_U preserved in its saved flags (and PTE_W for writes),
- *   - or inside a registered demand region carrying PTE_U (covers lazily-mapped
- *     ELF segments and anonymous demand memory).
- * This mirrors exactly what the page-fault handler is able to resolve, so it
+ *   - or inside a registered demand region carrying PTE_U, or
+ *   - a lazily-mapped ELF segment not yet touched (handle_elf_lazy_fault will
+ *     fill in on first access), or
+ *   - a lazily-mapped mmap region not yet touched (handle_mmap_fault will fill in).
+ * This mirrors what the page-fault handlers can resolve in these regions, so it
  * never rejects legitimate lazy/swapped user memory, while rejecting any pointer
- * into the kernel heap, identity-mapped low memory, or page tables (none of
- * which carry PTE_U).
+ * into the kernel heap, identity-mapped low memory, or page tables.
  * Returns 1 if the whole range is accessible, 0 otherwise. A zero-length range
  * is trivially accessible.
  */
