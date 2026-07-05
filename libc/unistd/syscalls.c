@@ -5,9 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <sys/mouse.h>
+#include <sys/proc.h>
+#include <sys/rtc.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/vmstat.h>
 #include <unistd.h>
 
 __attribute__((naked, noreturn)) static void __signal_restorer(void) {
@@ -370,5 +374,41 @@ void _exit(int status) {
 
 long getrandom(void* buf, unsigned long len, unsigned int flags) {
     return syscall3(SYS_getrandom, (unsigned)buf, (unsigned)len, (unsigned)flags);
+}
+
+int get_localtime(struct rtc_time* out) {
+    return (int)syscall1(SYS_localtime, (unsigned)out);
+}
+
+int tz_get(void) {
+    return (int)syscall1(SYS_tz_get, 0u);
+}
+
+int tz_set(int hours) {
+    return (int)syscall1(SYS_tz_set, (unsigned)hours);
+}
+
+int uptime(struct uptime* out) {
+    return (int)syscall1(SYS_uptime, (unsigned)out);
+}
+
+int get_pit_stats(struct pit_stats* out) {
+    return (int)syscall1(SYS_pit_stats, (unsigned)out);
+}
+
+int task_list(unsigned index, struct task_info* out) {
+    return (int)syscall2(SYS_task_list, index, (unsigned)out);
+}
+
+int get_mouse_state(struct mouse_state* out) {
+    return (int)syscall1(SYS_mouse_state, (unsigned)out);
+}
+
+int mouse_reset(void) {
+    return (int)syscall1(SYS_mouse_reset, 0u);
+}
+
+int get_vm_stats(struct vm_stats* out) {
+    return (int)syscall1(SYS_vm_stats, (unsigned)out);
 }
 
