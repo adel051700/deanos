@@ -44,8 +44,11 @@ int main(void) {
     write_str(fd, cw ? cw : "(getcwd failed)");
     write_str(fd, "\n");
 
-    /* Create a scratch file relative to the new cwd, then list the directory. */
-    int scratch_fd = open("scratch.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    /* SYS_open does not consult cwd (by design — see the wave's non-goals),
+     * so the scratch file must be created via an absolute path even though
+     * it is later addressed relative to cwd via dir_read/stat/unlink, which
+     * do consult cwd. */
+    int scratch_fd = open("/fstest_dir/scratch.txt", O_WRONLY | O_CREAT | O_TRUNC);
     if (scratch_fd >= 0) {
         write_str(scratch_fd, "test data");
         close(scratch_fd);
