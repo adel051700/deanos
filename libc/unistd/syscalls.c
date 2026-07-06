@@ -9,6 +9,7 @@
 #include <sys/klog.h>
 #include <sys/mman.h>
 #include <sys/mouse.h>
+#include <sys/net.h>
 #include <sys/proc.h>
 #include <sys/rtc.h>
 #include <sys/shm.h>
@@ -463,4 +464,16 @@ int blk_cache_stats(struct blk_cache_stats* out) {
 
 int blk_flush(int dev) {
     return (int)syscall1(SYS_blk_flush, (unsigned)dev);
+}
+
+int net_info(struct net_info* out) {
+    return (int)syscall1(SYS_net_info, (unsigned)out);
+}
+
+int net_ping(const uint8_t ip[4], unsigned short seq, unsigned timeout_ms) {
+    return (int)syscall3(SYS_net_ping, (unsigned)ip, seq, timeout_ms);
+}
+
+int net_dhcp_renew(void) {
+    return (int)syscall1(SYS_net_dhcp_renew, 0u);
 }
