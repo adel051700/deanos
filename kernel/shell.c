@@ -553,18 +553,24 @@ static void shell_execute_command(const char* command) {
         }
     }
     
-    // Search for the command in the command table
-    for (i = 0; commands[i].name != NULL; i++) {
-        if (strcmp(cmd_name, commands[i].name) == 0) {
-            commands[i].handler(args);
+    // Resolve to a builtin, an existing/`/bin`-fallback executable, or nothing
+    shell_dispatch_t dispatch;
+    shell_resolve_dispatch(cmd_name, &dispatch);
+
+    switch (dispatch.kind) {
+        case SHELL_DISPATCH_BUILTIN:
+            dispatch.builtin(args);
             return;
-        }
+        case SHELL_DISPATCH_EXEC:
+            shell_run_exec_path(dispatch.exec_path, args);
+            return;
+        case SHELL_DISPATCH_NOT_FOUND:
+        default:
+            terminal_writestring("Command not found: ");
+            terminal_writestring(cmd_name);
+            terminal_writestring("\nType 'help' for a list of commands.\n");
+            return;
     }
-    
-    // Command not found
-    terminal_writestring("Command not found: ");
-    terminal_writestring(cmd_name);
-    terminal_writestring("\nType 'help' for a list of commands.\n");
 }
 
 #define SHELL_PIPE_MAX_STAGES 8
@@ -3252,7 +3258,7 @@ static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz) 
     return buf;
 }
 
-__attribute__((unused)) static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out) {
+static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out) {
     memset(out, 0, sizeof(*out));
 
     if (!strchr(name, '/')) {
