@@ -72,6 +72,21 @@ static void shell_set_line(const char* s);
 static void shell_execute_command(const char* command);
 static void shell_execute_pipeline(const char* command);
 static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz);
+
+typedef enum {
+    SHELL_DISPATCH_BUILTIN,
+    SHELL_DISPATCH_EXEC,
+    SHELL_DISPATCH_NOT_FOUND,
+} shell_dispatch_kind_t;
+
+typedef struct {
+    shell_dispatch_kind_t kind;
+    void (*builtin)(const char* args);     /* valid when kind == SHELL_DISPATCH_BUILTIN */
+    char exec_path[VFS_PATH_MAX];          /* valid when kind == SHELL_DISPATCH_EXEC */
+} shell_dispatch_t;
+
+static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out);
+
 static void shell_autocomplete(void);
 static void shell_insert_char_at_cursor(char c);
 static size_t copy_token(const char* src, char* dst, size_t dstsz);
@@ -3234,6 +3249,43 @@ static const char* resolve_shell_path(const char* arg, char* buf, size_t bufsz) 
     if (!arg || *arg == '\0') return cwd;
     if (vfs_normalize_path(cwd, arg, buf, bufsz) < 0) return cwd;
     return buf;
+}
+
+__attribute__((unused)) static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out) {
+    memset(out, 0, sizeof(*out));
+
+    if (!strchr(name, '/')) {
+        for (int i = 0; commands[i].name != NULL; i++) {
+            if (strcmp(name, commands[i].name) == 0) {
+                out->kind = SHELL_DISPATCH_BUILTIN;
+                out->builtin = commands[i].handler;
+                return;
+            }
+        }
+    }
+
+    char resolved[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(name, resolved, sizeof(resolved));
+    if (vfs_namei(path)) {
+        out->kind = SHELL_DISPATCH_EXEC;
+        strncpy(out->exec_path, path, sizeof(out->exec_path) - 1);
+        out->exec_path[sizeof(out->exec_path) - 1] = '\0';
+        return;
+    }
+
+    if (name[0] != '/' && !strchr(name, '/')) {
+        char bin_path[VFS_PATH_MAX];
+        strcpy(bin_path, "/bin/");
+        strncat(bin_path, name, sizeof(bin_path) - strlen(bin_path) - 1);
+        if (vfs_namei(bin_path)) {
+            out->kind = SHELL_DISPATCH_EXEC;
+            strncpy(out->exec_path, bin_path, sizeof(out->exec_path) - 1);
+            out->exec_path[sizeof(out->exec_path) - 1] = '\0';
+            return;
+        }
+    }
+
+    out->kind = SHELL_DISPATCH_NOT_FOUND;
 }
 
 /* Helper: count children of a directory node */
