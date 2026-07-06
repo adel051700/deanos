@@ -125,7 +125,6 @@ static void cmd_vm(const char* args);
 static void cmd_net(const char* args);
 
 // Filesystem commands
-static void cmd_cat(const char* args);
 static void cmd_touch(const char* args);
 static void cmd_writef(const char* args);
 static void cmd_mkdir(const char* args);
@@ -187,7 +186,6 @@ static const struct shell_command commands[] = {
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
     // Filesystem commands
-    {"cat",     cmd_cat,     "Display file contents: cat <path>"},
     {"touch",   cmd_touch,   "Create an empty file: touch <path>"},
     {"write",   cmd_writef,  "Write text to file: write <path> <text>"},
     {"mkdir",   cmd_mkdir,   "Create a directory: mkdir <path>"},
@@ -3318,49 +3316,6 @@ static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out) {
     }
 
     out->kind = SHELL_DISPATCH_NOT_FOUND;
-}
-
-static void cmd_cat(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: cat <path>\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
-
-    vfs_node_t* node = vfs_namei(path);
-    if (!node) {
-        terminal_writestring("cat: no such file: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-    if (!(node->type & VFS_FILE)) {
-        terminal_writestring("cat: not a file: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (node->size == 0) {
-        terminal_writestring("(empty file)\n");
-        return;
-    }
-
-    /* Read in chunks */
-    uint8_t buf[257];
-    uint32_t offset = 0;
-    while (offset < node->size) {
-        uint32_t chunk = node->size - offset;
-        if (chunk > 256) chunk = 256;
-        int32_t n = vfs_read(node, offset, chunk, buf);
-        if (n <= 0) break;
-        buf[n] = '\0';
-        terminal_writestring((const char*)buf);
-        offset += (uint32_t)n;
-    }
-    terminal_writestring("\n");
 }
 
 static void cmd_touch(const char* args) {
