@@ -125,7 +125,6 @@ static void cmd_vm(const char* args);
 static void cmd_net(const char* args);
 
 // Filesystem commands
-static void cmd_ls(const char* args);
 static void cmd_cat(const char* args);
 static void cmd_touch(const char* args);
 static void cmd_writef(const char* args);
@@ -188,7 +187,6 @@ static const struct shell_command commands[] = {
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
     // Filesystem commands
-    {"ls",      cmd_ls,      "List directory contents: ls [path]"},
     {"cat",     cmd_cat,     "Display file contents: cat <path>"},
     {"touch",   cmd_touch,   "Create an empty file: touch <path>"},
     {"write",   cmd_writef,  "Write text to file: write <path> <text>"},
@@ -3320,117 +3318,6 @@ static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out) {
     }
 
     out->kind = SHELL_DISPATCH_NOT_FOUND;
-}
-
-/* Helper: count children of a directory node */
-static uint32_t count_children(vfs_node_t* dir) {
-    vfs_dirent_t tmp;
-    uint32_t n = 0;
-    while (vfs_readdir(dir, n, &tmp) == 0) n++;
-    return n;
-}
-
-/* Helper: print a single file entry with size */
-static void ls_print_file_info(vfs_node_t* dir, const char* name) {
-    terminal_writestring("[FILE] ");
-    terminal_writestring(name);
-    vfs_node_t* child = vfs_finddir(dir, name);
-    if (child) {
-        char buf[16];
-        terminal_writestring("  (");
-        itoa((int)child->size, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(" bytes)");
-    }
-    terminal_writestring("\n");
-}
-
-#define LS_MAX_DEPTH 3
-
-/* Print the tree prefix for a given depth level */
-static void ls_print_prefix(int depth, int is_last) {
-    for (int i = 0; i < depth; i++) {
-        if (i == 0) {
-            terminal_writestring("  ");
-        }
-        else{
-            terminal_writestring("     ");
-        }
-    }
-    if (depth > 0) {
-        if (is_last) {
-            terminal_writestring("|_ ");
-        } else {
-            terminal_writestring("|  ");
-        }
-    }
-}
-
-/* Recursively list directory contents up to LS_MAX_DEPTH levels */
-static void ls_recursive(vfs_node_t* dir, const char* dir_path, int depth) {
-    if (depth > LS_MAX_DEPTH) return;
-
-    uint32_t total = count_children(dir);
-    if (total == 0) {
-        if (depth == 0) terminal_writestring("  (empty)\n");
-        return;
-    }
-
-    vfs_dirent_t ent;
-    uint32_t idx = 0;
-    while (vfs_readdir(dir, idx, &ent) == 0) {
-        int is_last = (idx == total - 1);
-        int is_dir  = (ent.type & VFS_DIRECTORY);
-
-        ls_print_prefix(depth, is_last);
-
-        if (is_dir) {
-            terminal_writestring("[DIR] ");
-            terminal_writestring(ent.name);
-            terminal_writestring("\n");
-
-            char child_path[VFS_PATH_MAX];
-            if (strcmp(dir_path, "/") == 0) {
-                strcpy(child_path, "/");
-                strncat(child_path, ent.name, sizeof(child_path) - strlen(child_path) - 1);
-            } else {
-                strncpy(child_path, dir_path, sizeof(child_path) - 1);
-                child_path[sizeof(child_path) - 1] = '\0';
-                strncat(child_path, "/", sizeof(child_path) - strlen(child_path) - 1);
-                strncat(child_path, ent.name, sizeof(child_path) - strlen(child_path) - 1);
-            }
-
-            /* Use path resolution so mount points traverse into mounted roots. */
-            vfs_node_t* sub = vfs_namei(child_path);
-            if (sub && (sub->type & VFS_DIRECTORY)) {
-                ls_recursive(sub, child_path, depth + 1);
-            }
-        } else {
-            ls_print_file_info(dir, ent.name);
-        }
-        idx++;
-    }
-}
-
-static void cmd_ls(const char* args) {
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
-
-    vfs_node_t* dir = vfs_namei(path);
-    if (!dir) {
-        terminal_writestring("ls: no such directory: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-    if (!(dir->type & VFS_DIRECTORY)) {
-        terminal_writestring("ls: not a directory: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    ls_recursive(dir, path, 0);
 }
 
 static void cmd_cat(const char* args) {
