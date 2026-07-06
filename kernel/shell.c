@@ -86,6 +86,7 @@ typedef struct {
 } shell_dispatch_t;
 
 static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out);
+static void shell_run_exec_path(const char* path, const char* raw_args);
 
 static void shell_autocomplete(void);
 static void shell_insert_char_at_cursor(char c);
@@ -3932,17 +3933,12 @@ static void cmd_vfstest(const char* args) {
     terminal_writestring("\n");
 }
 
-static void cmd_exec(const char* args) {
+static void shell_run_exec_path(const char* path, const char* raw_args) {
     shell_jobctl_ensure();
-
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: exec <path> [&]\n");
-        return;
-    }
 
     uint32_t wait = 1;
     char argbuf[VFS_PATH_MAX];
-    strncpy(argbuf, args, sizeof(argbuf) - 1);
+    strncpy(argbuf, raw_args ? raw_args : "", sizeof(argbuf) - 1);
     argbuf[sizeof(argbuf) - 1] = '\0';
 
     size_t n = strlen(argbuf);
@@ -3963,7 +3959,10 @@ static void cmd_exec(const char* args) {
     int token_count = 0;
     {
         const char* p = argbuf;
-        while (*p && token_count < ELF_ARGV_MAX) {
+        /* Cap at ELF_ARGV_MAX - 1: unlike cmd_exec's old inline tokenizer (where
+         * tokens[0] was the path itself), every token here is a real extra
+         * argument, and exec_argv[0] is reserved for path below. */
+        while (*p && token_count < ELF_ARGV_MAX - 1) {
             while (*p == ' ') p++;
             if (*p == '\0') break;
             size_t tn = copy_token(p, tokens[token_count], sizeof(tokens[token_count]));
@@ -3972,13 +3971,6 @@ static void cmd_exec(const char* args) {
             token_count++;
         }
     }
-    if (token_count == 0) {
-        terminal_writestring("usage: exec <path> [&]\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(tokens[0], pathbuf, sizeof(pathbuf));
 
     terminal_writestring("Loading ELF: ");
     terminal_writestring(path);
@@ -3986,9 +3978,10 @@ static void cmd_exec(const char* args) {
 
     const char* exec_argv[ELF_ARGV_MAX];
     exec_argv[0] = path;
-    for (int i = 1; i < token_count; i++) exec_argv[i] = tokens[i];
+    for (int i = 0; i < token_count; i++) exec_argv[i + 1] = tokens[i];
+    int exec_argc = token_count + 1;
 
-    int ret = elf_exec_with_stdio(path, 0, -1, -1, exec_argv, token_count);
+    int ret = elf_exec_with_stdio(path, 0, -1, -1, exec_argv, exec_argc);
     if (ret < 0) {
         terminal_writestring("exec: failed (error ");
         char buf[16];
@@ -4019,6 +4012,33 @@ static void cmd_exec(const char* args) {
     if (shell_jobctl_ready && shell_pgid > 0) {
         (void)terminal_set_foreground_pgid(shell_pgid);
     }
+}
+
+static void cmd_exec(const char* args) {
+    if (!args || *args == '\0') {
+        terminal_writestring("usage: exec <path> [&]\n");
+        return;
+    }
+
+    char argbuf[VFS_PATH_MAX];
+    strncpy(argbuf, args, sizeof(argbuf) - 1);
+    argbuf[sizeof(argbuf) - 1] = '\0';
+
+    char pathtoken[VFS_PATH_MAX];
+    const char* p = argbuf;
+    while (*p == ' ') p++;
+    size_t tn = copy_token(p, pathtoken, sizeof(pathtoken));
+    if (tn == 0) {
+        terminal_writestring("usage: exec <path> [&]\n");
+        return;
+    }
+    p += tn;
+
+    char pathbuf[VFS_PATH_MAX];
+    const char* path = resolve_shell_path(pathtoken, pathbuf, sizeof(pathbuf));
+
+    while (*p == ' ') p++;
+    shell_run_exec_path(path, p);
 }
 
 static void cmd_jobs(const char* args) {
