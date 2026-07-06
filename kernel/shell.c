@@ -368,6 +368,15 @@ void shell_initialize(void) {
     history_pos = 0;
     esc_state = ESC_IDLE;
     input_line_dirty = 0;
+    /* Note: no task_current()->cwd sync here on purpose. shell_initialize()
+     * runs from kernel_main() before tasking_initialize(), so task_current()
+     * is guaranteed to return NULL at this point (g_current stays -1 until
+     * tasking_initialize() creates the idle task). The real shell task,
+     * created afterward via task_create_named(shell_task, ...), already
+     * starts with cwd == "/" for free: it inherits from the idle task via
+     * task_create's parent-cwd-inheritance default, and the idle task itself
+     * falls back to "/" because it's created while g_current is still < 0.
+     * cmd_cd (below) is what keeps task_current()->cwd in sync from here on. */
     cwd[0] = '/';
     cwd[1] = '\0';
     for (int i = 0; i < SHELL_BG_JOBS_MAX; ++i) {
@@ -3734,6 +3743,11 @@ static void cmd_cd(const char* args) {
     if (!args || *args == '\0') {
         cwd[0] = '/';
         cwd[1] = '\0';
+        task_t* root_task = task_current();
+        if (root_task) {
+            root_task->cwd[0] = '/';
+            root_task->cwd[1] = '\0';
+        }
         return;
     }
 
@@ -3761,6 +3775,12 @@ static void cmd_cd(const char* args) {
     }
 
     strcpy(cwd, resolved);
+
+    task_t* cur = task_current();
+    if (cur) {
+        strncpy(cur->cwd, resolved, sizeof(cur->cwd) - 1);
+        cur->cwd[sizeof(cur->cwd) - 1] = '\0';
+    }
 }
 
 static void cmd_pwd(const char* args) {
