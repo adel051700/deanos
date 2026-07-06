@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/blk.h>
 #include <sys/klog.h>
 #include <sys/mman.h>
 #include <sys/mouse.h>
@@ -442,4 +443,24 @@ int dmesg_read(char* buf, unsigned size) {
 
 int dmesg_clear(void) {
     return (int)syscall1(SYS_dmesg_clear, 0u);
+}
+
+int blk_info(unsigned index, struct blk_info* out) {
+    return (int)syscall2(SYS_blk_info, index, (unsigned)out);
+}
+
+int blk_read(unsigned dev, unsigned lba, void* buf) {
+    return (int)syscall3(SYS_blk_read, dev, lba, (unsigned)buf);
+}
+
+int blk_write(unsigned dev, unsigned lba, const void* buf) {
+    return (int)syscall3(SYS_blk_write, dev, lba, (unsigned)buf);
+}
+
+int blk_cache_stats(struct blk_cache_stats* out) {
+    return (int)syscall1(SYS_blk_cache_stats, (unsigned)out);
+}
+
+int blk_flush(int dev) {
+    return (int)syscall1(SYS_blk_flush, (unsigned)dev);
 }
