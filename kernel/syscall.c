@@ -1232,6 +1232,7 @@ static long sys_blk_info(uint32_t index, blk_info_t* out) {
     blk_info_t info;
     info.id = d->id;
     memcpy(info.name, d->name, sizeof(info.name));
+    info.name[sizeof(info.name) - 1] = '\0';
     info.block_size = d->block_size;
     info.block_count = d->block_count;
     info.flags = d->flags;
