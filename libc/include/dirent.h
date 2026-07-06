@@ -11,6 +11,9 @@ struct dirent {
     uint32_t type;
 };
 
+#define DT_FILE 0x01
+#define DT_DIR  0x02
+
 int dir_read(const char* path, unsigned index, struct dirent* out);
 
 #ifdef __cplusplus
