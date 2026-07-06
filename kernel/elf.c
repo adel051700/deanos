@@ -240,6 +240,8 @@ extern const uint8_t _binary_build_user_dmesgtest_elf_start[];
 extern const uint8_t _binary_build_user_dmesgtest_elf_end[];
 extern const uint8_t _binary_build_user_blktest_elf_start[];
 extern const uint8_t _binary_build_user_blktest_elf_end[];
+extern const uint8_t _binary_build_user_nettest_elf_start[];
+extern const uint8_t _binary_build_user_nettest_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -570,4 +572,10 @@ void elf_install_test_programs(void) {
     if (!blktest) return;
     uint32_t blktest_size = (uint32_t)(_binary_build_user_blktest_elf_end - _binary_build_user_blktest_elf_start);
     vfs_write(blktest, 0, blktest_size, _binary_build_user_blktest_elf_start);
+
+    vfs_create(bin, "nettest", VFS_FILE);
+    vfs_node_t* nettest = vfs_finddir(bin, "nettest");
+    if (!nettest) return;
+    uint32_t nettest_size = (uint32_t)(_binary_build_user_nettest_elf_end - _binary_build_user_nettest_elf_start);
+    vfs_write(nettest, 0, nettest_size, _binary_build_user_nettest_elf_start);
 }
