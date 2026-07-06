@@ -246,6 +246,10 @@ extern const uint8_t _binary_build_user_ls_elf_start[];
 extern const uint8_t _binary_build_user_ls_elf_end[];
 extern const uint8_t _binary_build_user_cat_elf_start[];
 extern const uint8_t _binary_build_user_cat_elf_end[];
+extern const uint8_t _binary_build_user_touch_elf_start[];
+extern const uint8_t _binary_build_user_touch_elf_end[];
+extern const uint8_t _binary_build_user_mkdir_elf_start[];
+extern const uint8_t _binary_build_user_mkdir_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -594,4 +598,16 @@ void elf_install_test_programs(void) {
     if (!cat_bin) return;
     uint32_t cat_size = (uint32_t)(_binary_build_user_cat_elf_end - _binary_build_user_cat_elf_start);
     vfs_write(cat_bin, 0, cat_size, _binary_build_user_cat_elf_start);
+
+    vfs_create(bin, "touch", VFS_FILE);
+    vfs_node_t* touch_bin = vfs_finddir(bin, "touch");
+    if (!touch_bin) return;
+    uint32_t touch_size = (uint32_t)(_binary_build_user_touch_elf_end - _binary_build_user_touch_elf_start);
+    vfs_write(touch_bin, 0, touch_size, _binary_build_user_touch_elf_start);
+
+    vfs_create(bin, "mkdir", VFS_FILE);
+    vfs_node_t* mkdir_bin = vfs_finddir(bin, "mkdir");
+    if (!mkdir_bin) return;
+    uint32_t mkdir_size = (uint32_t)(_binary_build_user_mkdir_elf_end - _binary_build_user_mkdir_elf_start);
+    vfs_write(mkdir_bin, 0, mkdir_size, _binary_build_user_mkdir_elf_start);
 }
