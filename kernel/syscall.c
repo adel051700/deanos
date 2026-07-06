@@ -1283,7 +1283,7 @@ static long sys_blk_flush(int32_t dev) {
 static long sys_net_info(net_info_t* out) {
     if (!out) return -1;
     if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
-    net_info_t info;
+    net_info_t info = {0};
     net_lwip_get_mac(info.mac);
     net_lwip_get_ipv4(info.ip);
     net_lwip_get_ipv4_netmask(info.netmask);
