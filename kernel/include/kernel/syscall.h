@@ -76,6 +76,9 @@ enum {
     SYS_blk_write       = 69,
     SYS_blk_cache_stats = 70,
     SYS_blk_flush       = 71,
+    SYS_net_info       = 72,
+    SYS_net_ping       = 73,
+    SYS_net_dhcp_renew = 74,
 };
 
 /* getrandom() flags */

@@ -20,6 +20,8 @@
 #include "lwip_port/ksock_udp.h"
 #include "lwip_port/ksock_tcp.h"
 #include "lwip_port/ksock_dns.h"
+#include "lwip_port/deanos_netif.h"
+#include "lwip/dhcp.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -1278,6 +1280,40 @@ static long sys_blk_flush(int32_t dev) {
     return (long)blockdev_flush((uint32_t)dev);
 }
 
+static long sys_net_info(net_info_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    net_info_t info;
+    net_lwip_get_mac(info.mac);
+    net_lwip_get_ipv4(info.ip);
+    net_lwip_get_ipv4_netmask(info.netmask);
+    net_lwip_get_ipv4_gateway(info.gateway);
+    const char* drv = net_lwip_driver_name();
+    size_t drv_len = 0;
+    if (drv) {
+        while (drv[drv_len] && drv_len < sizeof(info.driver_name) - 1) drv_len++;
+        memcpy(info.driver_name, drv, drv_len);
+    }
+    info.driver_name[drv_len] = '\0';
+    info.ready = net_lwip_is_ready();
+    if (copy_to_user(out, &info, sizeof(info)) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_net_ping(const uint8_t* ip, uint32_t seq, uint32_t timeout_ms) {
+    if (!ip) return -1;
+    uint8_t kip[4];
+    if (copy_from_user(kip, ip, sizeof(kip)) < 0) return -EFAULT;
+    return (long)net_lwip_ping(kip, (uint16_t)seq, timeout_ms);
+}
+
+static long sys_net_dhcp_renew(void) {
+    struct netif* nif = deanos_netif_default();
+    if (!nif) return -1;
+    if (dhcp_renew(nif) != ERR_OK) return -1;
+    return 0;
+}
+
 static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
@@ -1351,6 +1387,9 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_blk_write: return sys_blk_write(a1, a2, (const void*)a3);
         case SYS_blk_cache_stats: return sys_blk_cache_stats((blockdev_cache_stats_t*)a1);
         case SYS_blk_flush: return sys_blk_flush((int32_t)a1);
+        case SYS_net_info: return sys_net_info((net_info_t*)a1);
+        case SYS_net_ping: return sys_net_ping((const uint8_t*)a1, a2, a3);
+        case SYS_net_dhcp_renew: return sys_net_dhcp_renew();
         default:        return -38; /* ENOSYS */
     }
 }

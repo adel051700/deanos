@@ -32,4 +32,13 @@ void net_lwip_get_ipv4_gateway(uint8_t out_gw[4]);
  * Returns 0 if a matching echo reply was received, <0 on timeout/error. */
 int net_lwip_ping(const uint8_t ip[4], uint16_t seq, uint32_t timeout_ms);
 
+typedef struct {
+    uint8_t  mac[6];
+    uint8_t  ip[4];
+    uint8_t  netmask[4];
+    uint8_t  gateway[4];
+    char     driver_name[16];
+    int32_t  ready;
+} net_info_t;
+
 #endif
