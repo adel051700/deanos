@@ -49,6 +49,14 @@ typedef struct blockdev_cache_stats {
     uint32_t async_pending;
 } blockdev_cache_stats_t;
 
+typedef struct {
+    uint32_t id;
+    char name[16];
+    uint32_t block_size;
+    uint64_t block_count;
+    uint32_t flags;
+} blk_info_t;
+
 #define BLOCKDEV_FLAG_READONLY 0x1u
 #define BLOCKDEV_FLAG_ATAPI    0x2u
 #define BLOCKDEV_FLAG_PARTITION 0x4u

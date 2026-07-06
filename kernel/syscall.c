@@ -16,6 +16,7 @@
 #include "include/kernel/random.h"
 #include "include/kernel/mouse.h"
 #include "include/kernel/log.h"
+#include "include/kernel/blockdev.h"
 #include "lwip_port/ksock_udp.h"
 #include "lwip_port/ksock_tcp.h"
 #include "lwip_port/ksock_dns.h"
@@ -1222,6 +1223,60 @@ static long sys_dmesg_clear(void) {
     return 0;
 }
 
+static long sys_blk_info(uint32_t index, blk_info_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    if (index >= blockdev_count()) return -1;
+    const block_device_t* d = blockdev_get(index);
+    if (!d) return -1;
+    blk_info_t info;
+    info.id = d->id;
+    memcpy(info.name, d->name, sizeof(info.name));
+    info.block_size = d->block_size;
+    info.block_count = d->block_count;
+    info.flags = d->flags;
+    if (copy_to_user(out, &info, sizeof(info)) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_blk_read(uint32_t dev, uint32_t lba, void* buf) {
+    if (!buf) return -1;
+    const block_device_t* d = blockdev_get(dev);
+    if (!d) return -1;
+    if (d->block_size > 2048u) return -1;
+    if (!access_ok_w(buf, d->block_size)) return -EFAULT;
+    uint8_t kbuf[2048];
+    if (blockdev_read(dev, lba, 1, kbuf) < 0) return -1;
+    if (copy_to_user(buf, kbuf, d->block_size) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_blk_write(uint32_t dev, uint32_t lba, const void* buf) {
+    if (!buf) return -1;
+    const block_device_t* d = blockdev_get(dev);
+    if (!d) return -1;
+    if (d->block_size > 2048u) return -1;
+    if (d->flags & BLOCKDEV_FLAG_ATAPI) return -1;
+    uint8_t kbuf[2048];
+    if (copy_from_user(kbuf, buf, d->block_size) < 0) return -EFAULT;
+    if (blockdev_write(dev, lba, 1, kbuf) < 0) return -1;
+    return 0;
+}
+
+static long sys_blk_cache_stats(blockdev_cache_stats_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    blockdev_cache_stats_t st;
+    blockdev_cache_stats(&st);
+    if (copy_to_user(out, &st, sizeof(st)) < 0) return -EFAULT;
+    return 0;
+}
+
+static long sys_blk_flush(int32_t dev) {
+    if (dev < 0) return (long)blockdev_flush_all();
+    return (long)blockdev_flush((uint32_t)dev);
+}
+
 static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3, struct registers* r) {
     switch (num) {
         case SYS_write: return sys_write(a1, (const char*)a2, (size_t)a3);
@@ -1290,6 +1345,11 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_stat: return sys_stat((const char*)a1, (vfs_stat_t*)a2);
         case SYS_dmesg_read: return sys_dmesg_read((char*)a1, a2);
         case SYS_dmesg_clear: return sys_dmesg_clear();
+        case SYS_blk_info: return sys_blk_info(a1, (blk_info_t*)a2);
+        case SYS_blk_read: return sys_blk_read(a1, a2, (void*)a3);
+        case SYS_blk_write: return sys_blk_write(a1, a2, (const void*)a3);
+        case SYS_blk_cache_stats: return sys_blk_cache_stats((blockdev_cache_stats_t*)a1);
+        case SYS_blk_flush: return sys_blk_flush((int32_t)a1);
         default:        return -38; /* ENOSYS */
     }
 }

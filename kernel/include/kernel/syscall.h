@@ -71,6 +71,11 @@ enum {
     SYS_stat        = 64,
     SYS_dmesg_read  = 65,
     SYS_dmesg_clear = 66,
+    SYS_blk_info        = 67,
+    SYS_blk_read        = 68,
+    SYS_blk_write       = 69,
+    SYS_blk_cache_stats = 70,
+    SYS_blk_flush       = 71,
 };
 
 /* getrandom() flags */
