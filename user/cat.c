@@ -10,6 +10,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    /* path is echoed raw (unnormalized) in the error messages below, unlike
+     * the retired cmd_cat builtin which echoed vfs_normalize_path's output
+     * (see user/ls.c for the same, already-documented trade-off). No
+     * realpath()-equivalent syscall is exposed to userspace, so this only
+     * differs from the builtin for non-canonical input — the file's actual
+     * resolution is still correct either way, since stat()/open() normalize
+     * server-side. */
     const char* path = argv[1];
 
     struct stat st;
