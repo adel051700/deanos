@@ -658,8 +658,13 @@ static int shell_stage_parse(char* segment, shell_stage_spec_t* spec) {
     if (n == 0) return -1;
 
     if (strcmp(token, "exec") == 0) {
-        while (*p == ' ') p++;
+        /* Optional legacy "exec" keyword: skip it and read the real command name. */
+        n = shell_stage_next_token(&p, token, sizeof(token));
+        if (n == 0) return -1;
     }
+
+    strncpy(spec->path, token, sizeof(spec->path) - 1);
+    spec->path[sizeof(spec->path) - 1] = '\0';
 
     while (*p) {
         n = shell_stage_next_token(&p, token, sizeof(token));
@@ -776,8 +781,21 @@ static void shell_execute_pipeline(const char* command) {
     int launch_failed = 0;
     int pipeline_pgid = 0;
     for (int i = 0; i < stage_count; ++i) {
+        shell_dispatch_t stage_dispatch;
+        shell_resolve_dispatch(specs[i].path, &stage_dispatch);
+
+        if (stage_dispatch.kind == SHELL_DISPATCH_BUILTIN) {
+            terminal_writestring("pipe: ");
+            terminal_writestring(specs[i].path);
+            terminal_writestring(" is a builtin, not runnable in a pipeline\n");
+            launch_failed = 1;
+            break;
+        }
+
         char resolved[VFS_PATH_MAX];
-        const char* path = resolve_shell_path(specs[i].path, resolved, sizeof(resolved));
+        const char* path = (stage_dispatch.kind == SHELL_DISPATCH_EXEC)
+            ? stage_dispatch.exec_path
+            : resolve_shell_path(specs[i].path, resolved, sizeof(resolved));
         int in_fd = (i == 0) ? -1 : pipes[i - 1][0];
         int out_fd = (i == stage_count - 1) ? -1 : pipes[i][1];
 
