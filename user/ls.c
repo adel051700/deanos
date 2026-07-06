@@ -79,6 +79,12 @@ static void ls_recursive(const char* dir_path, int depth) {
 }
 
 int main(int argc, char** argv) {
+    /* path is echoed raw (unnormalized) in the error messages below, unlike
+     * the retired cmd_ls builtin which echoed vfs_normalize_path's output.
+     * No realpath()-equivalent syscall is exposed to userspace, so this
+     * only differs from the builtin for non-canonical input (e.g. a
+     * trailing slash or "a/../b") — the file's actual resolution is still
+     * correct either way, since dir_read()/stat() normalize server-side. */
     const char* path = (argc > 1) ? argv[1] : "";
 
     struct stat st;
