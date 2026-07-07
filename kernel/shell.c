@@ -125,16 +125,7 @@ static void cmd_vm(const char* args);
 static void cmd_net(const char* args);
 
 // Filesystem commands
-static void cmd_touch(const char* args);
-static void cmd_writef(const char* args);
-static void cmd_mkdir(const char* args);
-static void cmd_rm(const char* args);
-static void cmd_stat(const char* args);
-static void cmd_id(const char* args);
-static void cmd_chmod(const char* args);
-static void cmd_chown(const char* args);
 static void cmd_cd(const char* args);
-static void cmd_pwd(const char* args);
 static void cmd_exec(const char* args);
 static void cmd_anim(const char* args);
 static void cmd_jobs(const char* args);
@@ -186,16 +177,7 @@ static const struct shell_command commands[] = {
     {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
     // Filesystem commands
-    {"touch",   cmd_touch,   "Create an empty file: touch <path>"},
-    {"write",   cmd_writef,  "Write text to file: write <path> <text>"},
-    {"mkdir",   cmd_mkdir,   "Create a directory: mkdir <path>"},
-    {"rm",      cmd_rm,      "Remove a file or empty directory: rm <path>"},
-    {"stat",    cmd_stat,    "Show file/directory info: stat <path>"},
-    {"id",      cmd_id,      "Show current uid/gid"},
-    {"chmod",   cmd_chmod,   "Change mode bits: chmod <octal-mode> <path>"},
-    {"chown",   cmd_chown,   "Change owner/group: chown <uid> <gid> <path>"},
     {"cd",      cmd_cd,      "Change directory: cd <path>"},
-    {"pwd",     cmd_pwd,     "Print working directory"},
     {"exec",    cmd_exec,    "Run an ELF program: exec <path> [&]"},
     {"jobs",    cmd_jobs,    "List background jobs"},
     {"fg",      cmd_fg,      "Bring job to foreground: fg <pid>"},
@@ -1449,30 +1431,6 @@ static int is_decimal_token(const char* s) {
         s++;
     }
     return 1;
-}
-
-static int is_octal_token(const char* s) {
-    if (!s || *s == '\0') return 0;
-    while (*s && *s != ' ') {
-        if (*s < '0' || *s > '7') return 0;
-        s++;
-    }
-    return 1;
-}
-
-static int parse_mode_octal(const char* token, uint16_t* out_mode) {
-    if (!token || !out_mode) return -1;
-    if (!is_octal_token(token)) return -1;
-
-    uint32_t mode = 0;
-    const char* p = token;
-    while (*p && *p != ' ') {
-        mode = (mode << 3u) + (uint32_t)(*p - '0');
-        p++;
-    }
-    if (mode > 0777u) return -1;
-    *out_mode = (uint16_t)mode;
-    return 0;
 }
 
 static size_t copy_token(const char* src, char* dst, size_t dstsz) {
@@ -3318,266 +3276,6 @@ static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out) {
     out->kind = SHELL_DISPATCH_NOT_FOUND;
 }
 
-static void cmd_touch(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: touch <path>\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
-
-    /* Check if it already exists */
-    if (vfs_namei(path)) {
-        terminal_writestring("touch: already exists: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (vfs_create_path(path, VFS_FILE) < 0) {
-        terminal_writestring("touch: failed to create file\n");
-    }
-}
-
-static void cmd_writef(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: write <path> <text>\n");
-        return;
-    }
-
-    /* Split: first token is path, rest is text */
-    char path_arg[VFS_PATH_MAX];
-    size_t i = 0;
-    while (args[i] && args[i] != ' ' && i < VFS_PATH_MAX - 1) {
-        path_arg[i] = args[i];
-        i++;
-    }
-    path_arg[i] = '\0';
-
-    const char* text = "";
-    if (args[i] == ' ') {
-        text = args + i + 1;
-        while (*text == ' ') text++;
-    }
-
-    if (*text == '\0') {
-        terminal_writestring("usage: write <path> <text>\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
-
-    vfs_node_t* existing = vfs_namei(path);
-    if (existing && (existing->type & VFS_DIRECTORY)) {
-        terminal_writestring("write: target is a directory: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        terminal_writestring("hint: use a file path, e.g. /mnt/hd0p1/test.txt\n");
-        return;
-    }
-
-    /* Open with create + truncate */
-    int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_CREATE | VFS_O_TRUNC);
-    if (fd < 0) {
-        terminal_writestring("write: cannot open: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    size_t tlen = strlen(text);
-    int32_t written = vfs_fd_write(fd, (const uint8_t*)text, (uint32_t)tlen);
-    vfs_fd_close(fd);
-
-    if (written < 0) {
-        terminal_writestring("write: write failed: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    char buf[16];
-    terminal_writestring("Wrote ");
-    itoa((int)written, buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring(" bytes to ");
-    terminal_writestring(path);
-    terminal_writestring("\n");
-}
-
-static void cmd_mkdir(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: mkdir <path>\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
-
-    if (vfs_namei(path)) {
-        terminal_writestring("mkdir: already exists: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (vfs_create_path(path, VFS_DIRECTORY) < 0) {
-        terminal_writestring("mkdir: failed to create directory\n");
-    }
-}
-
-static void cmd_rm(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: rm <path>\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
-
-    vfs_node_t* node = vfs_namei(path);
-    if (!node) {
-        terminal_writestring("rm: no such file: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    if (strcmp(path, "/") == 0) {
-        terminal_writestring("rm: cannot remove root\n");
-        return;
-    }
-
-    if (vfs_unlink_path(path) < 0) {
-        if (node->type & VFS_DIRECTORY) {
-            terminal_writestring("rm: failed (directory not empty?)\n");
-        } else {
-            terminal_writestring("rm: failed\n");
-        }
-    }
-}
-
-static void cmd_stat(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: stat <path>\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(args, pathbuf, sizeof(pathbuf));
-
-    vfs_node_t* node = vfs_namei(path);
-    if (!node) {
-        terminal_writestring("stat: not found: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    vfs_stat_t st;
-    vfs_stat(node, &st);
-
-    char buf[16];
-    terminal_writestring("  path:  ");
-    terminal_writestring(path);
-    terminal_writestring("\n  inode: ");
-    itoa((int)st.inode, buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring("\n  type:  ");
-    terminal_writestring((st.type & VFS_DIRECTORY) ? "directory" : "file");
-    terminal_writestring("\n  size:  ");
-    itoa((int)st.size, buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring(" bytes\n  mode:  0");
-    itoa((int)st.mode, buf, 8);
-    terminal_writestring(buf);
-    terminal_writestring("\n  uid:   ");
-    itoa((int)st.uid, buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring("\n  gid:   ");
-    itoa((int)st.gid, buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring("\n");
-}
-
-static void cmd_id(const char* args) {
-    (void)args;
-    char buf[16];
-    terminal_writestring("uid=");
-    itoa(getuid(), buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring(" gid=");
-    itoa(getgid(), buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring("\n");
-}
-
-static void cmd_chmod(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: chmod <octal-mode> <path>\n");
-        return;
-    }
-
-    char mode_tok[8];
-    copy_token(args, mode_tok, sizeof(mode_tok));
-    const char* p = next_token(args);
-    if (!p || *p == '\0') {
-        terminal_writestring("usage: chmod <octal-mode> <path>\n");
-        return;
-    }
-
-    uint16_t mode = 0;
-    if (parse_mode_octal(mode_tok, &mode) < 0) {
-        terminal_writestring("chmod: invalid mode (use octal like 644 or 755)\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(p, pathbuf, sizeof(pathbuf));
-    if (chmod(path, mode) < 0) {
-        terminal_writestring("chmod: failed\n");
-    }
-}
-
-static void cmd_chown(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: chown <uid> <gid> <path>\n");
-        return;
-    }
-
-    char uid_tok[16];
-    copy_token(args, uid_tok, sizeof(uid_tok));
-    const char* p = next_token(args);
-    if (!p || *p == '\0') {
-        terminal_writestring("usage: chown <uid> <gid> <path>\n");
-        return;
-    }
-
-    char gid_tok[16];
-    copy_token(p, gid_tok, sizeof(gid_tok));
-    p = next_token(p);
-    if (!p || *p == '\0') {
-        terminal_writestring("usage: chown <uid> <gid> <path>\n");
-        return;
-    }
-
-    if (!is_decimal_token(uid_tok) || !is_decimal_token(gid_tok)) {
-        terminal_writestring("chown: uid/gid must be decimal integers\n");
-        return;
-    }
-
-    uint32_t uid = parse_uint(uid_tok);
-    uint32_t gid = parse_uint(gid_tok);
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(p, pathbuf, sizeof(pathbuf));
-    if (chown(path, uid, gid) < 0) {
-        terminal_writestring("chown: failed\n");
-    }
-}
-
 static void cmd_cd(const char* args) {
     char pathbuf[VFS_PATH_MAX];
 
@@ -3623,12 +3321,6 @@ static void cmd_cd(const char* args) {
         strncpy(cur->cwd, resolved, sizeof(cur->cwd) - 1);
         cur->cwd[sizeof(cur->cwd) - 1] = '\0';
     }
-}
-
-static void cmd_pwd(const char* args) {
-    (void)args;
-    terminal_writestring(cwd);
-    terminal_writestring("\n");
 }
 
 /*
