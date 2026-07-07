@@ -102,14 +102,10 @@ static void cmd_sys_exit(const char* args);
 
 // Command handler prototypes
 static void cmd_help(const char* args);
-static void cmd_echo(const char* args);
 static void cmd_color(const char* args);
 static void cmd_cls(const char* args);
 static void cmd_about(const char* args);
 static void cmd_dean(const char* args);
-static void cmd_time(const char* args);
-static void cmd_tz(const char* args);
-static void cmd_uptime(const char* args);
 static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
 static void cmd_kill(const char* args);
@@ -154,14 +150,10 @@ struct shell_command {
 // Command table
 static const struct shell_command commands[] = {
     {"help",   cmd_help,   "List available commands"},
-    {"echo",   cmd_echo,   "Echo text"},
     {"color",  cmd_color,  "Set colors: color <text> | color <background> <text>"},
     {"cls",    cmd_cls,    "Clear screen"},
     {"about",  cmd_about,  "About DeanOS"},
     {"dean",   cmd_dean,   "Show DeanOS banner"},
-    {"time",   cmd_time,   "Show current time/date"},
-    {"uptime", cmd_uptime, "Show system uptime"},
-    {"tz",     cmd_tz,     "Show/set timezone: tz | tz set <+H|-H>"},
     {"ticks",  cmd_ticks,  "Show PIT tick count"},
     {"tasks",  cmd_tasks,  "List all tasks and their state (with PPID)"},
     {"kill",   cmd_kill,   "Send signal by parent id: kill [-INT|-TERM|-KILL|-<num>] <ppid>"},
@@ -903,14 +895,6 @@ static void cmd_help(const char* args) {
     }
 }
 
-/**
- * Echo command - echo arguments back to the console
- */
-static void cmd_echo(const char* args) {
-    terminal_writestring(args);
-    terminal_writestring("\n");
-}
-
 static int shell_hex_nibble(char c) {
     if (c >= '0' && c <= '9') return (int)(c - '0');
     if (c >= 'a' && c <= 'f') return 10 + (int)(c - 'a');
@@ -1040,149 +1024,6 @@ static void cmd_dean(const char* args) {
     terminal_writestring("|_____/ \\___|\\__,_|_| |_|\\____/|_____/\n");
     terminal_setscale(1);
     
-}
-
-/**
- * Time command helper - print RTC datetime in standard format
- */
-static void print_rtc_datetime(const rtc_time_t* time) {
-    terminal_writestring("Date: ");
-    char buffer[16];
-
-    itoa(time->day, buffer, 10);
-    if (time->day < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring("/");
-
-    itoa(time->month, buffer, 10);
-    if (time->month < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring("/");
-
-    itoa(time->year, buffer, 10);
-    terminal_writestring(buffer);
-    terminal_writestring("\n");
-
-    terminal_writestring("Time: ");
-
-    itoa(time->hour, buffer, 10);
-    if (time->hour < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring(":");
-
-    itoa(time->minute, buffer, 10);
-    if (time->minute < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring(":");
-
-    itoa(time->second, buffer, 10);
-    if (time->second < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring("\n");
-}
-
-/**
- * Time command - display current time and date
- */
-static void cmd_time(const char* args) {
-    (void)args; // Unused
-
-    rtc_time_t time;
-    rtc_get_local_time(&time);
-    print_rtc_datetime(&time);
-}
-
-/**
- * Timezone helper - print timezone offset
- */
-static void print_tz_offset(int32_t hours) {
-    terminal_writestring("UTC");
-    char buffer[16];
-    if (hours >= 0) terminal_writestring("+");
-    itoa((int)hours, buffer, 10);
-    terminal_writestring(buffer);
-}
-
-/**
- * Timezone command - show or set timezone
- */
-static void cmd_tz(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("Timezone: ");
-        print_tz_offset(rtc_tz_get_hours());
-        terminal_writestring("\n");
-
-        rtc_time_t local;
-        rtc_get_local_time(&local);
-        print_rtc_datetime(&local);
-        return;
-    }
-
-    if (strncmp(args, "set ", 4) == 0) {
-        const char* val = args + 4;
-        while (*val == ' ') val++;
-        if (*val == '\0') {
-            terminal_writestring("usage: tz set <+H|-H>\n");
-            return;
-        }
-
-        int32_t hours = atoi(val);
-        int rc = rtc_tz_set_hours(hours);
-        if (rc < 0) {
-            terminal_writestring("tz: offset out of range (-12..+14)\n");
-            return;
-        }
-
-        terminal_writestring("Timezone set to ");
-        print_tz_offset(hours);
-        terminal_writestring("\n");
-
-        if (rc == 1) {
-            terminal_writestring("(warning: could not save to /timezone, active for this session only)\n");
-        }
-        return;
-    }
-
-    terminal_writestring("usage: tz | tz set <+H|-H>\n");
-}
-
-/**
- * Uptime command - display system uptime
- */
-static void cmd_uptime(const char* args) {
-    (void)args; // Unused
-    
-    uptime_t uptime;
-    get_uptime(&uptime);
-    
-    terminal_writestring("System uptime: ");
-    char buffer[16];
-    
-    if (uptime.days > 0) {
-        itoa(uptime.days, buffer, 10);
-        terminal_writestring(buffer);
-        terminal_writestring(" day");
-        if (uptime.days != 1) terminal_writestring("s");
-        terminal_writestring(", ");
-    }
-    
-    // Hours
-    itoa(uptime.hours, buffer, 10);
-    if (uptime.hours < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring(":");
-    
-    // Minutes
-    itoa(uptime.minutes, buffer, 10);
-    if (uptime.minutes < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring(":");
-    
-    // Seconds
-    itoa(uptime.seconds, buffer, 10);
-    if (uptime.seconds < 10) terminal_writestring("0");
-    terminal_writestring(buffer);
-    terminal_writestring("\n");
 }
 
 static void cmd_ticks(const char* args) {
