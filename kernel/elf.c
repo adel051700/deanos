@@ -264,6 +264,10 @@ extern const uint8_t _binary_build_user_chmod_elf_start[];
 extern const uint8_t _binary_build_user_chmod_elf_end[];
 extern const uint8_t _binary_build_user_chown_elf_start[];
 extern const uint8_t _binary_build_user_chown_elf_end[];
+extern const uint8_t _binary_build_user_echo_elf_start[];
+extern const uint8_t _binary_build_user_echo_elf_end[];
+extern const uint8_t _binary_build_user_uptime_elf_start[];
+extern const uint8_t _binary_build_user_uptime_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -666,4 +670,16 @@ void elf_install_test_programs(void) {
     if (!chown_bin) return;
     uint32_t chown_size = (uint32_t)(_binary_build_user_chown_elf_end - _binary_build_user_chown_elf_start);
     vfs_write(chown_bin, 0, chown_size, _binary_build_user_chown_elf_start);
+
+    vfs_create(bin, "echo", VFS_FILE);
+    vfs_node_t* echo_bin = vfs_finddir(bin, "echo");
+    if (!echo_bin) return;
+    uint32_t echo_size = (uint32_t)(_binary_build_user_echo_elf_end - _binary_build_user_echo_elf_start);
+    vfs_write(echo_bin, 0, echo_size, _binary_build_user_echo_elf_start);
+
+    vfs_create(bin, "uptime", VFS_FILE);
+    vfs_node_t* uptime_bin = vfs_finddir(bin, "uptime");
+    if (!uptime_bin) return;
+    uint32_t uptime_size = (uint32_t)(_binary_build_user_uptime_elf_end - _binary_build_user_uptime_elf_start);
+    vfs_write(uptime_bin, 0, uptime_size, _binary_build_user_uptime_elf_start);
 }
