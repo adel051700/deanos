@@ -260,6 +260,10 @@ extern const uint8_t _binary_build_user_id_elf_start[];
 extern const uint8_t _binary_build_user_id_elf_end[];
 extern const uint8_t _binary_build_user_pwd_elf_start[];
 extern const uint8_t _binary_build_user_pwd_elf_end[];
+extern const uint8_t _binary_build_user_chmod_elf_start[];
+extern const uint8_t _binary_build_user_chmod_elf_end[];
+extern const uint8_t _binary_build_user_chown_elf_start[];
+extern const uint8_t _binary_build_user_chown_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -650,4 +654,16 @@ void elf_install_test_programs(void) {
     if (!pwd_bin) return;
     uint32_t pwd_size = (uint32_t)(_binary_build_user_pwd_elf_end - _binary_build_user_pwd_elf_start);
     vfs_write(pwd_bin, 0, pwd_size, _binary_build_user_pwd_elf_start);
+
+    vfs_create(bin, "chmod", VFS_FILE);
+    vfs_node_t* chmod_bin = vfs_finddir(bin, "chmod");
+    if (!chmod_bin) return;
+    uint32_t chmod_size = (uint32_t)(_binary_build_user_chmod_elf_end - _binary_build_user_chmod_elf_start);
+    vfs_write(chmod_bin, 0, chmod_size, _binary_build_user_chmod_elf_start);
+
+    vfs_create(bin, "chown", VFS_FILE);
+    vfs_node_t* chown_bin = vfs_finddir(bin, "chown");
+    if (!chown_bin) return;
+    uint32_t chown_size = (uint32_t)(_binary_build_user_chown_elf_end - _binary_build_user_chown_elf_start);
+    vfs_write(chown_bin, 0, chown_size, _binary_build_user_chown_elf_start);
 }
