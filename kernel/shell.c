@@ -3112,6 +3112,16 @@ static void shell_resolve_dispatch(const char* name, shell_dispatch_t* out) {
             out->exec_path[sizeof(out->exec_path) - 1] = '\0';
             return;
         }
+
+        char bin_test_path[VFS_PATH_MAX];
+        strcpy(bin_test_path, "/bin/test/");
+        strncat(bin_test_path, name, sizeof(bin_test_path) - strlen(bin_test_path) - 1);
+        if (vfs_namei(bin_test_path)) {
+            out->kind = SHELL_DISPATCH_EXEC;
+            strncpy(out->exec_path, bin_test_path, sizeof(out->exec_path) - 1);
+            out->exec_path[sizeof(out->exec_path) - 1] = '\0';
+            return;
+        }
     }
 
     out->kind = SHELL_DISPATCH_NOT_FOUND;
