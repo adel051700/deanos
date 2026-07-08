@@ -54,7 +54,7 @@ jobs:
               minor="${BASH_REMATCH[5]}"
 
               # Compare by semantic version first, then by date.
-              key="$(printf '%010d%010d%04d%02d%02d' "$major" "$minor" "$yyyy" "$mm" "$dd")"
+              key="$(printf '%010d%010d%04d%02d%02d' "$((10#$major))" "$((10#$minor))" "$((10#$yyyy))" "$((10#$mm))" "$((10#$dd))")"
               if [ -z "$newest_key" ] || [ "$key" \> "$newest_key" ]; then
                 newest_key="$key"
                 newest_file="$filepath"
