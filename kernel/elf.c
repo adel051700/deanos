@@ -490,8 +490,13 @@ void elf_install_test_programs(void) {
     vfs_create(root, "bin", VFS_DIRECTORY);
     vfs_node_t* bin = vfs_finddir(root, "bin");
     if (!bin) return;
-    vfs_create(bin, "hello", VFS_FILE);
-    vfs_node_t* hello = vfs_finddir(bin, "hello");
+
+    vfs_create(bin, "test", VFS_DIRECTORY);
+    vfs_node_t* bin_test = vfs_finddir(bin, "test");
+    if (!bin_test) return;
+
+    vfs_create(bin_test, "hello", VFS_FILE);
+    vfs_node_t* hello = vfs_finddir(bin_test, "hello");
     if (!hello) return;
     vfs_write(hello, 0, sizeof(test_elf_hello), test_elf_hello);
 
@@ -501,110 +506,110 @@ void elf_install_test_programs(void) {
     uint32_t anim_size = (uint32_t)(_binary_build_user_anim_elf_end - _binary_build_user_anim_elf_start);
     vfs_write(anim, 0, anim_size, _binary_build_user_anim_elf_start);
 
-    vfs_create(bin, "forktest", VFS_FILE);
-    vfs_node_t* forktest = vfs_finddir(bin, "forktest");
+    vfs_create(bin_test, "forktest", VFS_FILE);
+    vfs_node_t* forktest = vfs_finddir(bin_test, "forktest");
     if (!forktest) return;
     uint32_t forktest_size = (uint32_t)(_binary_build_user_forktest_elf_end - _binary_build_user_forktest_elf_start);
     vfs_write(forktest, 0, forktest_size, _binary_build_user_forktest_elf_start);
 
-    vfs_create(bin, "execvetest", VFS_FILE);
-    vfs_node_t* execvetest = vfs_finddir(bin, "execvetest");
+    vfs_create(bin_test, "execvetest", VFS_FILE);
+    vfs_node_t* execvetest = vfs_finddir(bin_test, "execvetest");
     if (!execvetest) return;
     uint32_t execvetest_size = (uint32_t)(_binary_build_user_execvetest_elf_end - _binary_build_user_execvetest_elf_start);
     vfs_write(execvetest, 0, execvetest_size, _binary_build_user_execvetest_elf_start);
 
-    vfs_create(bin, "waittest", VFS_FILE);
-    vfs_node_t* waittest = vfs_finddir(bin, "waittest");
+    vfs_create(bin_test, "waittest", VFS_FILE);
+    vfs_node_t* waittest = vfs_finddir(bin_test, "waittest");
     if (!waittest) return;
     uint32_t waittest_size = (uint32_t)(_binary_build_user_waittest_elf_end - _binary_build_user_waittest_elf_start);
     vfs_write(waittest, 0, waittest_size, _binary_build_user_waittest_elf_start);
 
-    vfs_create(bin, "waitstress", VFS_FILE);
-    vfs_node_t* waitstress = vfs_finddir(bin, "waitstress");
+    vfs_create(bin_test, "waitstress", VFS_FILE);
+    vfs_node_t* waitstress = vfs_finddir(bin_test, "waitstress");
     if (!waitstress) return;
     uint32_t waitstress_size = (uint32_t)(_binary_build_user_waitstress_elf_end - _binary_build_user_waitstress_elf_start);
     vfs_write(waitstress, 0, waitstress_size, _binary_build_user_waitstress_elf_start);
 
-    vfs_create(bin, "waitstressbg", VFS_FILE);
-    vfs_node_t* waitstressbg = vfs_finddir(bin, "waitstressbg");
+    vfs_create(bin_test, "waitstressbg", VFS_FILE);
+    vfs_node_t* waitstressbg = vfs_finddir(bin_test, "waitstressbg");
     if (!waitstressbg) return;
     uint32_t waitstressbg_size = (uint32_t)(_binary_build_user_waitstressbg_elf_end - _binary_build_user_waitstressbg_elf_start);
     vfs_write(waitstressbg, 0, waitstressbg_size, _binary_build_user_waitstressbg_elf_start);
 
-    vfs_create(bin, "catfd", VFS_FILE);
-    vfs_node_t* catfd = vfs_finddir(bin, "catfd");
+    vfs_create(bin_test, "catfd", VFS_FILE);
+    vfs_node_t* catfd = vfs_finddir(bin_test, "catfd");
     if (!catfd) return;
     uint32_t catfd_size = (uint32_t)(_binary_build_user_catfd_elf_end - _binary_build_user_catfd_elf_start);
     vfs_write(catfd, 0, catfd_size, _binary_build_user_catfd_elf_start);
 
-    vfs_create(bin, "sigtest", VFS_FILE);
-    vfs_node_t* sigtest = vfs_finddir(bin, "sigtest");
+    vfs_create(bin_test, "sigtest", VFS_FILE);
+    vfs_node_t* sigtest = vfs_finddir(bin_test, "sigtest");
     if (!sigtest) return;
     uint32_t sigtest_size = (uint32_t)(_binary_build_user_sigtest_elf_end - _binary_build_user_sigtest_elf_start);
     vfs_write(sigtest, 0, sigtest_size, _binary_build_user_sigtest_elf_start);
 
-    vfs_create(bin, "mmaptest", VFS_FILE);
-    vfs_node_t* mmaptest = vfs_finddir(bin, "mmaptest");
+    vfs_create(bin_test, "mmaptest", VFS_FILE);
+    vfs_node_t* mmaptest = vfs_finddir(bin_test, "mmaptest");
     if (!mmaptest) return;
     uint32_t mmaptest_size = (uint32_t)(_binary_build_user_mmaptest_elf_end - _binary_build_user_mmaptest_elf_start);
     vfs_write(mmaptest, 0, mmaptest_size, _binary_build_user_mmaptest_elf_start);
 
-    vfs_create(bin, "shmtest", VFS_FILE);
-    vfs_node_t* shmtest = vfs_finddir(bin, "shmtest");
+    vfs_create(bin_test, "shmtest", VFS_FILE);
+    vfs_node_t* shmtest = vfs_finddir(bin_test, "shmtest");
     if (!shmtest) return;
     uint32_t shmtest_size = (uint32_t)(_binary_build_user_shmtest_elf_end - _binary_build_user_shmtest_elf_start);
     vfs_write(shmtest, 0, shmtest_size, _binary_build_user_shmtest_elf_start);
 
-    vfs_create(bin, "faulttest", VFS_FILE);
-    vfs_node_t* faulttest = vfs_finddir(bin, "faulttest");
+    vfs_create(bin_test, "faulttest", VFS_FILE);
+    vfs_node_t* faulttest = vfs_finddir(bin_test, "faulttest");
     if (!faulttest) return;
     uint32_t faulttest_size = (uint32_t)(_binary_build_user_faulttest_elf_end - _binary_build_user_faulttest_elf_start);
     vfs_write(faulttest, 0, faulttest_size, _binary_build_user_faulttest_elf_start);
 
-    vfs_create(bin, "nxstacktest", VFS_FILE);
-    vfs_node_t* nxstacktest = vfs_finddir(bin, "nxstacktest");
+    vfs_create(bin_test, "nxstacktest", VFS_FILE);
+    vfs_node_t* nxstacktest = vfs_finddir(bin_test, "nxstacktest");
     if (!nxstacktest) return;
     uint32_t nxstacktest_size = (uint32_t)(_binary_build_user_nxstacktest_elf_end - _binary_build_user_nxstacktest_elf_start);
     vfs_write(nxstacktest, 0, nxstacktest_size, _binary_build_user_nxstacktest_elf_start);
 
-    vfs_create(bin, "randtest", VFS_FILE);
-    vfs_node_t* randtest = vfs_finddir(bin, "randtest");
+    vfs_create(bin_test, "randtest", VFS_FILE);
+    vfs_node_t* randtest = vfs_finddir(bin_test, "randtest");
     if (!randtest) return;
     uint32_t randtest_size = (uint32_t)(_binary_build_user_randtest_elf_end - _binary_build_user_randtest_elf_start);
     vfs_write(randtest, 0, randtest_size, _binary_build_user_randtest_elf_start);
 
-    vfs_create(bin, "argvtest", VFS_FILE);
-    vfs_node_t* argvtest = vfs_finddir(bin, "argvtest");
+    vfs_create(bin_test, "argvtest", VFS_FILE);
+    vfs_node_t* argvtest = vfs_finddir(bin_test, "argvtest");
     if (!argvtest) return;
     uint32_t argvtest_size = (uint32_t)(_binary_build_user_argvtest_elf_end - _binary_build_user_argvtest_elf_start);
     vfs_write(argvtest, 0, argvtest_size, _binary_build_user_argvtest_elf_start);
 
-    vfs_create(bin, "syscalltest", VFS_FILE);
-    vfs_node_t* syscalltest = vfs_finddir(bin, "syscalltest");
+    vfs_create(bin_test, "syscalltest", VFS_FILE);
+    vfs_node_t* syscalltest = vfs_finddir(bin_test, "syscalltest");
     if (!syscalltest) return;
     uint32_t syscalltest_size = (uint32_t)(_binary_build_user_syscalltest_elf_end - _binary_build_user_syscalltest_elf_start);
     vfs_write(syscalltest, 0, syscalltest_size, _binary_build_user_syscalltest_elf_start);
 
-    vfs_create(bin, "fstest", VFS_FILE);
-    vfs_node_t* fstest = vfs_finddir(bin, "fstest");
+    vfs_create(bin_test, "fstest", VFS_FILE);
+    vfs_node_t* fstest = vfs_finddir(bin_test, "fstest");
     if (!fstest) return;
     uint32_t fstest_size = (uint32_t)(_binary_build_user_fstest_elf_end - _binary_build_user_fstest_elf_start);
     vfs_write(fstest, 0, fstest_size, _binary_build_user_fstest_elf_start);
 
-    vfs_create(bin, "dmesgtest", VFS_FILE);
-    vfs_node_t* dmesgtest = vfs_finddir(bin, "dmesgtest");
+    vfs_create(bin_test, "dmesgtest", VFS_FILE);
+    vfs_node_t* dmesgtest = vfs_finddir(bin_test, "dmesgtest");
     if (!dmesgtest) return;
     uint32_t dmesgtest_size = (uint32_t)(_binary_build_user_dmesgtest_elf_end - _binary_build_user_dmesgtest_elf_start);
     vfs_write(dmesgtest, 0, dmesgtest_size, _binary_build_user_dmesgtest_elf_start);
 
-    vfs_create(bin, "blktest", VFS_FILE);
-    vfs_node_t* blktest = vfs_finddir(bin, "blktest");
+    vfs_create(bin_test, "blktest", VFS_FILE);
+    vfs_node_t* blktest = vfs_finddir(bin_test, "blktest");
     if (!blktest) return;
     uint32_t blktest_size = (uint32_t)(_binary_build_user_blktest_elf_end - _binary_build_user_blktest_elf_start);
     vfs_write(blktest, 0, blktest_size, _binary_build_user_blktest_elf_start);
 
-    vfs_create(bin, "nettest", VFS_FILE);
-    vfs_node_t* nettest = vfs_finddir(bin, "nettest");
+    vfs_create(bin_test, "nettest", VFS_FILE);
+    vfs_node_t* nettest = vfs_finddir(bin_test, "nettest");
     if (!nettest) return;
     uint32_t nettest_size = (uint32_t)(_binary_build_user_nettest_elf_end - _binary_build_user_nettest_elf_start);
     vfs_write(nettest, 0, nettest_size, _binary_build_user_nettest_elf_start);
