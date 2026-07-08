@@ -3401,10 +3401,6 @@ static void shell_run_exec_path(const char* path, const char* raw_args) {
         }
     }
 
-    terminal_writestring("Loading ELF: ");
-    terminal_writestring(path);
-    terminal_writestring("\n");
-
     const char* exec_argv[ELF_ARGV_MAX];
     exec_argv[0] = path;
     for (int i = 0; i < token_count; i++) exec_argv[i + 1] = tokens[i];
