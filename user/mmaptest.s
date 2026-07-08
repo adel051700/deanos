@@ -43,7 +43,7 @@ _start:
     cmpl $0, %eax
     jl fail
 
-    /* File-backed mapping: map /bin/hello and verify ELF magic. */
+    /* File-backed mapping: map /bin/test/hello and verify ELF magic. */
     movl $SYS_open, %eax
     movl $path_hello, %ebx
     xorl %ecx, %ecx
@@ -157,7 +157,7 @@ file_args_off:
 
 .section .rodata
 path_hello:
-    .asciz "/bin/hello"
+    .asciz "/bin/test/hello"
 
 msg_ok:
     .ascii "[mmaptest] PASS\n"

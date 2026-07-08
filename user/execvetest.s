@@ -13,7 +13,7 @@ _start:
     movl $msg_before_len, %edx
     int $0x80
 
-    /* execve("/bin/hello") should replace this process image, with no args */
+    /* execve("/bin/test/hello") should replace this process image, with no args */
     movl $15, %eax          /* SYS_execve */
     movl $path_hello, %ebx
     xorl %ecx, %ecx         /* argv = NULL */
@@ -37,10 +37,10 @@ before_pid:
 
 .section .rodata
 path_hello:
-    .asciz "/bin/hello"
+    .asciz "/bin/test/hello"
 
 msg_before:
-    .ascii "[execvetest] replacing image with /bin/hello\n"
+    .ascii "[execvetest] replacing image with /bin/test/hello\n"
 .set msg_before_len, . - msg_before
 
 msg_fail:

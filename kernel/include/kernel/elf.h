@@ -112,7 +112,7 @@ int elf_execve_current(const char* path, const char* const argv[], int argc,
 
 /*
  * Write built-in demo ELF programs into the ramfs so the user can run
- * them with "exec /bin/hello".  Call after ramfs_initialize().
+ * them with "exec /bin/test/hello".  Call after ramfs_initialize().
  */
 void elf_install_test_programs(void);
 
