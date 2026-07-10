@@ -6,7 +6,6 @@
 #include "include/kernel/pit.h"
 #include "include/kernel/task.h"
 #include "include/kernel/usermode.h"
-#include "include/kernel/syscall.h"   // SYS_write, SYS_time, SYS_exit
 #include "include/kernel/signal.h"
 #include "include/kernel/vfs.h"
 #include "include/kernel/elf.h"
@@ -29,11 +28,8 @@
 #include "lwip_port/ksock_tcp.h"
 #include "lwip_port/deanos_netif.h"
 #include "lwip/dhcp.h"
-#include <fcntl.h>
-#include <sys/stat.h>
 #include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <stdio.h>   /* itoa */
 
 #define MAX_COMMAND_LENGTH 256
 #define SHELL_HISTORY_SIZE 32
@@ -94,41 +90,28 @@ static size_t copy_token(const char* src, char* dst, size_t dstsz);
 
 static void shell_jobctl_ensure(void);
 
-// New forward decls (syscall test commands)
-static void cmd_sys_write(const char* args);
-static void cmd_sys_time(const char* args);
-static void cmd_sys81_time(const char* args);
-static void cmd_sys_exit(const char* args);
-
 // Command handler prototypes
 static void cmd_help(const char* args);
 static void cmd_color(const char* args);
 static void cmd_cls(const char* args);
 static void cmd_about(const char* args);
 static void cmd_dean(const char* args);
-static void cmd_ticks(const char* args);
 static void cmd_tasks(const char* args);
 static void cmd_kill(const char* args);
 static void cmd_wait(const char* args);
-static void cmd_libctest(const char* args);
 static void cmd_mouse(const char* args);
 static void cmd_dmesg(const char* args);
 static void cmd_blk(const char* args);
 static void cmd_disk(const char* args);
-static void cmd_fsfill(const char* args);
-static void cmd_fsverify(const char* args);
 static void cmd_vm(const char* args);
 static void cmd_net(const char* args);
 
 // Filesystem commands
 static void cmd_cd(const char* args);
 static void cmd_exec(const char* args);
-static void cmd_anim(const char* args);
 static void cmd_jobs(const char* args);
 static void cmd_fg(const char* args);
 static void cmd_bg(const char* args);
-static void cmd_vfstest(const char* args);
-static void cmd_fat32test(const char* args);
 
 static void shell_jobs_reap(void);
 static void shell_jobs_add(int pid, int pgid, const char* cmd);
@@ -154,19 +137,15 @@ static const struct shell_command commands[] = {
     {"cls",    cmd_cls,    "Clear screen"},
     {"about",  cmd_about,  "About DeanOS"},
     {"dean",   cmd_dean,   "Show DeanOS banner"},
-    {"ticks",  cmd_ticks,  "Show PIT tick count"},
     {"tasks",  cmd_tasks,  "List all tasks and their state (with PPID)"},
     {"kill",   cmd_kill,   "Send signal by parent id: kill [-INT|-TERM|-KILL|-<num>] <ppid>"},
     {"wait",   cmd_wait,   "Wait for child exit: wait [pid|any]"},
     {"mouse",  cmd_mouse,  "Show PS/2 mouse state (mouse clear resets totals)"},
     {"blk",    cmd_blk,    "Block devices: blk list/read/write/cache/flush/async"},
     {"disk",   cmd_disk,   "Disk tools: disk parts | init | mkfs | mount | setup"},
-    {"fsfill", cmd_fsfill, "Write a large patterned file: fsfill <path> <bytes> <seed>"},
-    {"fsverify", cmd_fsverify, "Verify a patterned file: fsverify <path> <bytes> <seed>"},
     {"vm",     cmd_vm,     "VM hooks: vm stats | vm demand [addr pages] | vm cow | vm refs"},
     {"net",    cmd_net,    "Network: net | net ip | net ping <host|ip> [-c count] [-W timeout_ms] | net dns <hostname> | net tcp http <host> <port> <path> | net dhcp [renew]"},
     {"dmesg",  cmd_dmesg,  "Show kernel log buffer (use 'dmesg clear' to clear)"},
-    {"libctest", cmd_libctest, "Run libc smoke tests (printf/malloc/io)"},
 
     // Filesystem commands
     {"cd",      cmd_cd,      "Change directory: cd <path>"},
@@ -174,15 +153,6 @@ static const struct shell_command commands[] = {
     {"jobs",    cmd_jobs,    "List background jobs"},
     {"fg",      cmd_fg,      "Bring job to foreground: fg <pid>"},
     {"bg",      cmd_bg,      "Keep job in background: bg <pid>"},
-    {"anim",    cmd_anim,    "Run large animated demo"},
-    {"vfstest", cmd_vfstest, "VFS tests: vfstest norm | vfstest mount | vfstest perm"},
-    {"fat32test", cmd_fat32test, "FAT32 write regression test: fat32test <existing-file-path>"},
-
-    // New syscall test commands
-    {"sys.write",   cmd_sys_write,   "Syscall write via int 0x80: sys.write <text>"},
-    {"sys.time",    cmd_sys_time,    "Syscall time via int 0x80"},
-    {"sys81.time",  cmd_sys81_time,  "Syscall time via int 0x81"},
-    {"sys.exit",    cmd_sys_exit,    "Syscall exit (halts) via int 0x80: sys.exit <code>"},
 
     {NULL, NULL, NULL}
 };
@@ -190,15 +160,7 @@ static const struct shell_command commands[] = {
 static int shell_is_hidden_help_command(const char* name) {
     if (!name) return 0;
 
-    if (strcmp(name, "fsfill") == 0) return 1;
-    if (strcmp(name, "fsverify") == 0) return 1;
     if (strcmp(name, "vm") == 0) return 1;
-    if (strcmp(name, "libctest") == 0) return 1;
-    if (strcmp(name, "fat32test") == 0) return 1;
-    if (strcmp(name, "sys.write") == 0) return 1;
-    if (strcmp(name, "sys.time") == 0) return 1;
-    if (strcmp(name, "sys81.time") == 0) return 1;
-    if (strcmp(name, "sys.exit") == 0) return 1;
     return 0;
 }
 
@@ -1026,25 +988,6 @@ static void cmd_dean(const char* args) {
     
 }
 
-static void cmd_ticks(const char* args) {
-    (void)args;
-    
-    uint64_t ticks = pit_get_ticks();
-    uint64_t uptime_ms = pit_get_uptime_ms();
-    
-    char buffer[32];
-    
-    terminal_writestring("Ticks since boot: ");
-    itoa((int)ticks, buffer, 10);
-    terminal_writestring(buffer);
-    terminal_writestring("\n");
-    
-    terminal_writestring("Uptime: ");
-    itoa((int)uptime_ms, buffer, 10);
-    terminal_writestring(buffer);
-    terminal_writestring(" ms\n");
-}
-
 static void history_add(const char* cmd) {
     if (!cmd || !*cmd) { history_pos = history_len; return; }
     if (history_len > 0 && strcmp(history[history_len-1], cmd) == 0) {
@@ -1223,20 +1166,7 @@ static void shell_set_line(const char* s) {
     cursor_pos = command_length; // cursor at end
 }
 
-// Small helpers for syscalls and parsing
-static long ksyscall3_vec(uint8_t vec, uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3) {
-    register uint32_t eax asm("eax") = num;
-    register uint32_t ebx asm("ebx") = a1;
-    register uint32_t ecx asm("ecx") = a2;
-    register uint32_t edx asm("edx") = a3;
-    if (vec == 0x80) {
-        __asm__ __volatile__("int $0x80" : "+a"(eax) : "b"(ebx), "c"(ecx), "d"(edx) : "memory", "cc");
-    } else {
-        __asm__ __volatile__("int $0x81" : "+a"(eax) : "b"(ebx), "c"(ecx), "d"(edx) : "memory", "cc");
-    }
-    return (long)eax;
-}
-
+// Small parsing helpers
 static uint32_t parse_uint(const char* s) {
     while (*s == ' ') s++;
     uint32_t v = 0;
@@ -1302,26 +1232,10 @@ static const char* next_token(const char* s) {
     return s;
 }
 
-static int is_leap_year_u32(uint32_t year) {
-    return ((year % 4u) == 0u && (year % 100u) != 0u) || ((year % 400u) == 0u);
-}
-
-static uint32_t days_in_month_u32(uint32_t year, uint32_t month) {
-    static const uint8_t mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-    if (month == 2u && is_leap_year_u32(year)) return 29u;
-    if (month >= 1u && month <= 12u) return mdays[month - 1u];
-    return 30u;
-}
-
 static void term_write_u32(uint32_t v) {
     char buf[16];
     itoa((int)v, buf, 10);
     terminal_writestring(buf);
-}
-
-static void term_write_2d(uint32_t v) {
-    if (v < 10u) terminal_writestring("0");
-    term_write_u32(v);
 }
 
 static void term_write_hex8(uint8_t v) {
@@ -1373,83 +1287,6 @@ static int parse_ipv4_token(const char* token, uint8_t out_ip[4]) {
     out_ip[2] = parsed[2];
     out_ip[3] = parsed[3];
     return 0;
-}
-
-static void term_write_wallclock_from_epoch(uint32_t epoch_seconds) {
-    uint32_t days = epoch_seconds / 86400u;
-    uint32_t rem = epoch_seconds % 86400u;
-    uint32_t hour = rem / 3600u;
-    rem %= 3600u;
-    uint32_t minute = rem / 60u;
-    uint32_t second = rem % 60u;
-
-    uint32_t year = 1970u;
-    while (1) {
-        uint32_t ydays = is_leap_year_u32(year) ? 366u : 365u;
-        if (days < ydays) break;
-        days -= ydays;
-        year++;
-    }
-
-    uint32_t month = 1u;
-    while (1) {
-        uint32_t mdays = days_in_month_u32(year, month);
-        if (days < mdays) break;
-        days -= mdays;
-        month++;
-    }
-    uint32_t day = days + 1u;
-
-    term_write_u32(year);
-    terminal_writestring("-");
-    term_write_2d(month);
-    terminal_writestring("-");
-    term_write_2d(day);
-    terminal_writestring(" ");
-    term_write_2d(hour);
-    terminal_writestring(":");
-    term_write_2d(minute);
-    terminal_writestring(":");
-    term_write_2d(second);
-}
-
-// Implementations
-
-static void cmd_sys_write(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: sys.write <text>\n");
-        return;
-    }
-    size_t len = strlen(args);
-    long ret = ksyscall3_vec(0x80, SYS_write, 1, (uint32_t)args, (uint32_t)len);
-    terminal_writestring("\n[sys.write returned ");
-    char buf[16]; itoa((int)ret, buf, 10); terminal_writestring(buf); terminal_writestring("]\n");
-}
-
-static void cmd_sys_time(const char* args) {
-    (void)args;
-    uint32_t sec = (uint32_t)ksyscall3_vec(0x80, SYS_time, 0, 0, 0);
-    terminal_writestring("time (int 0x80): ");
-    term_write_wallclock_from_epoch(sec);
-    terminal_writestring("\n");
-}
-
-static void cmd_sys81_time(const char* args) {
-    (void)args;
-    uint32_t sec = (uint32_t)ksyscall3_vec(0x81, SYS_time, 0, 0, 0);
-    terminal_writestring("time (int 0x81): ");
-    term_write_wallclock_from_epoch(sec);
-    terminal_writestring("\n");
-}
-
-static void cmd_sys_exit(const char* args) {
-    uint32_t code = parse_uint(args ? args : "");
-    terminal_writestring("calling exit(");
-    char buf[16];
-    itoa((int)code, buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring(")...\n");
-    (void)ksyscall3_vec(0x80, SYS_exit, code, 0, 0);
 }
 
 static void cmd_tasks(const char* args) {
@@ -2175,438 +2012,6 @@ static void cmd_disk(const char* args) {
 
     terminal_writestring("usage: disk parts | disk init <disk> | disk initfat32 <disk> | disk mkfs <partition> | disk mkfsfat32 <partition> | disk mount <partition> | disk markdirty <partition> | disk setup <disk> | disk mountfat32 <partition> | disk setupfat32 <disk>\n");
 }
-
-static void cmd_fsfill(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: fsfill <path> <bytes> <seed>\n");
-        return;
-    }
-
-    char path_arg[VFS_PATH_MAX];
-    copy_token(args, path_arg, sizeof(path_arg));
-    const char* p = next_token(args);
-    if (!*path_arg || !*p) {
-        terminal_writestring("usage: fsfill <path> <bytes> <seed>\n");
-        return;
-    }
-
-    uint32_t total = parse_uint(p);
-    p = next_token(p);
-    if (!*p) {
-        terminal_writestring("usage: fsfill <path> <bytes> <seed>\n");
-        return;
-    }
-    uint32_t seed = parse_uint(p) & 0xFFu;
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
-    int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_CREATE | VFS_O_TRUNC);
-    if (fd < 0) {
-        terminal_writestring("fsfill: cannot open: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    uint8_t chunk[256];
-    uint32_t written_total = 0;
-    while (written_total < total) {
-        uint32_t chunk_size = total - written_total;
-        if (chunk_size > sizeof(chunk)) chunk_size = sizeof(chunk);
-        for (uint32_t i = 0; i < chunk_size; ++i) {
-            chunk[i] = (uint8_t)((seed + written_total + i) & 0xFFu);
-        }
-
-        int32_t n = vfs_fd_write(fd, chunk, chunk_size);
-        if (n <= 0) {
-            terminal_writestring("fsfill: write failed\n");
-            vfs_fd_close(fd);
-            return;
-        }
-        written_total += (uint32_t)n;
-    }
-
-    vfs_fd_close(fd);
-    terminal_writestring("fsfill: wrote ");
-    char buf[24];
-    itoa((int)written_total, buf, 10);
-    terminal_writestring(buf);
-    terminal_writestring(" bytes to ");
-    terminal_writestring(path);
-    terminal_writestring("\n");
-}
-
-static void cmd_fsverify(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: fsverify <path> <bytes> <seed>\n");
-        return;
-    }
-
-    char path_arg[VFS_PATH_MAX];
-    copy_token(args, path_arg, sizeof(path_arg));
-    const char* p = next_token(args);
-    if (!*path_arg || !*p) {
-        terminal_writestring("usage: fsverify <path> <bytes> <seed>\n");
-        return;
-    }
-
-    uint32_t total = parse_uint(p);
-    p = next_token(p);
-    if (!*p) {
-        terminal_writestring("usage: fsverify <path> <bytes> <seed>\n");
-        return;
-    }
-    uint32_t seed = parse_uint(p) & 0xFFu;
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
-    vfs_node_t* node = vfs_namei(path);
-    if (!node || !(node->type & VFS_FILE)) {
-        terminal_writestring("fsverify: no such file: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-    if (node->size != total) {
-        terminal_writestring("fsverify: size mismatch\n");
-        return;
-    }
-
-    int fd = vfs_fd_open(path, VFS_O_RDONLY);
-    if (fd < 0) {
-        terminal_writestring("fsverify: cannot open: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    uint8_t chunk[256];
-    uint32_t checked = 0;
-    while (checked < total) {
-        uint32_t chunk_size = total - checked;
-        if (chunk_size > sizeof(chunk)) chunk_size = sizeof(chunk);
-
-        int32_t n = vfs_fd_read(fd, chunk, chunk_size);
-        if (n != (int32_t)chunk_size) {
-            terminal_writestring("fsverify: short read\n");
-            vfs_fd_close(fd);
-            return;
-        }
-
-        for (uint32_t i = 0; i < chunk_size; ++i) {
-            uint8_t expected = (uint8_t)((seed + checked + i) & 0xFFu);
-            if (chunk[i] != expected) {
-                terminal_writestring("fsverify: mismatch at byte ");
-                char buf[24];
-                itoa((int)(checked + i), buf, 10);
-                terminal_writestring(buf);
-                terminal_writestring(" (expected ");
-                term_write_hex8(expected);
-                terminal_writestring(", got ");
-                term_write_hex8(chunk[i]);
-                terminal_writestring(")\n");
-                vfs_fd_close(fd);
-                return;
-            }
-        }
-
-        checked += chunk_size;
-    }
-
-    vfs_fd_close(fd);
-    terminal_writestring("fsverify: ok\n");
-}
-
-static void cmd_fat32test(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: fat32test <existing-file-path>\n");
-        terminal_writestring("note: file must already exist on a FAT32 mount\n");
-        return;
-    }
-
-    char path_arg[VFS_PATH_MAX];
-    copy_token(args, path_arg, sizeof(path_arg));
-    if (!*path_arg) {
-        terminal_writestring("usage: fat32test <existing-file-path>\n");
-        return;
-    }
-
-    char pathbuf[VFS_PATH_MAX];
-    const char* path = resolve_shell_path(path_arg, pathbuf, sizeof(pathbuf));
-    vfs_node_t* node = vfs_namei(path);
-    if (!node || !(node->type & VFS_FILE)) {
-        terminal_writestring("fat32test: file not found: ");
-        terminal_writestring(path);
-        terminal_writestring("\n");
-        return;
-    }
-
-    int pass = 0;
-    int fail = 0;
-
-    terminal_writestring("[fat32test] begin ");
-    terminal_writestring(path);
-    terminal_writestring("\n");
-
-    /* Test 1: truncate to zero via open flags. */
-    {
-        int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_TRUNC);
-        if (fd < 0) {
-            terminal_writestring("[fat32test] FAIL truncate open\n");
-            fail++;
-        } else {
-            vfs_fd_close(fd);
-            node = vfs_namei(path);
-            if (node && node->size == 0) {
-                terminal_writestring("[fat32test] PASS truncate size=0\n");
-                pass++;
-            } else {
-                terminal_writestring("[fat32test] FAIL truncate size check\n");
-                fail++;
-            }
-        }
-    }
-
-    /* Test 2: write deterministic bytes and read back. */
-    {
-        uint8_t wbuf[256];
-        uint8_t rbuf[256];
-        for (uint32_t i = 0; i < sizeof(wbuf); ++i) wbuf[i] = (uint8_t)((0x11u + i) & 0xFFu);
-
-        int fd = vfs_fd_open(path, VFS_O_RDWR);
-        int ok = 1;
-        if (fd < 0) ok = 0;
-        if (ok && vfs_fd_write(fd, wbuf, sizeof(wbuf)) != (int32_t)sizeof(wbuf)) ok = 0;
-        if (fd >= 0) vfs_fd_close(fd);
-
-        node = vfs_namei(path);
-        if (!node || vfs_read(node, 0, sizeof(rbuf), rbuf) != (int32_t)sizeof(rbuf)) ok = 0;
-        if (ok && memcmp(wbuf, rbuf, sizeof(wbuf)) != 0) ok = 0;
-
-        if (ok) {
-            terminal_writestring("[fat32test] PASS write/read 256\n");
-            pass++;
-        } else {
-            terminal_writestring("[fat32test] FAIL write/read 256\n");
-            fail++;
-        }
-    }
-
-    /* Test 3: in-place overwrite at non-zero offset. */
-    {
-        uint8_t patch[64];
-        uint8_t check[64];
-        for (uint32_t i = 0; i < sizeof(patch); ++i) patch[i] = (uint8_t)((0xA0u + i) & 0xFFu);
-
-        int ok = 1;
-        node = vfs_namei(path);
-        if (!node) ok = 0;
-        if (ok && vfs_write(node, 96, sizeof(patch), patch) != (int32_t)sizeof(patch)) ok = 0;
-        if (ok && vfs_read(node, 96, sizeof(check), check) != (int32_t)sizeof(check)) ok = 0;
-        if (ok && memcmp(patch, check, sizeof(patch)) != 0) ok = 0;
-
-        if (ok) {
-            terminal_writestring("[fat32test] PASS overwrite@96\n");
-            pass++;
-        } else {
-            terminal_writestring("[fat32test] FAIL overwrite@96\n");
-            fail++;
-        }
-    }
-
-    /* Test 4: append semantics and appended region integrity. */
-    {
-        uint8_t app[73];
-        uint8_t chk[73];
-        for (uint32_t i = 0; i < sizeof(app); ++i) app[i] = (uint8_t)((0x55u + i) & 0xFFu);
-
-        int ok = 1;
-        node = vfs_namei(path);
-        uint32_t old_size = node ? node->size : 0;
-        int fd = vfs_fd_open(path, VFS_O_WRONLY | VFS_O_APPEND);
-        if (fd < 0) ok = 0;
-        if (ok && vfs_fd_write(fd, app, sizeof(app)) != (int32_t)sizeof(app)) ok = 0;
-        if (fd >= 0) vfs_fd_close(fd);
-
-        node = vfs_namei(path);
-        if (!node || node->size != old_size + (uint32_t)sizeof(app)) ok = 0;
-        if (ok && vfs_read(node, old_size, sizeof(chk), chk) != (int32_t)sizeof(chk)) ok = 0;
-        if (ok && memcmp(app, chk, sizeof(app)) != 0) ok = 0;
-
-        if (ok) {
-            terminal_writestring("[fat32test] PASS append\n");
-            pass++;
-        } else {
-            terminal_writestring("[fat32test] FAIL append\n");
-            fail++;
-        }
-    }
-
-    /* Test 5: large write/read crossing cluster boundaries. */
-    {
-        const uint32_t total = 70000u;
-        uint8_t chunk[257];
-        uint8_t readback[257];
-        uint32_t done = 0;
-        int ok = 1;
-
-        int fd = vfs_fd_open(path, VFS_O_RDWR | VFS_O_TRUNC);
-        if (fd < 0) ok = 0;
-
-        while (ok && done < total) {
-            uint32_t n = total - done;
-            if (n > sizeof(chunk)) n = sizeof(chunk);
-            for (uint32_t i = 0; i < n; ++i) {
-                chunk[i] = (uint8_t)((0x3Cu + done + i) & 0xFFu);
-            }
-            if (vfs_fd_write(fd, chunk, n) != (int32_t)n) ok = 0;
-            done += n;
-        }
-        if (fd >= 0) vfs_fd_close(fd);
-
-        node = vfs_namei(path);
-        if (!node || node->size != total) ok = 0;
-
-        done = 0;
-        fd = vfs_fd_open(path, VFS_O_RDONLY);
-        if (fd < 0) ok = 0;
-        while (ok && done < total) {
-            uint32_t n = total - done;
-            if (n > sizeof(readback)) n = sizeof(readback);
-            if (vfs_fd_read(fd, readback, n) != (int32_t)n) {
-                ok = 0;
-                break;
-            }
-            for (uint32_t i = 0; i < n; ++i) {
-                uint8_t expect = (uint8_t)((0x3Cu + done + i) & 0xFFu);
-                if (readback[i] != expect) {
-                    ok = 0;
-                    break;
-                }
-            }
-            done += n;
-        }
-        if (fd >= 0) vfs_fd_close(fd);
-
-        if (ok) {
-            terminal_writestring("[fat32test] PASS large-io\n");
-            pass++;
-        } else {
-            terminal_writestring("[fat32test] FAIL large-io\n");
-            fail++;
-        }
-    }
-
-    terminal_writestring("[fat32test] result: ");
-    term_write_u32((uint32_t)pass);
-    terminal_writestring(" pass, ");
-    term_write_u32((uint32_t)fail);
-    terminal_writestring(" fail\n");
-}
-
-static void cmd_libctest(const char* args) {
-    (void)args;
-
-    int failures = 0;
-    printf("[libctest] begin\n");
-
-    /* printf smoke */
-    int printed = printf("[libctest] printf: %s %d 0x%x %u %c %p %%\n",
-                         "ok", -42, 0x2a, 42u, 'Z', (void*)cwd);
-    if (printed < 0) {
-        terminal_writestring("[libctest] FAIL printf\n");
-        failures++;
-    } else {
-        terminal_writestring("[libctest] PASS printf\n");
-    }
-
-    /* allocator smoke */
-    char* a = (char*)malloc(16);
-    char* z = (char*)calloc(8, 1);
-    char* a2 = NULL;
-    if (!a || !z) {
-        terminal_writestring("[libctest] FAIL alloc: malloc/calloc returned NULL\n");
-        failures++;
-    } else {
-        strcpy(a, "hello");
-        a2 = (char*)realloc(a, 32);
-        if (!a2 || strcmp(a2, "hello") != 0) {
-            terminal_writestring("[libctest] FAIL alloc: realloc/contents\n");
-            failures++;
-        } else {
-            int zeros_ok = 1;
-            for (size_t i = 0; i < 8; i++) {
-                if (z[i] != 0) {
-                    zeros_ok = 0;
-                    break;
-                }
-            }
-            if (!zeros_ok) {
-                terminal_writestring("[libctest] FAIL alloc: calloc not zeroed\n");
-                failures++;
-            } else {
-                terminal_writestring("[libctest] PASS alloc\n");
-            }
-        }
-        if (a2) {
-            free(a2);
-        } else if (a) {
-            free(a);
-        }
-        free(z);
-    }
-
-    /* file I/O wrapper smoke */
-    const char* path = "/libctest.tmp";
-    const char* text = "libc-io-ok";
-    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC);
-    if (fd < 0) {
-        terminal_writestring("[libctest] FAIL io: open(write)\n");
-        failures++;
-    } else {
-        ssize_t nwr = write(fd, text, strlen(text));
-        struct stat st;
-        int sret = fstat(fd, &st);
-        int cret = close(fd);
-        if (nwr != (ssize_t)strlen(text) || sret < 0 || cret < 0 || st.size != (uint32_t)strlen(text)) {
-            terminal_writestring("[libctest] FAIL io: write/fstat/close\n");
-            failures++;
-        } else {
-            char buf[32];
-            int fd2 = open(path, O_RDONLY);
-            if (fd2 < 0) {
-                terminal_writestring("[libctest] FAIL io: open(read)\n");
-                failures++;
-            } else {
-                ssize_t nrd = read(fd2, buf, sizeof(buf) - 1);
-                int cret2 = close(fd2);
-                if (nrd < 0 || cret2 < 0) {
-                    terminal_writestring("[libctest] FAIL io: read/close\n");
-                    failures++;
-                } else {
-                    buf[nrd] = '\0';
-                    if (strcmp(buf, text) != 0) {
-                        terminal_writestring("[libctest] FAIL io: content mismatch\n");
-                        failures++;
-                    } else {
-                        terminal_writestring("[libctest] PASS io\n");
-                    }
-                }
-            }
-        }
-    }
-
-    if (failures == 0) {
-        terminal_writestring("[libctest] ALL PASS\n");
-    } else {
-        terminal_writestring("[libctest] FAILURES: ");
-        char num[16];
-        itoa(failures, num, 10);
-        terminal_writestring(num);
-        terminal_writestring("\n");
-    }
-}
-
 static void cmd_vm(const char* args) {
     char op[16];
     copy_token(args ? args : "", op, sizeof(op));
@@ -3174,194 +2579,6 @@ static void cmd_cd(const char* args) {
     }
 }
 
-/*
- * VFS test suite: validates path normalization, mount points, and permissions
- */
-static void cmd_vfstest(const char* args) {
-    if (!args || *args == '\0') {
-        terminal_writestring("usage: vfstest norm | vfstest mount | vfstest perm\n");
-        return;
-    }
-
-    /* Extract subcommand */
-    char subcmd[32];
-    size_t i = 0;
-    while (args[i] && args[i] != ' ' && i < sizeof(subcmd) - 1) {
-        subcmd[i] = args[i];
-        i++;
-    }
-    subcmd[i] = '\0';
-
-    if (strcmp(subcmd, "norm") == 0) {
-        /* Test 1: Normalize paths with //, ., .. */
-        terminal_writestring("\n=== PATH NORMALIZATION TEST ===\n");
-
-        struct {
-            const char* input;
-            const char* expected;
-        } tests[] = {
-            {"/a/b/c", "/a/b/c"},
-            {"/a//b", "/a/b"},
-            {"/a///b", "/a/b"},
-            {"/./a/b", "/a/b"},
-            {"/a/./b", "/a/b"},
-            {"/a/b/.", "/a/b"},
-            {"/a/../b", "/b"},
-            {"/a/b/../c", "/a/c"},
-            {"/a/./b/../c", "/a/c"},
-            {"//a//b//", "/a/b"},
-            {"/", "/"},
-        };
-
-        char normalized[VFS_PATH_MAX];
-        int pass = 0, fail = 0;
-
-        for (size_t t = 0; t < sizeof(tests) / sizeof(tests[0]); t++) {
-            if (vfs_normalize_path("/", tests[t].input, normalized, sizeof(normalized)) == 0) {
-                if (strcmp(normalized, tests[t].expected) == 0) {
-                    terminal_writestring("[OK] ");
-                    terminal_writestring(tests[t].input);
-                    terminal_writestring(" -> ");
-                    terminal_writestring(normalized);
-                    terminal_writestring("\n");
-                    pass++;
-                } else {
-                    terminal_writestring("[FAIL] ");
-                    terminal_writestring(tests[t].input);
-                    terminal_writestring(" got ");
-                    terminal_writestring(normalized);
-                    terminal_writestring(" expected ");
-                    terminal_writestring(tests[t].expected);
-                    terminal_writestring("\n");
-                    fail++;
-                }
-            } else {
-                terminal_writestring("[ERROR] Could not normalize ");
-                terminal_writestring(tests[t].input);
-                terminal_writestring("\n");
-                fail++;
-            }
-        }
-
-        terminal_writestring("\nPath normalization: ");
-        char buf[16];
-        itoa(pass, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(" passed, ");
-        itoa(fail, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(" failed\n");
-        return;
-    }
-
-    if (strcmp(subcmd, "mount") == 0) {
-        /* Test 2: Mount point resolution */
-        terminal_writestring("\n=== MOUNT POINT RESOLUTION TEST ===\n");
-
-        /* Create test directory structure */
-        terminal_writestring("Setting up test dirs...\n");
-        if (vfs_create_path("/vfstest", VFS_DIRECTORY) < 0) {
-            terminal_writestring("mkdir /vfstest failed (may already exist)\n");
-        }
-        if (vfs_create_path("/vfstest/file1", VFS_FILE) < 0) {
-            terminal_writestring("touch /vfstest/file1 failed\n");
-        }
-
-        vfs_node_t* vfstest = vfs_namei("/vfstest");
-        if (vfstest) {
-            terminal_writestring("[OK] /vfstest resolved to ");
-            char buf[16];
-            itoa((int)vfstest->inode, buf, 10);
-            terminal_writestring(buf);
-            terminal_writestring("\n");
-        } else {
-            terminal_writestring("[FAIL] /vfstest not found\n");
-        }
-
-        vfs_node_t* file1 = vfs_namei("/vfstest/file1");
-        if (file1) {
-            terminal_writestring("[OK] /vfstest/file1 resolved\n");
-        } else {
-            terminal_writestring("[FAIL] /vfstest/file1 not found\n");
-        }
-
-        /* Test relative path with cwd */
-        char old_cwd[VFS_PATH_MAX];
-        strcpy(old_cwd, cwd);
-        strcpy(cwd, "/vfstest");
-
-        char normalized[VFS_PATH_MAX];
-        if (vfs_normalize_path(cwd, "file1", normalized, sizeof(normalized)) == 0) {
-            terminal_writestring("[OK] Relative path 'file1' normalized to ");
-            terminal_writestring(normalized);
-            terminal_writestring("\n");
-        } else {
-            terminal_writestring("[FAIL] Could not resolve relative path\n");
-        }
-
-        strcpy(cwd, old_cwd);
-        terminal_writestring("Mount resolution tests completed\n");
-        return;
-    }
-
-    if (strcmp(subcmd, "perm") == 0) {
-        /* Test 3: Permission checks */
-        terminal_writestring("\n=== PERMISSION CHECK TEST ===\n");
-
-        vfs_node_t* root = vfs_get_root();
-        if (!root) {
-            terminal_writestring("[ERROR] No root filesystem\n");
-            return;
-        }
-
-        terminal_writestring("Root inode: ");
-        char buf[16];
-        itoa((int)root->inode, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(", type: ");
-        terminal_writestring((root->type & VFS_DIRECTORY) ? "DIR" : "FILE");
-        terminal_writestring(", mode: 0");
-        itoa((int)root->mode, buf, 8);
-        terminal_writestring(buf);
-        terminal_writestring("\n");
-
-        /* Test permission bits */
-        int can_read = vfs_node_allows(root, VFS_MODE_IROTH);
-        int can_write = vfs_node_allows(root, VFS_MODE_IWOTH);
-        int can_exec = vfs_node_allows(root, VFS_MODE_IXOTH);
-
-        terminal_writestring("Permissions: read=");
-        terminal_writestring(can_read ? "yes" : "no");
-        terminal_writestring(" write=");
-        terminal_writestring(can_write ? "yes" : "no");
-        terminal_writestring(" exec=");
-        terminal_writestring(can_exec ? "yes" : "no");
-        terminal_writestring("\n");
-
-        /* Create a test file and verify permissions */
-        if (vfs_create_path("/perm_test", VFS_FILE) < 0) {
-            terminal_writestring("[WARN] Could not create /perm_test (may already exist)\n");
-        } else {
-            terminal_writestring("[OK] Created /perm_test\n");
-        }
-
-        vfs_node_t* pfile = vfs_namei("/perm_test");
-        if (pfile) {
-            terminal_writestring("[OK] /perm_test has mode 0");
-            itoa((int)pfile->mode, buf, 8);
-            terminal_writestring(buf);
-            terminal_writestring(" (should be writable by default)\n");
-        }
-
-        terminal_writestring("Permission tests completed\n");
-        return;
-    }
-
-    terminal_writestring("Unknown vfstest subcommand: ");
-    terminal_writestring(subcmd);
-    terminal_writestring("\n");
-}
-
 static void shell_run_exec_path(const char* path, const char* raw_args) {
     shell_jobctl_ensure();
 
@@ -3530,18 +2747,5 @@ static void cmd_bg(const char* args) {
     itoa(shell_bg_jobs[idx].pid, buf, 10);
     terminal_writestring(buf);
     terminal_writestring("\n");
-}
-
-static void cmd_anim(const char* args) {
-    (void)args;
-
-    int ret = elf_exec("/bin/anim", 1);
-    if (ret < 0) {
-        terminal_writestring("anim: failed to launch /bin/anim (error ");
-        char buf[16];
-        itoa(ret, buf, 10);
-        terminal_writestring(buf);
-        terminal_writestring(")\n");
-    }
 }
 
