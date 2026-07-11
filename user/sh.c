@@ -19,58 +19,115 @@ static void print_prompt(void) {
     printf("DeanOS %s $ ", cwd);
 }
 
-/* Read one line with echo. Returns 0 on a completed line, -1 on ^C
- * (caller reprints the prompt). Arrow keys and other escape sequences
- * are swallowed; input beyond the buffer cap is silently dropped. */
-static int read_line(char* line) {
-    size_t len = 0;
-    int esc = 0; /* 0 idle, 1 saw ESC, 2 inside CSI */
+/* ---- line editor (ported from the retired kernel shell) ------------- */
+
+static char   ed_buf[SH_LINE_MAX];
+static size_t ed_len;
+static size_t ed_cur;
+
+/* Non-destructive cursor moves via the tty's ESC[C / ESC[D. */
+static void term_left(size_t n)  { for (size_t i = 0; i < n; i++) write(1, "\x1b[D", 3); }
+static void term_right(size_t n) { for (size_t i = 0; i < n; i++) write(1, "\x1b[C", 3); }
+
+static void insert_char_at_cursor(char c) {
+    if (ed_len >= SH_LINE_MAX - 1) return; /* silently drop past the cap */
+    memmove(&ed_buf[ed_cur + 1], &ed_buf[ed_cur], ed_len - ed_cur);
+    ed_buf[ed_cur] = c;
+    ed_len++;
+    ed_buf[ed_len] = '\0';
+    write(1, &ed_buf[ed_cur], ed_len - ed_cur); /* char + shifted tail */
+    term_left(ed_len - ed_cur - 1);
+    ed_cur++;
+}
+
+static void do_backspace(void) {
+    if (ed_cur == 0) return;
+    size_t chars_after = ed_len - ed_cur;
+    term_left(1);
+    memmove(&ed_buf[ed_cur - 1], &ed_buf[ed_cur], chars_after);
+    ed_cur--;
+    ed_len--;
+    ed_buf[ed_len] = '\0';
+    write(1, &ed_buf[ed_cur], chars_after); /* redraw tail */
+    write(1, " ", 1);                       /* erase the stale last cell */
+    term_left(chars_after + 1);
+}
+
+static void do_delete(void) {
+    if (ed_cur >= ed_len) return;
+    size_t chars_after = ed_len - ed_cur - 1;
+    memmove(&ed_buf[ed_cur], &ed_buf[ed_cur + 1], chars_after);
+    ed_len--;
+    ed_buf[ed_len] = '\0';
+    write(1, &ed_buf[ed_cur], chars_after);
+    write(1, " ", 1);
+    term_left(chars_after + 1);
+}
+
+static void autocomplete(void) {
+    /* Filled in by the tab-completion task; Tab is a no-op until then. */
+}
+
+static void handle_csi(char final, const char* params, size_t plen) {
+    if (final == 'D' && plen == 0) {        /* left arrow */
+        if (ed_cur > 0) { ed_cur--; term_left(1); }
+    } else if (final == 'C' && plen == 0) { /* right arrow */
+        if (ed_cur < ed_len) { ed_cur++; term_right(1); }
+    } else if (final == '~' && plen == 1 && params[0] == '3') { /* delete */
+        do_delete();
+    }
+}
+
+/* Read one line with editing. Returns 0 when a line is submitted (in
+ * ed_buf), -1 on ^C (caller reprints the prompt). */
+static int read_line(void) {
+    ed_len = 0;
+    ed_cur = 0;
+    ed_buf[0] = '\0';
+
+    int esc = 0; /* 0 idle, 1 got ESC, 2 in CSI */
+    char csi_params[8];
+    size_t csi_len = 0;
 
     for (;;) {
-        char buf[16];
-        ssize_t n = read(0, buf, sizeof(buf));
+        char in[16];
+        ssize_t n = read(0, in, sizeof(in));
         if (n < 0) {
-            /* Unexpectedly not foreground (or EINTR): retry, don't exit —
-             * exiting here would make init respawn-storm. */
-            sleep_ms(100);
+            sleep_ms(100); /* not foreground / EINTR: retry, never exit */
             continue;
         }
         for (ssize_t i = 0; i < n; i++) {
-            char c = buf[i];
+            char c = in[i];
 
             if (esc == 1) {
-                esc = (c == '[') ? 2 : 0;
+                if (c == '[') { esc = 2; csi_len = 0; }
+                else esc = 0; /* unknown ESC pair: swallow */
                 continue;
             }
             if (esc == 2) {
-                if (c >= 0x40 && c <= 0x7E) esc = 0; /* CSI final byte */
+                if (c >= 0x40 && c <= 0x7E) { /* final byte */
+                    handle_csi(c, csi_params, csi_len);
+                    esc = 0;
+                } else if (csi_len < sizeof(csi_params)) {
+                    csi_params[csi_len++] = c;
+                }
                 continue;
             }
-            if (c == 27) {
-                esc = 1;
-                continue;
-            }
+            if (c == 27) { esc = 1; continue; }
 
             if (c == '\n' || c == '\r') {
                 write(1, "\n", 1);
-                line[len] = '\0';
+                ed_buf[ed_len] = '\0';
                 return 0;
             }
             if (c == 3) { /* ^C delivered in-band by the keyboard driver */
                 write(1, "^C\n", 3);
                 return -1;
             }
-            if (c == '\b' || c == 127) {
-                if (len > 0) {
-                    len--;
-                    write(1, "\b \b", 3);
-                }
-                continue;
-            }
-            if (c < 32 || c > 126) continue; /* other non-printables */
-            if (len < SH_LINE_MAX - 1) {
-                line[len++] = c;
-                write(1, &c, 1);
+            if (c == '\t') { autocomplete(); continue; }
+            if (c == '\b' || c == 127) { do_backspace(); continue; }
+            if ((unsigned char)c >= ' ' && (unsigned char)c != 0x7F) {
+                insert_char_at_cursor(c); /* old-shell printable filter */
             }
         }
     }
@@ -169,19 +226,18 @@ int main(void) {
     signal(SIGINT, SIG_IGN);
     tcsetpgrp(0, getpid());
 
-    char line[SH_LINE_MAX];
     char* argv[SH_ARGV_MAX];
 
     for (;;) {
         print_prompt();
-        if (read_line(line) < 0) continue; /* ^C: fresh prompt */
+        if (read_line() < 0) continue; /* ^C: fresh prompt */
 
-        if (strchr(line, '|') || strchr(line, '<') || strchr(line, '>')) {
+        if (strchr(ed_buf, '|') || strchr(ed_buf, '<') || strchr(ed_buf, '>')) {
             printf("sh: pipes/redirection not supported yet\n");
             continue;
         }
 
-        int argc = split_args(line, argv);
+        int argc = split_args(ed_buf, argv);
         if (argc < 0) {
             printf("sh: too many arguments (max %d)\n", SH_ARGV_MAX - 1);
             continue;
