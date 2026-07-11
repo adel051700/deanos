@@ -274,6 +274,14 @@ extern const uint8_t _binary_build_user_tz_elf_start[];
 extern const uint8_t _binary_build_user_tz_elf_end[];
 extern const uint8_t _binary_build_user_sh_elf_start[];
 extern const uint8_t _binary_build_user_sh_elf_end[];
+extern const uint8_t _binary_build_user_tasks_elf_start[];
+extern const uint8_t _binary_build_user_tasks_elf_end[];
+extern const uint8_t _binary_build_user_dmesg_elf_start[];
+extern const uint8_t _binary_build_user_dmesg_elf_end[];
+extern const uint8_t _binary_build_user_kill_elf_start[];
+extern const uint8_t _binary_build_user_kill_elf_end[];
+extern const uint8_t _binary_build_user_cls_elf_start[];
+extern const uint8_t _binary_build_user_cls_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -711,4 +719,28 @@ void elf_install_test_programs(void) {
     if (!sh) return;
     uint32_t sh_size = (uint32_t)(_binary_build_user_sh_elf_end - _binary_build_user_sh_elf_start);
     vfs_write(sh, 0, sh_size, _binary_build_user_sh_elf_start);
+
+    vfs_create(bin, "tasks", VFS_FILE);
+    vfs_node_t* tasks_node = vfs_finddir(bin, "tasks");
+    if (!tasks_node) return;
+    uint32_t tasks_size = (uint32_t)(_binary_build_user_tasks_elf_end - _binary_build_user_tasks_elf_start);
+    vfs_write(tasks_node, 0, tasks_size, _binary_build_user_tasks_elf_start);
+
+    vfs_create(bin, "dmesg", VFS_FILE);
+    vfs_node_t* dmesg_node = vfs_finddir(bin, "dmesg");
+    if (!dmesg_node) return;
+    uint32_t dmesg_size = (uint32_t)(_binary_build_user_dmesg_elf_end - _binary_build_user_dmesg_elf_start);
+    vfs_write(dmesg_node, 0, dmesg_size, _binary_build_user_dmesg_elf_start);
+
+    vfs_create(bin, "kill", VFS_FILE);
+    vfs_node_t* kill_node = vfs_finddir(bin, "kill");
+    if (!kill_node) return;
+    uint32_t kill_size = (uint32_t)(_binary_build_user_kill_elf_end - _binary_build_user_kill_elf_start);
+    vfs_write(kill_node, 0, kill_size, _binary_build_user_kill_elf_start);
+
+    vfs_create(bin, "cls", VFS_FILE);
+    vfs_node_t* cls_node = vfs_finddir(bin, "cls");
+    if (!cls_node) return;
+    uint32_t cls_size = (uint32_t)(_binary_build_user_cls_elf_end - _binary_build_user_cls_elf_start);
+    vfs_write(cls_node, 0, cls_size, _binary_build_user_cls_elf_start);
 }
