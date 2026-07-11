@@ -5,10 +5,15 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dirent.h>
 
 #define SH_LINE_MAX 256
 #define SH_PATH_MAX 256
 #define SH_ARGV_MAX 16 /* kernel ELF_ARGV_MAX, argv[0] included */
+
+/* forward decl: defined in the path-resolution section below, used by
+ * autocomplete()'s path completion above it. */
+static int path_join(char* out, size_t outsz, const char* a, const char* b);
 
 static void print_prompt(void) {
     char cwd[SH_PATH_MAX];
@@ -64,8 +69,100 @@ static void do_delete(void) {
     term_left(chars_after + 1);
 }
 
+/* Insert `rest` at the cursor, skipping chars already present after it
+ * (old shell's skip-suffix behavior). */
+static void insert_completion(const char* rest) {
+    size_t skip = 0;
+    while (rest[skip] && (ed_cur + skip) < ed_len &&
+           ed_buf[ed_cur + skip] == rest[skip]) {
+        skip++;
+    }
+    rest += skip;
+    while (*rest && ed_len < SH_LINE_MAX - 1) {
+        insert_char_at_cursor(*rest++);
+    }
+}
+
+/* Tab: complete the word containing the cursor. First word = command name
+ * (builtins, /bin, /bin/test); later words = path via dir_read. First
+ * prefix match wins; silent no-op otherwise. */
 static void autocomplete(void) {
-    /* Filled in by the tab-completion task; Tab is a no-op until then. */
+    static const char* const sh_builtins[] = { "cd", "exit", "help", 0 };
+
+    ed_buf[ed_len] = '\0';
+
+    size_t word_start = 0;
+    for (size_t i = 0; i < ed_cur; i++) {
+        if (ed_buf[i] == ' ') word_start = i + 1;
+    }
+    size_t word_len = ed_cur - word_start;
+    if (word_len == 0) return;
+    const char* word = &ed_buf[word_start];
+
+    if (word_start == 0) {
+        /* ---- command-name completion ---- */
+        for (int i = 0; sh_builtins[i]; i++) {
+            if (strncmp(sh_builtins[i], word, word_len) == 0) {
+                insert_completion(sh_builtins[i] + word_len);
+                return;
+            }
+        }
+        static const char* const cmd_dirs[] = { "/bin", "/bin/test", 0 };
+        for (int d = 0; cmd_dirs[d]; d++) {
+            struct dirent e;
+            for (unsigned idx = 0; dir_read(cmd_dirs[d], idx, &e) == 0; idx++) {
+                if (e.type & DT_DIR) continue; /* dirs (e.g. /bin/test) aren't commands */
+                if (strncmp(e.name, word, word_len) == 0) {
+                    insert_completion(e.name + word_len);
+                    return;
+                }
+            }
+        }
+        return;
+    }
+
+    /* ---- path completion for argument words ---- */
+    char partial[SH_PATH_MAX];
+    if (word_len >= sizeof(partial)) return;
+    memcpy(partial, word, word_len);
+    partial[word_len] = '\0';
+
+    char dirpath[SH_PATH_MAX];
+    const char* prefix;
+    char* last_slash = strrchr(partial, '/');
+    if (last_slash) {
+        size_t dlen = (size_t)(last_slash - partial);
+        char dpart[SH_PATH_MAX];
+        if (dlen == 0) {
+            strcpy(dpart, "/");
+        } else {
+            memcpy(dpart, partial, dlen);
+            dpart[dlen] = '\0';
+        }
+        if (dpart[0] == '/') {
+            strcpy(dirpath, dpart);
+        } else {
+            char cwd[SH_PATH_MAX];
+            if (!getcwd(cwd, sizeof(cwd))) return;
+            if (path_join(dirpath, sizeof(dirpath), cwd, dpart) < 0) return;
+        }
+        prefix = last_slash + 1; /* may be empty: "dir/" completes first entry */
+    } else {
+        if (!getcwd(dirpath, sizeof(dirpath))) return;
+        prefix = partial;
+    }
+    size_t prefix_len = strlen(prefix);
+
+    struct dirent e;
+    for (unsigned idx = 0; dir_read(dirpath, idx, &e) == 0; idx++) {
+        if (strncmp(e.name, prefix, prefix_len) == 0) {
+            insert_completion(e.name + prefix_len);
+            if ((e.type & DT_DIR) && ed_len < SH_LINE_MAX - 1) {
+                insert_char_at_cursor('/'); /* old shell: mark directories */
+            }
+            return;
+        }
+    }
 }
 
 /* ---- history (old kernel shell semantics, in-memory only) ------------ */
