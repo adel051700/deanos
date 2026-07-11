@@ -6,10 +6,15 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/wait.h>
 
 #define SH_LINE_MAX 256
 #define SH_PATH_MAX 256
 #define SH_ARGV_MAX 16 /* kernel ELF_ARGV_MAX, argv[0] included */
+#define SH_PIPE_MAX_STAGES 4
+#define SH_JOBS_MAX 16
 
 /* forward decl: defined in the path-resolution section below, used by
  * autocomplete()'s path completion above it. */
@@ -380,6 +385,279 @@ static void run_command(char** argv) {
     tcsetpgrp(0, getpid());
 }
 
+/* ---- pipelines / redirection / background jobs ------------------------ */
+
+struct sh_stage {
+    char* argv[SH_ARGV_MAX]; /* NULL-terminated, points into ed_buf */
+    int   argc;
+    char  in_path[SH_PATH_MAX];  /* first stage only; empty = none */
+    char  out_path[SH_PATH_MAX]; /* last stage only; empty = none */
+    int   has_in, has_out, append_out;
+};
+
+struct sh_job {
+    int  in_use;
+    int  seq;                       /* monotonic; highest = most recent */
+    int  pgid;
+    int  pids[SH_PIPE_MAX_STAGES];  /* -1 = reaped */
+    int  npids;
+    char cmd[SH_LINE_MAX];
+};
+static struct sh_job sh_jobs[SH_JOBS_MAX];
+static int sh_job_seq;
+
+static int is_builtin_name(const char* name) {
+    static const char* const names[] = { "cd", "exit", "help", "jobs", "fg", "bg", 0 };
+    for (int i = 0; names[i]; i++)
+        if (strcmp(names[i], name) == 0) return 1;
+    return 0;
+}
+
+static int job_add(int pgid, const int* pids, int npids, const char* cmd) {
+    for (int i = 0; i < SH_JOBS_MAX; i++) {
+        if (sh_jobs[i].in_use) continue;
+        sh_jobs[i].in_use = 1;
+        sh_jobs[i].seq = ++sh_job_seq;
+        sh_jobs[i].pgid = pgid;
+        sh_jobs[i].npids = npids;
+        for (int k = 0; k < npids; k++) sh_jobs[i].pids[k] = pids[k];
+        strcpy(sh_jobs[i].cmd, cmd); /* cmd < SH_LINE_MAX by construction */
+        return 0;
+    }
+    return -1;
+}
+
+/* Absolutize a path against the cwd (kernel open() resolves relative
+ * paths against /, so sh must do this). Existence is NOT probed —
+ * output redirects create their file. */
+static int abs_path(const char* name, char* out, size_t outsz) {
+    if (name[0] == '/') {
+        if (strlen(name) + 1 > outsz) return -1;
+        strcpy(out, name);
+        return 0;
+    }
+    char cwd[SH_PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd))) return -1;
+    return path_join(out, outsz, cwd, name);
+}
+
+/* Split the line on '|' in place. Returns stage count, or -1 if more than
+ * SH_PIPE_MAX_STAGES. Segments may be empty (caught by parse_stage). */
+static int split_pipeline(char* line, char* segs[SH_PIPE_MAX_STAGES]) {
+    int n = 0;
+    char* p = line;
+    segs[n++] = p;
+    while (*p) {
+        if (*p == '|') {
+            *p++ = '\0';
+            if (n >= SH_PIPE_MAX_STAGES) return -1;
+            segs[n++] = p;
+        } else {
+            p++;
+        }
+    }
+    return n;
+}
+
+/* Parse one stage segment in place: argv words plus <in / >out / >>out
+ * (attached or space-separated, old-shell lexer rules: < and > always
+ * break a token). Returns 0, -1 on syntax error. */
+static int parse_stage(char* seg, struct sh_stage* st) {
+    memset(st, 0, sizeof(*st));
+    char* p = seg;
+
+    for (;;) {
+        while (*p == ' ') *p++ = '\0';
+        if (*p == '\0') break;
+
+        if (*p == '<' || *p == '>') {
+            int is_in = (*p == '<');
+            int append = 0;
+            *p++ = '\0';
+            if (!is_in && *p == '>') { append = 1; *p++ = '\0'; }
+            while (*p == ' ') *p++ = '\0';
+            if (*p == '\0' || *p == '<' || *p == '>') return -1; /* missing path */
+
+            /* copy the path token out (it may be terminated by an operator
+             * we must not consume yet) */
+            char tok[SH_PATH_MAX];
+            size_t tl = 0;
+            while (*p && *p != ' ' && *p != '<' && *p != '>' && tl < sizeof(tok) - 1)
+                tok[tl++] = *p++;
+            tok[tl] = '\0';
+
+            if (is_in) {
+                if (st->has_in) return -1; /* duplicate < */
+                strcpy(st->in_path, tok);
+                st->has_in = 1;
+            } else {
+                if (st->has_out) return -1; /* duplicate > */
+                strcpy(st->out_path, tok);
+                st->has_out = 1;
+                st->append_out = append;
+            }
+            continue;
+        }
+
+        /* argv word: runs until space or operator; the terminating NUL is
+         * written when the following space/operator is consumed */
+        if (st->argc >= SH_ARGV_MAX - 1) return -1;
+        st->argv[st->argc++] = p;
+        while (*p && *p != ' ' && *p != '<' && *p != '>') p++;
+    }
+
+    st->argv[st->argc] = 0;
+    return (st->argc > 0) ? 0 : -1;
+}
+
+/* Burn the lowest free fds (0-2 are deliberately unbound in sh — the
+ * terminal fallback) so the real pipe/redirect fds below land at >= 4 and
+ * can never collide with the dup2 targets 0/1. Guards are closed before
+ * forking. */
+static int acquire_low_fd_guards(int guards[4]) {
+    int a[2], b[2];
+    if (pipe(a) < 0) return -1;
+    if (pipe(b) < 0) { close(a[0]); close(a[1]); return -1; }
+    guards[0] = a[0]; guards[1] = a[1];
+    guards[2] = b[0]; guards[3] = b[1];
+    return 0;
+}
+
+static void release_low_fd_guards(const int guards[4]) {
+    for (int i = 0; i < 4; i++) close(guards[i]);
+}
+
+static void run_pipeline(struct sh_stage* st, int nstages, int background,
+                         const char* cmdline) {
+    static char paths[SH_PIPE_MAX_STAGES][SH_PATH_MAX];
+    int guards[4];
+    int in_fd = -1, out_fd = -1;
+    int pipes[SH_PIPE_MAX_STAGES - 1][2];
+    int pids[SH_PIPE_MAX_STAGES];
+    int npipes = nstages - 1;
+    int nforked = 0;
+
+    for (int i = 0; i < npipes; i++) { pipes[i][0] = -1; pipes[i][1] = -1; }
+
+    /* 0: a background job needs a free table slot — refuse up front
+     * (spec: "table full → nothing runs") */
+    if (background) {
+        int free_slot = 0;
+        for (int i = 0; i < SH_JOBS_MAX; i++) {
+            if (!sh_jobs[i].in_use) { free_slot = 1; break; }
+        }
+        if (!free_slot) {
+            printf("sh: job table full\n");
+            return;
+        }
+    }
+
+    /* 1: resolve every command before touching any fd */
+    for (int i = 0; i < nstages; i++) {
+        if (resolve_command(st[i].argv[0], paths[i], SH_PATH_MAX) < 0) {
+            printf("sh: command not found: %s\n", st[i].argv[0]);
+            return;
+        }
+    }
+
+    if (acquire_low_fd_guards(guards) < 0) {
+        printf("sh: pipe failed\n");
+        return;
+    }
+
+    /* 2: open all redirects before anything forks */
+    if (st[0].has_in) {
+        char rp[SH_PATH_MAX];
+        if (abs_path(st[0].in_path, rp, sizeof(rp)) < 0 ||
+            (in_fd = open(rp, O_RDONLY)) < 0) {
+            printf("sh: cannot open input: %s\n", st[0].in_path);
+            release_low_fd_guards(guards);
+            return;
+        }
+    }
+    if (st[nstages - 1].has_out) {
+        char rp[SH_PATH_MAX];
+        int flags = O_WRONLY | O_CREAT |
+                    (st[nstages - 1].append_out ? O_APPEND : O_TRUNC);
+        if (abs_path(st[nstages - 1].out_path, rp, sizeof(rp)) < 0 ||
+            (out_fd = open(rp, flags)) < 0) {
+            printf("sh: cannot open output: %s\n", st[nstages - 1].out_path);
+            if (in_fd >= 0) close(in_fd);
+            release_low_fd_guards(guards);
+            return;
+        }
+    }
+
+    /* 3: pipes */
+    for (int i = 0; i < npipes; i++) {
+        if (pipe(pipes[i]) < 0) {
+            printf("sh: pipe failed\n");
+            for (int j = 0; j < i; j++) { close(pipes[j][0]); close(pipes[j][1]); }
+            if (in_fd >= 0) close(in_fd);
+            if (out_fd >= 0) close(out_fd);
+            release_low_fd_guards(guards);
+            return;
+        }
+    }
+
+    /* real fds are allocated; guards can go before the forks */
+    release_low_fd_guards(guards);
+
+    /* 4: fork each stage */
+    for (int i = 0; i < nstages; i++) {
+        int pid = fork();
+        if (pid < 0) {
+            printf("sh: fork failed\n");
+            background = 0; /* spec: reap already-forked stages, don't track */
+            break;
+        }
+        if (pid == 0) {
+            signal(SIGINT, SIG_DFL);
+            setpgid(0, nforked ? pids[0] : 0);
+
+            int child_in  = (i == 0) ? in_fd : pipes[i - 1][0];
+            int child_out = (i == nstages - 1) ? out_fd : pipes[i][1];
+            if (child_in  >= 0) dup2(child_in, 0);
+            if (child_out >= 0) dup2(child_out, 1);
+
+            for (int j = 0; j < npipes; j++) { close(pipes[j][0]); close(pipes[j][1]); }
+            if (in_fd >= 0) close(in_fd);
+            if (out_fd >= 0) close(out_fd);
+
+            execve(paths[i], st[i].argv);
+            _exit(127);
+        }
+        setpgid(pid, nforked ? pids[0] : pid); /* race-guard mirror */
+        pids[nforked++] = pid;
+    }
+
+    /* 5: parent drops every pipeline fd (a kept write end would block EOF) */
+    for (int j = 0; j < npipes; j++) { close(pipes[j][0]); close(pipes[j][1]); }
+    if (in_fd >= 0) close(in_fd);
+    if (out_fd >= 0) close(out_fd);
+
+    if (nforked == 0) return;
+
+    /* 6: wait or background */
+    if (!background) {
+        tcsetpgrp(0, pids[0]);
+        for (int i = 0; i < nforked; i++) {
+            int status = 0;
+            waitpid(pids[i], &status, 0);
+        }
+        tcsetpgrp(0, getpid());
+    } else {
+        if (job_add(pids[0], pids, nforked, cmdline) < 0) {
+            /* table full: job already runs untracked; warn (spec: refuse
+               happens at launch decision — see main; this is the fork-raced
+               fallback) */
+            printf("sh: job table full; job %d untracked\n", pids[0]);
+        } else {
+            printf("[%d] %s\n", pids[0], cmdline);
+        }
+    }
+}
+
 static void builtin_cd(const char* arg) {
     const char* target = (arg && *arg) ? arg : "/";
     if (chdir(target) < 0) printf("cd: %s: no such directory\n", target);
@@ -402,28 +680,79 @@ int main(void) {
         if (read_line() < 0) { hist_pos = hist_len; continue; } /* ^C */
         history_add(ed_buf); /* before split_args mutates ed_buf */
 
-        if (strchr(ed_buf, '|') || strchr(ed_buf, '<') || strchr(ed_buf, '>')) {
-            printf("sh: pipes/redirection not supported yet\n");
+        char cmdline[SH_LINE_MAX];
+        strcpy(cmdline, ed_buf); /* display copy; parsing mutates ed_buf */
+
+        /* trailing '&' → background */
+        int background = 0;
+        {
+            size_t n = strlen(ed_buf);
+            while (n > 0 && ed_buf[n - 1] == ' ') ed_buf[--n] = '\0';
+            if (n > 0 && ed_buf[n - 1] == '&') {
+                background = 1;
+                ed_buf[--n] = '\0';
+            }
+        }
+
+        if (!background && !strchr(ed_buf, '|') && !strchr(ed_buf, '<') &&
+            !strchr(ed_buf, '>')) {
+            /* plain single command: the existing fast path */
+            int argc = split_args(ed_buf, argv);
+            if (argc < 0) {
+                printf("sh: too many arguments (max %d)\n", SH_ARGV_MAX - 1);
+                continue;
+            }
+            if (argc == 0) continue;
+
+            if (strcmp(argv[0], "exit") == 0) return 0; /* init respawns */
+            if (strcmp(argv[0], "cd") == 0) {
+                builtin_cd(argc > 1 ? argv[1] : 0);
+                continue;
+            }
+            if (strcmp(argv[0], "help") == 0) {
+                builtin_help();
+                continue;
+            }
+
+            run_command(argv);
             continue;
         }
 
-        int argc = split_args(ed_buf, argv);
-        if (argc < 0) {
-            printf("sh: too many arguments (max %d)\n", SH_ARGV_MAX - 1);
-            continue;
-        }
-        if (argc == 0) continue;
-
-        if (strcmp(argv[0], "exit") == 0) return 0; /* init respawns */
-        if (strcmp(argv[0], "cd") == 0) {
-            builtin_cd(argc > 1 ? argv[1] : 0);
-            continue;
-        }
-        if (strcmp(argv[0], "help") == 0) {
-            builtin_help();
+        /* pipeline / redirection / background path */
+        char* segs[SH_PIPE_MAX_STAGES];
+        int nstages = split_pipeline(ed_buf, segs);
+        if (nstages < 0) {
+            printf("sh: too many pipeline stages (max %d)\n", SH_PIPE_MAX_STAGES);
             continue;
         }
 
-        run_command(argv);
+        static struct sh_stage stages[SH_PIPE_MAX_STAGES];
+        int bad = 0;
+        for (int i = 0; i < nstages; i++) {
+            if (parse_stage(segs[i], &stages[i]) < 0) {
+                printf("sh: syntax error\n");
+                bad = 1;
+                break;
+            }
+            if (is_builtin_name(stages[i].argv[0])) {
+                printf("sh: %s is a builtin, not runnable in a pipeline or background\n",
+                       stages[i].argv[0]);
+                bad = 1;
+                break;
+            }
+            if (i > 0 && stages[i].has_in) {
+                printf("sh: '<' only allowed on the first stage\n");
+                bad = 1;
+                break;
+            }
+            if (i < nstages - 1 && stages[i].has_out) {
+                printf("sh: '>' only allowed on the last stage\n");
+                bad = 1;
+                break;
+            }
+        }
+        if (bad) continue;
+
+        run_pipeline(stages, nstages, background, cmdline);
     }
 }
