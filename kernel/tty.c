@@ -26,6 +26,13 @@
     static int terminal_foreground_pgid = 0;
     #define CURSOR_BLINK_INTERVAL_TICKS 50
 
+    /* Output-side ANSI escape parser (currently only ESC[2J). Persistent
+     * across write() calls because sequences may arrive split. */
+    typedef enum { TTY_ESC_IDLE = 0, TTY_ESC_GOT_ESC, TTY_ESC_IN_CSI } tty_esc_state_t;
+    static tty_esc_state_t tty_esc_state = TTY_ESC_IDLE;
+    static char     tty_csi_params[8];
+    static uint32_t tty_csi_len = 0;
+
     static void calculate_line_positions(void) {
         uint16_t y_pos = 0;
         line_positions[0] = 0;
@@ -159,6 +166,22 @@
         if (term_cursor_x >= (int)TERM_COLS) term_cursor_x = (int)TERM_COLS - 1;
     }
 
+    /* ESC[2J: clear the text buffer and home the cursor. Colors and the
+     * controlling sid / foreground pgid are deliberately left untouched. */
+    static void terminal_clear_and_home(void) {
+        for (uint32_t y = 0; y < TERM_ROWS; y++) {
+            for (uint32_t x = 0; x < TERM_COLS; x++) {
+                term_buffer[y][x] = ' ';
+                term_scale[y][x] = 1;
+            }
+        }
+        term_cursor_x = 1; /* matches terminal_initialize's home column */
+        term_cursor_y = 0;
+        calculate_line_positions();
+        framebuffer_clear(term_bg);
+        if (cursor_enabled && cursor_visible) draw_cursor();
+    }
+
     void terminal_initialize(void) {
         term_cursor_x = 1;
         term_cursor_y = 0;
@@ -185,6 +208,32 @@
 
     void terminal_putchar(char c) {
         if (!terminal_ready) return;
+
+        if (tty_esc_state == TTY_ESC_GOT_ESC) {
+            if (c == '[') {
+                tty_esc_state = TTY_ESC_IN_CSI;
+                tty_csi_len = 0;
+            } else {
+                tty_esc_state = TTY_ESC_IDLE; /* unrecognized: swallow */
+            }
+            return;
+        }
+        if (tty_esc_state == TTY_ESC_IN_CSI) {
+            if (c >= 0x40 && c <= 0x7E) { /* final byte */
+                if (c == 'J' && tty_csi_len == 1 && tty_csi_params[0] == '2') {
+                    terminal_clear_and_home();
+                }
+                tty_esc_state = TTY_ESC_IDLE;
+            } else if (tty_csi_len < sizeof(tty_csi_params)) {
+                tty_csi_params[tty_csi_len++] = c;
+            }
+            /* params beyond the cap are dropped; keep consuming to final */
+            return;
+        }
+        if (c == '\x1B') {
+            tty_esc_state = TTY_ESC_GOT_ESC;
+            return;
+        }
 
         if (cursor_enabled && cursor_visible) {
             clear_cursor();
@@ -327,5 +376,13 @@
 
     int terminal_get_controlling_sid(void) {
         return terminal_controlling_sid;
+    }
+
+    /* Detach the terminal from its controlling session (init calls this
+     * when the session leader exits, so a respawned shell can claim it —
+     * terminal_set_controlling_sid refuses to overwrite a live claim). */
+    void terminal_release_controlling(void) {
+        terminal_controlling_sid = 0;
+        terminal_foreground_pgid = 0;
     }
 

@@ -99,3 +99,4 @@
 72. Long-run soak testing: overnight stress tests for scheduler, memory, and I/O.
 73. Performance tuning: benchmark suite and top bottleneck fixes.
 74. Milestone release: freeze features, stabilize, and publish 1.0.0 roadmap.
+75. Fix /bin/anim under blocking stdin: known phase-1 regression from the userspace shell port — anim polled fd 0 non-blocking per frame to detect Enter, so it now advances one frame per keypress. Needs a non-blocking read flag (O_NONBLOCK-style) or an anim rewrite without the per-frame poll.

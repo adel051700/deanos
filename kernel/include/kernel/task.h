@@ -62,6 +62,14 @@ typedef struct task_elf_lazy_region {
     uint8_t   in_use;
 } task_elf_lazy_region_t;
 
+/* User-visible register state captured at fork time; the child resumes in
+ * ring 3 with exactly these GPRs (and eax = 0). Field order is ABI for
+ * enter_usermode_fork's offsets in context_switch.s. */
+typedef struct fork_frame {
+    uint32_t eip, esp, eflags;
+    uint32_t edi, esi, ebp, ebx, edx, ecx;
+} fork_frame_t;
+
 typedef struct task_mmap_region {
     uintptr_t        start;
     uintptr_t        end;
@@ -88,7 +96,7 @@ typedef struct task {
 
     /* Blocking state */
     uint64_t        wake_tick;      /* scheduler tick to wake on (0 = none) */
-    int             wait_task_id;   /* >0 specific child, -1 any child, 0 none */
+    int             wait_task_id;   /* >0 specific child, -1 any child, -2 keyboard, 0 none */
     uint32_t        exit_status;    /* _exit(status) value */
     uint32_t        pending_signals;
     uint32_t        ignored_signals;
@@ -134,9 +142,7 @@ typedef struct task {
     task_mmap_region_t mmap_regions[TASK_MMAP_MAX];
 
     /* Fork return context for child first run. */
-    uint32_t        fork_user_eip;
-    uint32_t        fork_user_esp;
-    uint32_t        fork_user_eflags;
+    fork_frame_t    fork_frame;
     uint8_t         fork_resume_user;
 } task_t;
 
@@ -179,6 +185,12 @@ int task_waitpid(int pid, int* status, uint32_t options);
 void task_sleep_ticks(uint64_t ticks);
 /* Convenience wrapper around scheduler ticks at 100 Hz PIT default. */
 void task_sleep_ms(uint32_t milliseconds);
+/* Block the current task until keyboard input arrives (woken from the
+ * keyboard IRQ via task_wake_keyboard_waiters). Returns 0 on wake, -1 if
+ * there is no blockable current task. */
+int  task_block_on_keyboard(void);
+/* IRQ context: wake every task blocked in task_block_on_keyboard(). */
+void task_wake_keyboard_waiters(void);
 
 /* Called from PIT IRQ 0 (timer tick). */
 void scheduler_tick(void);
@@ -230,7 +242,7 @@ int task_shm_get_frame(int32_t shm_id, uint32_t page_index, uintptr_t* out_frame
 int task_is_shared_page(uintptr_t page);
 
 /* Fork groundwork: clone current task metadata and user return context. */
-int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags);
+int task_fork_user(const fork_frame_t* frame);
 
 #ifdef __cplusplus
 }

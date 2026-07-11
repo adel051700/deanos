@@ -27,6 +27,7 @@
 #define DEFAULT_STACK_SIZE (16u * 1024u)
 #define TASK_MMAP_BASE  0x90000000u
 #define TASK_MMAP_LIMIT 0xB0000000u
+#define TASK_WAIT_KEYBOARD (-2)
 
 extern void context_switch(task_context_t* old, task_context_t* next);
 extern void task_trampoline(void);   /* in context_switch.s */
@@ -363,10 +364,7 @@ static void fork_child_entry(void) {
     }
 
     self->fork_resume_user = 0;
-    enter_usermode_with_ret(self->fork_user_eip,
-                            self->fork_user_esp,
-                            self->fork_user_eflags,
-                            0);
+    enter_usermode_fork(&self->fork_frame);
 
     task_exit();
 }
@@ -642,9 +640,7 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
         t->cwd[0] = '/';
         t->cwd[1] = '\0';
     }
-    t->fork_user_eip = 0;
-    t->fork_user_esp = 0;
-    t->fork_user_eflags = 0;
+    memset(&t->fork_frame, 0, sizeof(t->fork_frame));
     t->fork_resume_user = 0;
     task_fd_table_init(t);
     task_mmap_table_init(t);
@@ -713,7 +709,7 @@ int task_kill(int id) {
     return task_send_signal(id, KSIGKILL);
 }
 
-int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
+int task_fork_user(const fork_frame_t* frame) {
     if (g_current < 0) return -1;
 
     task_t* parent = &g_tasks[g_current];
@@ -765,9 +761,7 @@ int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
         child->state = TASK_DEAD;
         return -6;
     }
-    child->fork_user_eip = user_eip;
-    child->fork_user_esp = user_esp;
-    child->fork_user_eflags = user_eflags;
+    child->fork_frame = *frame;
     child->fork_resume_user = 1;
     return child_id;
 }
@@ -914,6 +908,25 @@ void task_sleep_ms(uint32_t milliseconds) {
     uint64_t ticks = ((uint64_t)milliseconds + 9u) / 10u;
     if (ticks == 0) ticks = 1;
     task_sleep_ticks(ticks);
+}
+
+int task_block_on_keyboard(void) {
+    if (g_current <= 0) return -1; /* never block idle/non-task context */
+    g_tasks[g_current].wait_task_id = TASK_WAIT_KEYBOARD;
+    g_tasks[g_current].wake_tick = 0;
+    g_tasks[g_current].state = TASK_BLOCKED;
+    task_yield();
+    return 0;
+}
+
+void task_wake_keyboard_waiters(void) {
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        task_t* t = &g_tasks[i];
+        if (t->state == TASK_BLOCKED && t->wait_task_id == TASK_WAIT_KEYBOARD) {
+            t->wait_task_id = 0;
+            t->state = TASK_READY;
+        }
+    }
 }
 
 void task_yield(void) {

@@ -5,8 +5,9 @@
 
 /* Drop to ring 3 — implemented in context_switch.s */
 extern void enter_usermode(uint32_t entry, uint32_t user_esp);
-extern void enter_usermode_with_ret(uint32_t entry, uint32_t user_esp,
-									uint32_t user_eflags, uint32_t user_eax);
+
+struct fork_frame;
+extern void enter_usermode_fork(const struct fork_frame* frame);
 
 /* Create a kernel task that immediately drops to ring 3 and runs `entry`. */
 int user_task_create(void (*entry)(void), const char* name);
