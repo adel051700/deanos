@@ -23,4 +23,5 @@ int terminal_set_foreground_pgid(int pgid);
 int terminal_get_foreground_pgid(void);
 int terminal_set_controlling_sid(int sid);
 int terminal_get_controlling_sid(void);
+void terminal_release_controlling(void);
 #endif

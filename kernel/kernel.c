@@ -23,8 +23,11 @@
 #include "include/kernel/stack_protector.h"
 #include "include/kernel/fault.h"
 #include "include/kernel/random.h"
+#include "include/kernel/tty.h"
 
 #include <stdint.h>
+#include <string.h>
+#include <stdio.h>
 
 static void shell_task(void) {
     while (1) {
@@ -36,6 +39,48 @@ static void shell_task(void) {
         }
         __asm__ __volatile__("hlt; nop");
     }
+}
+
+/* klog helper: message + decimal number, since klog has no formatting. */
+static void init_klog_num(const char* msg, int num) {
+    char line[64];
+    char buf[16];
+    strcpy(line, msg);
+    itoa(num, buf, 10);
+    strcat(line, buf);
+    klog(line);
+}
+
+/* PID-1-style loop: keep a foreground /bin/sh alive; fall back to the
+ * kernel shell only if sh can't be started at all. */
+static void init_task(void) {
+    terminal_enable_cursor();
+    /* Pre-mark async output so sh's first write doesn't get the
+     * fresh-line '\n' shell_write_async_output inserts. */
+    shell_mark_tty_async_output();
+
+    for (;;) {
+        static const char* sh_argv[] = { "/bin/sh" };
+        int pid = elf_exec_with_stdio("/bin/sh", 0, -1, -1, sh_argv, 1);
+        if (pid < 0) {
+            init_klog_num("init: /bin/sh exec failed, starting kernel shell; err=", pid);
+            shell_initialize();
+            if (task_create_named(shell_task, 0, TASK_DEFAULT_QUANTUM, "shell") < 0) {
+                klog("init: kernel shell task creation failed");
+            }
+            break;
+        }
+        init_klog_num("init: spawned /bin/sh pid=", pid);
+
+        int status = 0;
+        (void)task_waitpid(pid, &status, 0);
+        terminal_release_controlling();
+        init_klog_num("init: sh exited, respawning; status=", status);
+        task_sleep_ticks(100); /* ~1 s: bound a crash-loop's respawn rate */
+    }
+
+    /* Fallback path: park forever; the kernel shell task owns the tty. */
+    for (;;) task_sleep_ticks(6000);
 }
 
 static void rtc_resync_task(void) {
@@ -98,10 +143,9 @@ void kernel_main(void) {
     (void)fat32_auto_mount((uint32_t)-1);
     elf_install_test_programs();
 
-    shell_initialize();
     tasking_initialize();
-    if (task_create_named(shell_task, 0, TASK_DEFAULT_QUANTUM, "shell") < 0) {
-        klog("shell task creation failed");
+    if (task_create_named(init_task, 0, TASK_DEFAULT_QUANTUM, "init") < 0) {
+        klog("init task creation failed");
     }
     if (task_create_named(rtc_resync_task, 0, TASK_DEFAULT_QUANTUM, "rtc_resync") < 0) {
         klog("rtc_resync task creation failed");

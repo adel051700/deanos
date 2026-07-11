@@ -378,3 +378,11 @@
         return terminal_controlling_sid;
     }
 
+    /* Detach the terminal from its controlling session (init calls this
+     * when the session leader exits, so a respawned shell can claim it —
+     * terminal_set_controlling_sid refuses to overwrite a live claim). */
+    void terminal_release_controlling(void) {
+        terminal_controlling_sid = 0;
+        terminal_foreground_pgid = 0;
+    }
+
