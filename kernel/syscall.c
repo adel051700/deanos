@@ -709,6 +709,10 @@ static long sys_pipe(int32_t* out_fds) {
     return 0;
 }
 
+static long sys_dup2(int32_t oldfd, int32_t newfd) {
+    return (long)vfs_fd_dup2((int)oldfd, (int)newfd);
+}
+
 static long sys_setpgid(int32_t pid, int32_t pgid) {
     return (long)task_setpgid((int)pid, (int)pgid);
 }
@@ -1352,6 +1356,7 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_waitpid: return sys_waitpid((int32_t)a1, (int32_t*)a2, a3);
         case SYS_fcntl: return sys_fcntl(a1, a2, a3);
         case SYS_pipe: return sys_pipe((int32_t*)a1);
+        case SYS_dup2: return sys_dup2((int32_t)a1, (int32_t)a2);
         case SYS_setpgid: return sys_setpgid((int32_t)a1, (int32_t)a2);
         case SYS_getpgrp: return sys_getpgrp();
         case SYS_setsid: return sys_setsid();

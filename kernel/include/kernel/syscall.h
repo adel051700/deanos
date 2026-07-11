@@ -79,6 +79,7 @@ enum {
     SYS_net_info       = 72,
     SYS_net_ping       = 73,
     SYS_net_dhcp_renew = 74,
+    SYS_dup2 = 75,
 };
 
 /* getrandom() flags */
