@@ -364,10 +364,7 @@ static void fork_child_entry(void) {
     }
 
     self->fork_resume_user = 0;
-    enter_usermode_with_ret(self->fork_user_eip,
-                            self->fork_user_esp,
-                            self->fork_user_eflags,
-                            0);
+    enter_usermode_fork(&self->fork_frame);
 
     task_exit();
 }
@@ -643,9 +640,7 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
         t->cwd[0] = '/';
         t->cwd[1] = '\0';
     }
-    t->fork_user_eip = 0;
-    t->fork_user_esp = 0;
-    t->fork_user_eflags = 0;
+    memset(&t->fork_frame, 0, sizeof(t->fork_frame));
     t->fork_resume_user = 0;
     task_fd_table_init(t);
     task_mmap_table_init(t);
@@ -714,7 +709,7 @@ int task_kill(int id) {
     return task_send_signal(id, KSIGKILL);
 }
 
-int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
+int task_fork_user(const fork_frame_t* frame) {
     if (g_current < 0) return -1;
 
     task_t* parent = &g_tasks[g_current];
@@ -766,9 +761,7 @@ int task_fork_user(uint32_t user_eip, uint32_t user_esp, uint32_t user_eflags) {
         child->state = TASK_DEAD;
         return -6;
     }
-    child->fork_user_eip = user_eip;
-    child->fork_user_esp = user_esp;
-    child->fork_user_eflags = user_eflags;
+    child->fork_frame = *frame;
     child->fork_resume_user = 1;
     return child_id;
 }

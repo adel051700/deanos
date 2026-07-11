@@ -385,7 +385,12 @@ static long sys_sigreturn(struct registers* r) {
 static long sys_fork(struct registers* r) {
     if (!r) return -1;
     if ((r->cs & 0x3u) != 0x3u) return -38;
-    return (long)task_fork_user(r->eip, r->useresp, r->eflags);
+    fork_frame_t f = {
+        .eip = r->eip, .esp = r->useresp, .eflags = r->eflags,
+        .edi = r->edi, .esi = r->esi, .ebp = r->ebp,
+        .ebx = r->ebx, .edx = r->edx, .ecx = r->ecx,
+    };
+    return (long)task_fork_user(&f);
 }
 
 static long sys_execve(const char* path, const char* const* uargv, uint32_t argc,

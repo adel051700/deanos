@@ -102,35 +102,42 @@ enter_usermode:
 
     .size enter_usermode, .-enter_usermode
 
-/* ---- enter_usermode_with_ret ------------------------------------------ */
+/* ---- enter_usermode_fork ----------------------------------------------- */
 /*
- * void enter_usermode_with_ret(uint32_t entry, uint32_t user_esp,
- *                              uint32_t user_eflags, uint32_t user_eax);
+ * void enter_usermode_fork(const struct fork_frame* frame);
+ * Frame layout (kernel/include/kernel/task.h): eip@0, esp@4, eflags@8,
+ * edi@12, esi@16, ebp@20, ebx@24, edx@28, ecx@32.
+ * Resumes a forked child in ring 3 with the parent's GPRs and eax = 0.
  */
-    .global enter_usermode_with_ret
-    .type enter_usermode_with_ret, @function
+    .global enter_usermode_fork
+    .type enter_usermode_fork, @function
 
-enter_usermode_with_ret:
-    movl 4(%esp), %ecx          /* ecx = entry point */
-    movl 8(%esp), %edx          /* edx = user esp    */
-    movl 12(%esp), %ebx         /* ebx = user eflags */
-    movl 16(%esp), %eax         /* eax = user return value */
-
+enter_usermode_fork:
+    movl 4(%esp), %eax          /* eax = frame pointer */
     cli
 
-    movl $0x23, %esi
-    movw %si, %ds
-    movw %si, %es
-    movw %si, %fs
-    movw %si, %gs
-
     pushl $0x23                 /* SS */
-    pushl %edx                  /* ESP */
-    pushl %ebx                  /* EFLAGS from parent trapframe */
+    pushl 4(%eax)               /* user ESP */
+    pushl 8(%eax)               /* EFLAGS from parent trapframe */
     orl $0x200, (%esp)          /* force IF=1 */
     pushl $0x1B                 /* CS */
-    pushl %ecx                  /* EIP */
+    pushl 0(%eax)               /* EIP */
+
+    movl 12(%eax), %edi         /* parent GPRs, loaded under kernel DS */
+    movl 16(%eax), %esi
+    movl 20(%eax), %ebp
+    movl 24(%eax), %ebx
+    movl 28(%eax), %edx
+    movl 32(%eax), %ecx
+
+    movl $0x23, %eax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+
+    xorl %eax, %eax             /* child's fork() returns 0 */
     iret
 
-    .size enter_usermode_with_ret, .-enter_usermode_with_ret
+    .size enter_usermode_fork, .-enter_usermode_fork
 
