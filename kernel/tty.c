@@ -222,6 +222,10 @@
             if (c >= 0x40 && c <= 0x7E) { /* final byte */
                 if (c == 'J' && tty_csi_len == 1 && tty_csi_params[0] == '2') {
                     terminal_clear_and_home();
+                } else if (c == 'C' && tty_csi_len == 0) {
+                    terminal_move_cursor_right();
+                } else if (c == 'D' && tty_csi_len == 0) {
+                    terminal_move_cursor_left();
                 }
                 tty_esc_state = TTY_ESC_IDLE;
             } else if (tty_csi_len < sizeof(tty_csi_params)) {
