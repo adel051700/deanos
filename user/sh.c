@@ -68,8 +68,72 @@ static void autocomplete(void) {
     /* Filled in by the tab-completion task; Tab is a no-op until then. */
 }
 
+/* ---- history (old kernel shell semantics, in-memory only) ------------ */
+
+#define SH_HISTORY_SIZE 32
+static char history[SH_HISTORY_SIZE][SH_LINE_MAX];
+static int  hist_len;
+static int  hist_pos; /* == hist_len when not browsing */
+static char edit_backup[SH_LINE_MAX];
+
+static void history_add(const char* cmd) {
+    if (!cmd || !*cmd) { hist_pos = hist_len; return; }
+    if (hist_len > 0 && strcmp(history[hist_len - 1], cmd) == 0) {
+        hist_pos = hist_len; /* consecutive duplicate: skip */
+        return;
+    }
+    if (hist_len < SH_HISTORY_SIZE) {
+        strcpy(history[hist_len], cmd); /* cmd is < SH_LINE_MAX by construction */
+        hist_len++;
+    } else {
+        for (int i = 1; i < SH_HISTORY_SIZE; i++)
+            strcpy(history[i - 1], history[i]);
+        strcpy(history[SH_HISTORY_SIZE - 1], cmd);
+    }
+    hist_pos = hist_len;
+}
+
+/* Replace the visible line: cursor to end, destructive-\b erase, print new.
+ * (The tty's \b erases the cell — the old shell's exact erase method.) */
+static void set_line(const char* s) {
+    term_right(ed_len - ed_cur);
+    for (size_t i = 0; i < ed_len; i++) write(1, "\b", 1);
+    ed_len = 0;
+    ed_cur = 0;
+    if (s && *s) {
+        size_t i = 0;
+        while (s[i] && i < SH_LINE_MAX - 1) { ed_buf[i] = s[i]; i++; }
+        ed_buf[i] = '\0';
+        ed_len = i;
+        write(1, ed_buf, ed_len);
+    } else {
+        ed_buf[0] = '\0';
+    }
+    ed_cur = ed_len;
+}
+
+static void history_prev(void) {
+    if (hist_len == 0) return;
+    if (hist_pos == hist_len) {
+        strcpy(edit_backup, ed_buf); /* stash the in-progress line */
+    }
+    if (hist_pos > 0) hist_pos--;
+    set_line(history[hist_pos]);
+}
+
+static void history_next(void) {
+    if (hist_len == 0) return;
+    if (hist_pos < hist_len) hist_pos++;
+    if (hist_pos == hist_len) set_line(edit_backup);
+    else set_line(history[hist_pos]);
+}
+
 static void handle_csi(char final, const char* params, size_t plen) {
-    if (final == 'D' && plen == 0) {        /* left arrow */
+    if (final == 'A' && plen == 0) {        /* up arrow */
+        history_prev();
+    } else if (final == 'B' && plen == 0) { /* down arrow */
+        history_next();
+    } else if (final == 'D' && plen == 0) {        /* left arrow */
         if (ed_cur > 0) { ed_cur--; term_left(1); }
     } else if (final == 'C' && plen == 0) { /* right arrow */
         if (ed_cur < ed_len) { ed_cur++; term_right(1); }
@@ -230,7 +294,8 @@ int main(void) {
 
     for (;;) {
         print_prompt();
-        if (read_line() < 0) continue; /* ^C: fresh prompt */
+        if (read_line() < 0) { hist_pos = hist_len; continue; } /* ^C */
+        history_add(ed_buf); /* before split_args mutates ed_buf */
 
         if (strchr(ed_buf, '|') || strchr(ed_buf, '<') || strchr(ed_buf, '>')) {
             printf("sh: pipes/redirection not supported yet\n");
