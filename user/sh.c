@@ -123,7 +123,8 @@ static void history_prev(void) {
 
 static void history_next(void) {
     if (hist_len == 0) return;
-    if (hist_pos < hist_len) hist_pos++;
+    if (hist_pos == hist_len) return; /* not browsing: Down is a no-op */
+    hist_pos++;
     if (hist_pos == hist_len) set_line(edit_backup);
     else set_line(history[hist_pos]);
 }
