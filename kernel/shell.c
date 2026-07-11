@@ -301,13 +301,11 @@ void shell_initialize(void) {
     esc_state = ESC_IDLE;
     input_line_dirty = 0;
     /* Note: no task_current()->cwd sync here on purpose. shell_initialize()
-     * runs from kernel_main() before tasking_initialize(), so task_current()
-     * is guaranteed to return NULL at this point (g_current stays -1 until
-     * tasking_initialize() creates the idle task). The real shell task,
-     * created afterward via task_create_named(shell_task, ...), already
-     * starts with cwd == "/" for free: it inherits from the idle task via
-     * task_create's parent-cwd-inheritance default, and the idle task itself
-     * falls back to "/" because it's created while g_current is still < 0.
+     * runs from init_task's fallback path when /bin/sh can't be started, so
+     * task_current() is init — whose cwd is "/" and stays that way. The
+     * shell task created right after starts with cwd == "/" too (inherited
+     * from init via task_create's parent-cwd-inheritance default), matching
+     * the static cwd set below.
      * cmd_cd (below) is what keeps task_current()->cwd in sync from here on. */
     cwd[0] = '/';
     cwd[1] = '\0';
