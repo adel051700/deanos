@@ -6,8 +6,15 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        printf("usage: cat <path>\n");
-        return 1;
+        /* No args: copy stdin to stdout until EOF (pipe writers closed).
+         * From the raw terminal fd-0 fallback, reads never return 0, so
+         * interactive cat ends via ^C — Unix-normal. */
+        char buf[256];
+        ssize_t n;
+        while ((n = read(0, buf, sizeof(buf))) > 0) {
+            write(1, buf, (size_t)n);
+        }
+        return 0;
     }
 
     /* path is echoed raw (unnormalized) in the error messages below, unlike
