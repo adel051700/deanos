@@ -92,7 +92,7 @@ static void insert_completion(const char* rest) {
  * (builtins, /bin, /bin/test); later words = path via dir_read. First
  * prefix match wins; silent no-op otherwise. */
 static void autocomplete(void) {
-    static const char* const sh_builtins[] = { "cd", "exit", "help", 0 };
+    static const char* const sh_builtins[] = { "cd", "exit", "help", "jobs", "fg", "bg", 0 };
 
     ed_buf[ed_len] = '\0';
 
@@ -632,13 +632,93 @@ static void run_pipeline(struct sh_stage* st, int nstages, int background,
     }
 }
 
+/* Poll every live pid; print and free jobs whose pids have all exited.
+ * Called before each prompt and by the jobs builtin. */
+static void jobs_reap(void) {
+    for (int i = 0; i < SH_JOBS_MAX; i++) {
+        if (!sh_jobs[i].in_use) continue;
+
+        int alive = 0;
+        for (int k = 0; k < sh_jobs[i].npids; k++) {
+            if (sh_jobs[i].pids[k] < 0) continue;
+            int status = 0;
+            int rc = waitpid(sh_jobs[i].pids[k], &status, WNOHANG);
+            if (rc == sh_jobs[i].pids[k] || rc == -3) {
+                sh_jobs[i].pids[k] = -1;
+            } else {
+                alive = 1;
+            }
+        }
+
+        if (!alive) {
+            printf("[%d] done: %s\n", sh_jobs[i].pgid, sh_jobs[i].cmd);
+            sh_jobs[i].in_use = 0;
+        }
+    }
+}
+
+static struct sh_job* job_find(int pgid) {
+    for (int i = 0; i < SH_JOBS_MAX; i++) {
+        if (sh_jobs[i].in_use && sh_jobs[i].pgid == pgid) return &sh_jobs[i];
+    }
+    return 0;
+}
+
+static struct sh_job* job_most_recent(void) {
+    struct sh_job* best = 0;
+    for (int i = 0; i < SH_JOBS_MAX; i++) {
+        if (!sh_jobs[i].in_use) continue;
+        if (!best || sh_jobs[i].seq > best->seq) best = &sh_jobs[i];
+    }
+    return best;
+}
+
+static void builtin_jobs(void) {
+    jobs_reap();
+    for (int i = 0; i < SH_JOBS_MAX; i++) {
+        if (!sh_jobs[i].in_use) continue;
+        printf("[%d] running: %s\n", sh_jobs[i].pgid, sh_jobs[i].cmd);
+    }
+}
+
+static void builtin_fg(const char* arg) {
+    jobs_reap();
+    struct sh_job* j = (arg && *arg) ? job_find(atoi(arg)) : job_most_recent();
+    if (!j) {
+        printf("fg: no such job\n");
+        return;
+    }
+
+    tcsetpgrp(0, j->pgid);
+    for (int k = 0; k < j->npids; k++) {
+        if (j->pids[k] < 0) continue;
+        int status = 0;
+        waitpid(j->pids[k], &status, 0);
+    }
+    tcsetpgrp(0, getpid());
+    j->in_use = 0;
+}
+
+static void builtin_bg(const char* arg) {
+    jobs_reap();
+    struct sh_job* j = (arg && *arg) ? job_find(atoi(arg)) : job_most_recent();
+    if (!j) {
+        printf("bg: no such job\n");
+        return;
+    }
+    /* No SIGTSTP in this kernel: jobs are always already running. */
+    printf("bg: job %d already running in background\n", j->pgid);
+}
+
 static void builtin_cd(const char* arg) {
     const char* target = (arg && *arg) ? arg : "/";
     if (chdir(target) < 0) printf("cd: %s: no such directory\n", target);
 }
 
 static void builtin_help(void) {
-    printf("builtins: cd [path], exit, help\n");
+    printf("builtins: cd [path], exit, help, jobs, fg [pgid], bg [pgid]\n");
+    printf("pipelines: a | b | c (max %d stages), < in, > out, >> append, & background\n",
+           SH_PIPE_MAX_STAGES);
     printf("everything else runs from /bin (then /bin/test)\n");
 }
 
@@ -650,6 +730,7 @@ int main(void) {
     char* argv[SH_ARGV_MAX];
 
     for (;;) {
+        jobs_reap(); /* announce finished background jobs before the prompt */
         print_prompt();
         if (read_line() < 0) { hist_pos = hist_len; continue; } /* ^C */
         history_add(ed_buf); /* before split_args mutates ed_buf */
@@ -685,6 +766,18 @@ int main(void) {
             }
             if (strcmp(argv[0], "help") == 0) {
                 builtin_help();
+                continue;
+            }
+            if (strcmp(argv[0], "jobs") == 0) {
+                builtin_jobs();
+                continue;
+            }
+            if (strcmp(argv[0], "fg") == 0) {
+                builtin_fg(argc > 1 ? argv[1] : 0);
+                continue;
+            }
+            if (strcmp(argv[0], "bg") == 0) {
+                builtin_bg(argc > 1 ? argv[1] : 0);
                 continue;
             }
 
