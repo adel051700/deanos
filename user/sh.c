@@ -510,27 +510,10 @@ static int parse_stage(char* seg, struct sh_stage* st) {
     return (st->argc > 0) ? 0 : -1;
 }
 
-/* Burn the lowest free fds (0-2 are deliberately unbound in sh — the
- * terminal fallback) so the real pipe/redirect fds below land at >= 4 and
- * can never collide with the dup2 targets 0/1. Guards are closed before
- * forking. */
-static int acquire_low_fd_guards(int guards[4]) {
-    int a[2], b[2];
-    if (pipe(a) < 0) return -1;
-    if (pipe(b) < 0) { close(a[0]); close(a[1]); return -1; }
-    guards[0] = a[0]; guards[1] = a[1];
-    guards[2] = b[0]; guards[3] = b[1];
-    return 0;
-}
-
-static void release_low_fd_guards(const int guards[4]) {
-    for (int i = 0; i < 4; i++) close(guards[i]);
-}
 
 static void run_pipeline(struct sh_stage* st, int nstages, int background,
                          const char* cmdline) {
     static char paths[SH_PIPE_MAX_STAGES][SH_PATH_MAX];
-    int guards[4];
     int in_fd = -1, out_fd = -1;
     int pipes[SH_PIPE_MAX_STAGES - 1][2];
     int pids[SH_PIPE_MAX_STAGES];
@@ -560,18 +543,14 @@ static void run_pipeline(struct sh_stage* st, int nstages, int background,
         }
     }
 
-    if (acquire_low_fd_guards(guards) < 0) {
-        printf("sh: pipe failed\n");
-        return;
-    }
-
-    /* 2: open all redirects before anything forks */
+    /* 2: open all redirects before anything forks
+     * Kernel fd_alloc never hands out fds 0-2, so pipe/redirect fds are
+     * always >= 3 and can't collide with the dup2 targets. */
     if (st[0].has_in) {
         char rp[SH_PATH_MAX];
         if (abs_path(st[0].in_path, rp, sizeof(rp)) < 0 ||
             (in_fd = open(rp, O_RDONLY)) < 0) {
             printf("sh: cannot open input: %s\n", st[0].in_path);
-            release_low_fd_guards(guards);
             return;
         }
     }
@@ -583,7 +562,6 @@ static void run_pipeline(struct sh_stage* st, int nstages, int background,
             (out_fd = open(rp, flags)) < 0) {
             printf("sh: cannot open output: %s\n", st[nstages - 1].out_path);
             if (in_fd >= 0) close(in_fd);
-            release_low_fd_guards(guards);
             return;
         }
     }
@@ -595,13 +573,9 @@ static void run_pipeline(struct sh_stage* st, int nstages, int background,
             for (int j = 0; j < i; j++) { close(pipes[j][0]); close(pipes[j][1]); }
             if (in_fd >= 0) close(in_fd);
             if (out_fd >= 0) close(out_fd);
-            release_low_fd_guards(guards);
             return;
         }
     }
-
-    /* real fds are allocated; guards can go before the forks */
-    release_low_fd_guards(guards);
 
     /* 4: fork each stage */
     for (int i = 0; i < nstages; i++) {
