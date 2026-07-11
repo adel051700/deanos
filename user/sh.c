@@ -286,6 +286,13 @@ static int read_line(void) {
                 write(1, "^C\n", 3);
                 return -1;
             }
+            if (c == 12) { /* ^L: clear screen, redraw prompt + line */
+                write(1, "\x1b[2J", 4);
+                print_prompt();
+                write(1, ed_buf, ed_len);
+                term_left(ed_len - ed_cur);
+                continue;
+            }
             if (c == '\t') { autocomplete(); continue; }
             if (c == '\b' || c == 127) { do_backspace(); continue; }
             if ((unsigned char)c >= ' ' && (unsigned char)c != 0x7F) {
