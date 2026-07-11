@@ -272,6 +272,8 @@ extern const uint8_t _binary_build_user_time_elf_start[];
 extern const uint8_t _binary_build_user_time_elf_end[];
 extern const uint8_t _binary_build_user_tz_elf_start[];
 extern const uint8_t _binary_build_user_tz_elf_end[];
+extern const uint8_t _binary_build_user_sh_elf_start[];
+extern const uint8_t _binary_build_user_sh_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -703,4 +705,10 @@ void elf_install_test_programs(void) {
     if (!tz_bin) return;
     uint32_t tz_size = (uint32_t)(_binary_build_user_tz_elf_end - _binary_build_user_tz_elf_start);
     vfs_write(tz_bin, 0, tz_size, _binary_build_user_tz_elf_start);
+
+    vfs_create(bin, "sh", VFS_FILE);
+    vfs_node_t* sh = vfs_finddir(bin, "sh");
+    if (!sh) return;
+    uint32_t sh_size = (uint32_t)(_binary_build_user_sh_elf_end - _binary_build_user_sh_elf_start);
+    vfs_write(sh, 0, sh_size, _binary_build_user_sh_elf_start);
 }
