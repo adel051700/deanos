@@ -88,7 +88,7 @@ typedef struct task {
 
     /* Blocking state */
     uint64_t        wake_tick;      /* scheduler tick to wake on (0 = none) */
-    int             wait_task_id;   /* >0 specific child, -1 any child, 0 none */
+    int             wait_task_id;   /* >0 specific child, -1 any child, -2 keyboard, 0 none */
     uint32_t        exit_status;    /* _exit(status) value */
     uint32_t        pending_signals;
     uint32_t        ignored_signals;
@@ -179,6 +179,12 @@ int task_waitpid(int pid, int* status, uint32_t options);
 void task_sleep_ticks(uint64_t ticks);
 /* Convenience wrapper around scheduler ticks at 100 Hz PIT default. */
 void task_sleep_ms(uint32_t milliseconds);
+/* Block the current task until keyboard input arrives (woken from the
+ * keyboard IRQ via task_wake_keyboard_waiters). Returns 0 on wake, -1 if
+ * there is no blockable current task. */
+int  task_block_on_keyboard(void);
+/* IRQ context: wake every task blocked in task_block_on_keyboard(). */
+void task_wake_keyboard_waiters(void);
 
 /* Called from PIT IRQ 0 (timer tick). */
 void scheduler_tick(void);

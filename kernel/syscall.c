@@ -35,6 +35,9 @@
 #ifndef EAGAIN
 #define EAGAIN 11
 #endif
+#ifndef EINTR
+#define EINTR 4
+#endif
 #ifndef EINVAL
 #define EINVAL 22
 #endif
@@ -275,13 +278,21 @@ static long sys_read(uint32_t fd, char* buf, size_t len) {
         return (long)vfs_fd_read((int)fd, (uint8_t*)buf, (uint32_t)len);
     }
 
-    /* Fallback keyboard input for default stdin when unbound. */
+    /* Fallback keyboard input for default stdin when unbound. Blocks the
+     * foreground task until the keyboard IRQ delivers at least one char. */
     if (fd == 0) {
-        int fg_pgid = terminal_get_foreground_pgid();
-        int ctl_sid = terminal_get_controlling_sid();
-        if (t && ((fg_pgid > 0 && (int)t->pgid != fg_pgid) ||
-                  (ctl_sid > 0 && (int)t->sid != ctl_sid))) {
-            return -1;
+        for (;;) {
+            int fg_pgid = terminal_get_foreground_pgid();
+            int ctl_sid = terminal_get_controlling_sid();
+            if (t && ((fg_pgid > 0 && (int)t->pgid != fg_pgid) ||
+                      (ctl_sid > 0 && (int)t->sid != ctl_sid))) {
+                return -1;
+            }
+            if (keyboard_data_available()) break;
+            if (task_block_on_keyboard() < 0) return 0; /* non-task context */
+            /* Woken by a signal with a user handler: bail out so the
+             * handler can run instead of silently re-blocking. */
+            if (t && t->pending_signals) return -EINTR;
         }
 
         size_t nread = 0;

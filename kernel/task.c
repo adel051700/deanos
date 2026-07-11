@@ -27,6 +27,7 @@
 #define DEFAULT_STACK_SIZE (16u * 1024u)
 #define TASK_MMAP_BASE  0x90000000u
 #define TASK_MMAP_LIMIT 0xB0000000u
+#define TASK_WAIT_KEYBOARD (-2)
 
 extern void context_switch(task_context_t* old, task_context_t* next);
 extern void task_trampoline(void);   /* in context_switch.s */
@@ -914,6 +915,25 @@ void task_sleep_ms(uint32_t milliseconds) {
     uint64_t ticks = ((uint64_t)milliseconds + 9u) / 10u;
     if (ticks == 0) ticks = 1;
     task_sleep_ticks(ticks);
+}
+
+int task_block_on_keyboard(void) {
+    if (g_current <= 0) return -1; /* never block idle/non-task context */
+    g_tasks[g_current].wait_task_id = TASK_WAIT_KEYBOARD;
+    g_tasks[g_current].wake_tick = 0;
+    g_tasks[g_current].state = TASK_BLOCKED;
+    task_yield();
+    return 0;
+}
+
+void task_wake_keyboard_waiters(void) {
+    for (uint32_t i = 0; i < g_task_count; ++i) {
+        task_t* t = &g_tasks[i];
+        if (t->state == TASK_BLOCKED && t->wait_task_id == TASK_WAIT_KEYBOARD) {
+            t->wait_task_id = 0;
+            t->state = TASK_READY;
+        }
+    }
 }
 
 void task_yield(void) {

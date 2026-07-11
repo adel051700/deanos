@@ -4,6 +4,7 @@
 #include "include/kernel/signal.h"
 #include "include/kernel/tty.h"
 #include "include/kernel/random.h"
+#include "include/kernel/task.h"
 #include <stdint.h>
 
 // dk-latin1 keyboard mapping (Set 1 scancodes)
@@ -141,6 +142,7 @@ static void keyboard_buffer_enqueue(char c) {
     if (next_end == kb_buffer_start) return;
     keyboard_buffer[kb_buffer_end] = c;
     kb_buffer_end = next_end;
+    task_wake_keyboard_waiters();
 }
 
 // Add this helper to enqueue strings (for ESC sequences)
