@@ -44,6 +44,9 @@
 #ifndef EINVAL
 #define EINVAL 22
 #endif
+#ifndef ENODEV
+#define ENODEV 19
+#endif
 
 /* Upper bound for a copied-in path string, including the NUL terminator. */
 #define SYS_PATH_MAX VFS_PATH_MAX
@@ -783,7 +786,7 @@ static long sys_disk_ctl(uint32_t op, const char* uname) {
     if (cs < 0) return -1;
 
     const block_device_t* dev = disk_ctl_resolve(kname);
-    if (!dev) return -1;
+    if (!dev) return -ENODEV;
 
     switch (op) {
         case DISK_CTL_INIT:

@@ -3,6 +3,29 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/disk.h>
+#include <sys/blk.h>
+
+/* Mirror the kernel's token resolution (all-decimal = device index) so
+ * messages and composed partition names use the real device name. */
+static int resolve_dev_name(const char* tok, char* out, size_t outsz) {
+    if (!tok || !*tok) return -1;
+    int all_digits = 1;
+    for (const char* s = tok; *s; s++) {
+        if (*s < '0' || *s > '9') { all_digits = 0; break; }
+    }
+    if (!all_digits) {
+        if (strlen(tok) + 1 > outsz) return -1;
+        strcpy(out, tok);
+        return 0;
+    }
+    unsigned idx = 0;
+    for (const char* s = tok; *s; s++) idx = idx * 10u + (unsigned)(*s - '0');
+    struct blk_info bi;
+    if (blk_info(idx, &bi) < 0) return -1;
+    if (strlen(bi.name) + 1 > outsz) return -1;
+    strcpy(out, bi.name);
+    return 0;
+}
 
 static void usage(void) {
     printf("usage:\n");
@@ -50,20 +73,18 @@ static int find_part(const char* name, struct disk_part_info* out) {
     return -1;
 }
 
-static int do_setup(const char* dev, int fat32) {
+static int do_setup(const char* devname, int fat32) {
     const char* what = fat32 ? "setupfat32" : "setup";
 
-    if (disk_ctl(fat32 ? DISK_CTL_INIT_FAT32 : DISK_CTL_INIT, dev) < 0) {
+    int rc = disk_ctl(fat32 ? DISK_CTL_INIT_FAT32 : DISK_CTL_INIT, devname);
+    if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+    if (rc < 0) {
         printf("disk: %s failed while creating MBR\n", what);
         return 1;
     }
 
     char pname[20];
-    if (strlen(dev) > 15) {
-        printf("disk: unknown device\n");
-        return 1;
-    }
-    strcpy(pname, dev);
+    strcpy(pname, devname);
     strcat(pname, "p1");
 
     struct disk_part_info p;
@@ -71,11 +92,15 @@ static int do_setup(const char* dev, int fat32) {
         printf("disk: %s could not find new partition\n", what);
         return 1;
     }
-    if (disk_ctl(fat32 ? DISK_CTL_MKFS_FAT32 : DISK_CTL_MKFS_MINFS, pname) < 0) {
+    rc = disk_ctl(fat32 ? DISK_CTL_MKFS_FAT32 : DISK_CTL_MKFS_MINFS, pname);
+    if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+    if (rc < 0) {
         printf("disk: %s format failed\n", what);
         return 1;
     }
-    if (disk_ctl(fat32 ? DISK_CTL_MOUNT_FAT32 : DISK_CTL_MOUNT_MINFS, pname) < 0) {
+    rc = disk_ctl(fat32 ? DISK_CTL_MOUNT_FAT32 : DISK_CTL_MOUNT_MINFS, pname);
+    if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+    if (rc < 0) {
         printf("disk: %s mount failed\n", what);
         return 1;
     }
@@ -99,46 +124,64 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    char devname[16];
+    if (resolve_dev_name(dev, devname, sizeof(devname)) < 0) {
+        printf("disk: unknown device\n");
+        return 1;
+    }
+
     if (strcmp(cmd, "init") == 0 || strcmp(cmd, "initfat32") == 0) {
         int fat32 = (cmd[4] != '\0');
-        if (disk_ctl(fat32 ? DISK_CTL_INIT_FAT32 : DISK_CTL_INIT, dev) < 0) {
+        int rc = disk_ctl(fat32 ? DISK_CTL_INIT_FAT32 : DISK_CTL_INIT, devname);
+        if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+        if (rc < 0) {
             printf("disk: failed to write MBR\n");
             return 1;
         }
         printf("disk: created single %s partition on %s (not formatted)\n",
-               fat32 ? "FAT32" : "Linux", dev);
+               fat32 ? "FAT32" : "Linux", devname);
         return 0;
     }
     if (strcmp(cmd, "mkfs") == 0) {
-        if (disk_ctl(DISK_CTL_MKFS_MINFS, dev) < 0) { printf("disk: mkfs failed\n"); return 1; }
-        printf("disk: minfs formatted on %s\n", dev);
+        int rc = disk_ctl(DISK_CTL_MKFS_MINFS, devname);
+        if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+        if (rc < 0) { printf("disk: mkfs failed\n"); return 1; }
+        printf("disk: minfs formatted on %s\n", devname);
         return 0;
     }
     if (strcmp(cmd, "mkfsfat32") == 0) {
-        if (disk_ctl(DISK_CTL_MKFS_FAT32, dev) < 0) { printf("disk: mkfsfat32 failed\n"); return 1; }
-        printf("disk: FAT32 formatted on %s\n", dev);
+        int rc = disk_ctl(DISK_CTL_MKFS_FAT32, devname);
+        if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+        if (rc < 0) { printf("disk: mkfsfat32 failed\n"); return 1; }
+        printf("disk: FAT32 formatted on %s\n", devname);
         return 0;
     }
     if (strcmp(cmd, "mount") == 0) {
-        if (disk_ctl(DISK_CTL_MOUNT_MINFS, dev) < 0) { printf("disk: mount failed\n"); return 1; }
-        printf("disk: mounted /mnt/%s\n", dev);
+        int rc = disk_ctl(DISK_CTL_MOUNT_MINFS, devname);
+        if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+        if (rc < 0) { printf("disk: mount failed\n"); return 1; }
+        printf("disk: mounted /mnt/%s\n", devname);
         return 0;
     }
     if (strcmp(cmd, "mountfat32") == 0) {
-        if (disk_ctl(DISK_CTL_MOUNT_FAT32, dev) < 0) { printf("disk: FAT32 mount failed\n"); return 1; }
-        printf("disk: mounted FAT32 at /mnt/%s\n", dev);
+        int rc = disk_ctl(DISK_CTL_MOUNT_FAT32, devname);
+        if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+        if (rc < 0) { printf("disk: FAT32 mount failed\n"); return 1; }
+        printf("disk: mounted FAT32 at /mnt/%s\n", devname);
         return 0;
     }
     if (strcmp(cmd, "markdirty") == 0) {
-        if (disk_ctl(DISK_CTL_MARKDIRTY, dev) < 0) {
+        int rc = disk_ctl(DISK_CTL_MARKDIRTY, devname);
+        if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+        if (rc < 0) {
             printf("disk: markdirty failed (mount minfs first)\n");
             return 1;
         }
-        printf("disk: recovery marker set DIRTY on %s\n", dev);
+        printf("disk: recovery marker set DIRTY on %s\n", devname);
         return 0;
     }
-    if (strcmp(cmd, "setup") == 0)      return do_setup(dev, 0);
-    if (strcmp(cmd, "setupfat32") == 0) return do_setup(dev, 1);
+    if (strcmp(cmd, "setup") == 0)      return do_setup(devname, 0);
+    if (strcmp(cmd, "setupfat32") == 0) return do_setup(devname, 1);
 
     usage();
     return 1;
