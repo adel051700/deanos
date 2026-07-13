@@ -736,6 +736,29 @@ int vfs_fd_close(int fd) {
     return 0;
 }
 
+int vfs_fd_dup2(int oldfd, int newfd) {
+    task_t* t = task_current();
+    if (!t) return -1;
+    if (oldfd < 0 || oldfd >= TASK_MAX_FDS || !t->fds[oldfd].in_use) return -1;
+    if (newfd < 0 || newfd >= TASK_MAX_FDS) return -1;
+    if (newfd == oldfd) return newfd;
+
+    /* Take the duplicate's node reference before closing newfd, so tearing
+     * down newfd can never release oldfd's node out from under us. Pipe
+     * ends count readers/writers in their open hook — this keeps EOF/EPIPE
+     * accounting exact (same pattern as task_fd_table_clone). */
+    if (vfs_open_node(t->fds[oldfd].node, t->fds[oldfd].open_flags) < 0) return -1;
+
+    if (t->fds[newfd].in_use) (void)vfs_fd_close(newfd);
+
+    t->fds[newfd].node       = t->fds[oldfd].node;
+    t->fds[newfd].offset     = t->fds[oldfd].offset;
+    t->fds[newfd].open_flags = t->fds[oldfd].open_flags;
+    t->fds[newfd].fd_flags   = 0; /* POSIX: FD_CLOEXEC is not inherited by the dup */
+    t->fds[newfd].in_use     = 1;
+    return newfd;
+}
+
 int vfs_fd_stat(int fd, vfs_stat_t* st) {
     task_t* t = task_current();
     if (!t) return -1;

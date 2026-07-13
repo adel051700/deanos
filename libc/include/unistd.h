@@ -28,6 +28,7 @@ int kill(int pid, int sig);
 int fork(void);
 int execve(const char* path, char* const argv[]);
 int pipe(int pipefd[2]);
+int dup2(int oldfd, int newfd);
 int wait(int* status);
 int waitpid(int pid, int* status, int options);
 int setpgid(int pid, int pgid);

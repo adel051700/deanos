@@ -138,6 +138,10 @@ int pipe(int pipefd[2]) {
     return (int)syscall1(SYS_pipe, (unsigned)pipefd);
 }
 
+int dup2(int oldfd, int newfd) {
+    return (int)syscall2(SYS_dup2, (unsigned)oldfd, (unsigned)newfd);
+}
+
 int wait(int* status) {
     return (int)syscall3(SYS_waitpid, (unsigned)-1, (unsigned)status, 0u);
 }

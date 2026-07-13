@@ -162,6 +162,7 @@ int          vfs_fd_close(int fd);
 int          vfs_fd_stat(int fd, vfs_stat_t* st);
 int          vfs_fd_fcntl(int fd, uint32_t cmd, uint32_t arg);
 int          vfs_fd_pipe(int out_fds[2]);
+int          vfs_fd_dup2(int oldfd, int newfd);
 int          vfs_fd_install_node(vfs_node_t* node, uint32_t open_flags, uint32_t fd_flags);
 
 #ifdef __cplusplus

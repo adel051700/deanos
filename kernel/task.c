@@ -855,13 +855,28 @@ int task_send_signal_pgid(int pgid, int sig) {
     if (pgid <= 0) return -1;
 
     int matched = 0;
+    int current_member_id = -1;
+
     for (uint32_t i = 0; i < g_task_count; ++i) {
         task_t* t = &g_tasks[i];
         if (t->state == TASK_DEAD) continue;
         if ((int)t->pgid != pgid) continue;
         if ((int)i == 0 && signal_is_fatal_default(sig)) continue;
         matched = 1;
+
+        /* Defer the current task: a fatal default disposition makes
+         * task_send_signal never return for it (task_exit_with_status),
+         * which would skip every later member of the group. */
+        if ((int)i == g_current) {
+            current_member_id = (int)t->id;
+            continue;
+        }
+
         (void)task_send_signal((int)t->id, sig);
+    }
+
+    if (current_member_id >= 0) {
+        (void)task_send_signal(current_member_id, sig);
     }
 
     return matched ? 0 : -1;
