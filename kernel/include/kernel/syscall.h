@@ -80,6 +80,8 @@ enum {
     SYS_net_ping       = 73,
     SYS_net_dhcp_renew = 74,
     SYS_dup2 = 75,
+    SYS_disk_part_info = 76,
+    SYS_disk_ctl       = 77,
 };
 
 /* getrandom() flags */

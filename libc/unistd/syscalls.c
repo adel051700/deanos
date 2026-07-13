@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/blk.h>
+#include <sys/disk.h>
 #include <sys/klog.h>
 #include <sys/mman.h>
 #include <sys/mouse.h>
@@ -468,6 +469,14 @@ int blk_cache_stats(struct blk_cache_stats* out) {
 
 int blk_flush(int dev) {
     return (int)syscall1(SYS_blk_flush, (unsigned)dev);
+}
+
+int disk_part_info(unsigned index, struct disk_part_info* out) {
+    return (int)syscall2(SYS_disk_part_info, index, (unsigned)out);
+}
+
+int disk_ctl(unsigned op, const char* name) {
+    return (int)syscall2(SYS_disk_ctl, op, (unsigned)name);
 }
 
 int net_info(struct net_info* out) {

@@ -17,6 +17,9 @@
 #include "include/kernel/mouse.h"
 #include "include/kernel/log.h"
 #include "include/kernel/blockdev.h"
+#include "include/kernel/mbr.h"
+#include "include/kernel/minfs.h"
+#include "include/kernel/fat32.h"
 #include "lwip_port/ksock_udp.h"
 #include "lwip_port/ksock_tcp.h"
 #include "lwip_port/ksock_dns.h"
@@ -713,6 +716,99 @@ static long sys_dup2(int32_t oldfd, int32_t newfd) {
     return (long)vfs_fd_dup2((int)oldfd, (int)newfd);
 }
 
+/* ---- disk management (ABI mirrored in libc/include/sys/disk.h) --------- */
+
+#define DISK_CTL_RESCAN      0u
+#define DISK_CTL_INIT        1u
+#define DISK_CTL_INIT_FAT32  2u
+#define DISK_CTL_MKFS_MINFS  3u
+#define DISK_CTL_MKFS_FAT32  4u
+#define DISK_CTL_MOUNT_MINFS 5u
+#define DISK_CTL_MOUNT_FAT32 6u
+#define DISK_CTL_MARKDIRTY   7u
+
+typedef struct sys_disk_part_info {
+    char     name[16];
+    char     parent[16];
+    uint32_t type;
+    uint32_t start_lba;
+    uint32_t block_count;
+} sys_disk_part_info_t;
+
+static long sys_disk_part_info(uint32_t index, sys_disk_part_info_t* out) {
+    if (!out) return -1;
+    if (!access_ok_w(out, sizeof(*out))) return -EFAULT;
+    if (index >= mbr_partition_count()) return -1;
+    const mbr_partition_info_t* p = mbr_partition_get(index);
+    if (!p) return -1;
+
+    sys_disk_part_info_t info;
+    memset(&info, 0, sizeof(info));
+    strncpy(info.name, p->name, sizeof(info.name) - 1);
+    const block_device_t* parent = blockdev_get(p->parent_index);
+    if (parent) strncpy(info.parent, parent->name, sizeof(info.parent) - 1);
+    info.type = (uint32_t)p->partition_type;
+    info.start_lba = (uint32_t)p->start_lba;      /* u64->u32: spec-accepted */
+    info.block_count = (uint32_t)p->block_count;
+    if (copy_to_user(out, &info, sizeof(info)) < 0) return -EFAULT;
+    return 0;
+}
+
+/* Builtin's resolve_blockdev_token semantics: an all-decimal token is a
+ * device index, anything else a device name. */
+static const block_device_t* disk_ctl_resolve(const char* tok) {
+    if (!tok || !*tok) return NULL;
+    int all_digits = 1;
+    for (const char* s = tok; *s; s++) {
+        if (*s < '0' || *s > '9') { all_digits = 0; break; }
+    }
+    if (all_digits) {
+        uint32_t v = 0;
+        for (const char* s = tok; *s; s++) v = v * 10u + (uint32_t)(*s - '0');
+        return blockdev_get(v);
+    }
+    return blockdev_find_by_name(tok);
+}
+
+static long sys_disk_ctl(uint32_t op, const char* uname) {
+    if (op == DISK_CTL_RESCAN) {
+        (void)mbr_scan_all();
+        return 0;
+    }
+
+    char kname[32];
+    if (!uname) return -1;
+    int cs = copy_user_string(kname, uname, sizeof(kname));
+    if (cs == -EFAULT) return -EFAULT;
+    if (cs < 0) return -1;
+
+    const block_device_t* dev = disk_ctl_resolve(kname);
+    if (!dev) return -1;
+
+    switch (op) {
+        case DISK_CTL_INIT:
+        case DISK_CTL_INIT_FAT32: {
+            uint8_t ptype = (op == DISK_CTL_INIT_FAT32)
+                ? FAT32_PARTITION_TYPE_FAT32_LBA : 0x83u;
+            int rc = mbr_create_single_partition(dev->id, ptype);
+            if (rc < 0) return (long)rc;
+            (void)mbr_scan_all(); /* register the new partition blockdev */
+            return 0;
+        }
+        case DISK_CTL_MKFS_MINFS:  return (long)minfs_format(dev->id);
+        case DISK_CTL_MKFS_FAT32:  return (long)fat32_format(dev->id);
+        case DISK_CTL_MOUNT_MINFS: return (long)minfs_mount(dev->id, NULL);
+        case DISK_CTL_MOUNT_FAT32: {
+            char path[SYS_PATH_MAX];
+            strcpy(path, "/mnt/");
+            strncat(path, dev->name, sizeof(path) - strlen(path) - 1);
+            return (long)fat32_mount(dev->id, 0, path);
+        }
+        case DISK_CTL_MARKDIRTY:   return (long)minfs_test_mark_dirty(dev->id);
+        default: return -1;
+    }
+}
+
 static long sys_setpgid(int32_t pid, int32_t pgid) {
     return (long)task_setpgid((int)pid, (int)pgid);
 }
@@ -1357,6 +1453,8 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_fcntl: return sys_fcntl(a1, a2, a3);
         case SYS_pipe: return sys_pipe((int32_t*)a1);
         case SYS_dup2: return sys_dup2((int32_t)a1, (int32_t)a2);
+        case SYS_disk_part_info: return sys_disk_part_info(a1, (sys_disk_part_info_t*)a2);
+        case SYS_disk_ctl:       return sys_disk_ctl(a1, (const char*)a2);
         case SYS_setpgid: return sys_setpgid((int32_t)a1, (int32_t)a2);
         case SYS_getpgrp: return sys_getpgrp();
         case SYS_setsid: return sys_setsid();
