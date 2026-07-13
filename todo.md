@@ -100,3 +100,5 @@
 73. Performance tuning: benchmark suite and top bottleneck fixes.
 74. Milestone release: freeze features, stabilize, and publish 1.0.0 roadmap.
 75. Fix /bin/anim under blocking stdin: known phase-1 regression from the userspace shell port — anim polled fd 0 non-blocking per frame to detect Enter, so it now advances one frame per keypress. Needs a non-blocking read flag (O_NONBLOCK-style) or an anim rewrite without the per-frame poll.
+76. Strip O_TRUNC before re-running node open hooks on fd rebind (vfs_fd_dup2 + task_fd_table_clone share the footgun: dup/fork of a written-to O_TRUNC fd re-truncates the file); fold in pipe error-path cleanups (pipe_make_end_node partial-failure leak, double-open-failure use-after-free in vfs_fd_pipe).
+77. IRQ-context kfree audit: mark_task_dead_index from the keyboard IRQ reaches kfree (task_lazy_elf_clear, pipe_close) whose critical section re-enables interrupts inside the handler — violates the project IRQ rule; predates phase 3 but pipelines widen exposure.
