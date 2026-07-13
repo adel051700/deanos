@@ -17,4 +17,5 @@
 /deanos-course/*
 build/lwip/
 docs/superpowers
-CLAUDE.mdbuild/
+CLAUDE.md
+build/
