@@ -282,6 +282,8 @@ extern const uint8_t _binary_build_user_kill_elf_start[];
 extern const uint8_t _binary_build_user_kill_elf_end[];
 extern const uint8_t _binary_build_user_cls_elf_start[];
 extern const uint8_t _binary_build_user_cls_elf_end[];
+extern const uint8_t _binary_build_user_disk_elf_start[];
+extern const uint8_t _binary_build_user_disk_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -743,4 +745,10 @@ void elf_install_test_programs(void) {
     if (!cls_node) return;
     uint32_t cls_size = (uint32_t)(_binary_build_user_cls_elf_end - _binary_build_user_cls_elf_start);
     vfs_write(cls_node, 0, cls_size, _binary_build_user_cls_elf_start);
+
+    vfs_create(bin, "disk", VFS_FILE);
+    vfs_node_t* disk_node = vfs_finddir(bin, "disk");
+    if (!disk_node) return;
+    uint32_t disk_size = (uint32_t)(_binary_build_user_disk_elf_end - _binary_build_user_disk_elf_start);
+    vfs_write(disk_node, 0, disk_size, _binary_build_user_disk_elf_start);
 }
