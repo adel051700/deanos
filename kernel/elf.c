@@ -292,6 +292,8 @@ extern const uint8_t _binary_build_user_color_elf_start[];
 extern const uint8_t _binary_build_user_color_elf_end[];
 extern const uint8_t _binary_build_user_net_elf_start[];
 extern const uint8_t _binary_build_user_net_elf_end[];
+extern const uint8_t _binary_build_user_mouse_elf_start[];
+extern const uint8_t _binary_build_user_mouse_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -783,4 +785,10 @@ void elf_install_test_programs(void) {
     if (!net_node) return;
     uint32_t net_size = (uint32_t)(_binary_build_user_net_elf_end - _binary_build_user_net_elf_start);
     vfs_write(net_node, 0, net_size, _binary_build_user_net_elf_start);
+
+    vfs_create(bin, "mouse", VFS_FILE);
+    vfs_node_t* mouse_node = vfs_finddir(bin, "mouse");
+    if (!mouse_node) return;
+    uint32_t mouse_size = (uint32_t)(_binary_build_user_mouse_elf_end - _binary_build_user_mouse_elf_start);
+    vfs_write(mouse_node, 0, mouse_size, _binary_build_user_mouse_elf_start);
 }
