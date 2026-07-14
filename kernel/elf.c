@@ -286,6 +286,8 @@ extern const uint8_t _binary_build_user_disk_elf_start[];
 extern const uint8_t _binary_build_user_disk_elf_end[];
 extern const uint8_t _binary_build_user_vm_elf_start[];
 extern const uint8_t _binary_build_user_vm_elf_end[];
+extern const uint8_t _binary_build_user_color_elf_start[];
+extern const uint8_t _binary_build_user_color_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -759,4 +761,10 @@ void elf_install_test_programs(void) {
     if (!vm_node) return;
     uint32_t vm_size = (uint32_t)(_binary_build_user_vm_elf_end - _binary_build_user_vm_elf_start);
     vfs_write(vm_node, 0, vm_size, _binary_build_user_vm_elf_start);
+
+    vfs_create(bin, "color", VFS_FILE);
+    vfs_node_t* color_node = vfs_finddir(bin, "color");
+    if (!color_node) return;
+    uint32_t color_size = (uint32_t)(_binary_build_user_color_elf_end - _binary_build_user_color_elf_start);
+    vfs_write(color_node, 0, color_size, _binary_build_user_color_elf_start);
 }
