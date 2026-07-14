@@ -42,9 +42,11 @@ static void usage(void) {
 }
 
 static void print_hex8(unsigned v) {
-    char buf[8];
-    itoa((int)(v & 0xFFu), buf, 16);
-    if ((v & 0xFFu) < 0x10u) printf("0");
+    static const char* hex = "0123456789ABCDEF";
+    char buf[3];
+    buf[0] = hex[(v >> 4) & 0xF];
+    buf[1] = hex[v & 0xF];
+    buf[2] = '\0';
     printf("%s", buf);
 }
 
@@ -104,7 +106,8 @@ static int do_setup(const char* devname, int fat32) {
         printf("disk: %s mount failed\n", what);
         return 1;
     }
-    printf("disk: ready at /mnt/%s\n", pname);
+    if (fat32) printf("disk: FAT32 ready at /mnt/%s\n", pname);
+    else printf("disk: ready at /mnt/%s\n", pname);
     return 0;
 }
 
