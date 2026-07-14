@@ -26,12 +26,16 @@
     static int terminal_foreground_pgid = 0;
     #define CURSOR_BLINK_INTERVAL_TICKS 50
 
-    /* Output-side ANSI escape parser (currently only ESC[2J). Persistent
-     * across write() calls because sequences may arrive split. */
+    /* Output-side ANSI escape parser: ESC[2J (clear), ESC[C/ESC[D (cursor
+     * move), ESC[0m / ESC[38;2;R;G;Bm / ESC[48;2;R;G;Bm (SGR reset/color).
+     * Persistent across write() calls because sequences may arrive split. */
     typedef enum { TTY_ESC_IDLE = 0, TTY_ESC_GOT_ESC, TTY_ESC_IN_CSI } tty_esc_state_t;
     static tty_esc_state_t tty_esc_state = TTY_ESC_IDLE;
-    static char     tty_csi_params[8];
-    static uint32_t tty_csi_len = 0;
+    #define TTY_CSI_MAX_PARAMS 5
+    static uint32_t tty_csi_nums[TTY_CSI_MAX_PARAMS];
+    static uint32_t tty_csi_num_count = 0;
+    static uint32_t tty_csi_cur = 0;
+    static int      tty_csi_cur_has_digit = 0;
 
     static void calculate_line_positions(void) {
         uint16_t y_pos = 0;
@@ -212,7 +216,9 @@
         if (tty_esc_state == TTY_ESC_GOT_ESC) {
             if (c == '[') {
                 tty_esc_state = TTY_ESC_IN_CSI;
-                tty_csi_len = 0;
+                tty_csi_num_count = 0;
+                tty_csi_cur = 0;
+                tty_csi_cur_has_digit = 0;
             } else {
                 tty_esc_state = TTY_ESC_IDLE; /* unrecognized: swallow */
             }
@@ -220,18 +226,53 @@
         }
         if (tty_esc_state == TTY_ESC_IN_CSI) {
             if (c >= 0x40 && c <= 0x7E) { /* final byte */
-                if (c == 'J' && tty_csi_len == 1 && tty_csi_params[0] == '2') {
+                if (tty_csi_cur_has_digit || tty_csi_num_count > 0) {
+                    if (tty_csi_num_count < TTY_CSI_MAX_PARAMS) {
+                        tty_csi_nums[tty_csi_num_count++] = tty_csi_cur;
+                    }
+                }
+                if (c == 'J' && tty_csi_num_count == 1 && tty_csi_nums[0] == 2) {
                     terminal_clear_and_home();
-                } else if (c == 'C' && tty_csi_len == 0) {
+                } else if (c == 'C' && tty_csi_num_count == 0) {
                     terminal_move_cursor_right();
-                } else if (c == 'D' && tty_csi_len == 0) {
+                } else if (c == 'D' && tty_csi_num_count == 0) {
                     terminal_move_cursor_left();
+                } else if (c == 'm') {
+                    if (tty_csi_num_count == 1 && tty_csi_nums[0] == 0) {
+                        terminal_setcolor(0x00FF00u);
+                        terminal_setbackground(0x000000u);
+                    } else if (tty_csi_num_count == 5 && tty_csi_nums[0] == 38 &&
+                               tty_csi_nums[1] == 2) {
+                        terminal_setcolor(((tty_csi_nums[2] & 0xFFu) << 16) |
+                                          ((tty_csi_nums[3] & 0xFFu) << 8) |
+                                          (tty_csi_nums[4] & 0xFFu));
+                    } else if (tty_csi_num_count == 5 && tty_csi_nums[0] == 48 &&
+                               tty_csi_nums[1] == 2) {
+                        terminal_setbackground(((tty_csi_nums[2] & 0xFFu) << 16) |
+                                               ((tty_csi_nums[3] & 0xFFu) << 8) |
+                                               (tty_csi_nums[4] & 0xFFu));
+                    }
+                    /* any other SGR code (16-color, bold, etc.): swallow */
                 }
                 tty_esc_state = TTY_ESC_IDLE;
-            } else if (tty_csi_len < sizeof(tty_csi_params)) {
-                tty_csi_params[tty_csi_len++] = c;
+                return;
             }
-            /* params beyond the cap are dropped; keep consuming to final */
+            if (c >= '0' && c <= '9') {
+                tty_csi_cur = tty_csi_cur * 10u + (uint32_t)(c - '0');
+                tty_csi_cur_has_digit = 1;
+                return;
+            }
+            if (c == ';') {
+                if (tty_csi_num_count < TTY_CSI_MAX_PARAMS) {
+                    tty_csi_nums[tty_csi_num_count++] = tty_csi_cur;
+                }
+                tty_csi_cur = 0;
+                tty_csi_cur_has_digit = 0;
+                return;
+            }
+            /* any other intermediate byte: ignored, but keep consuming
+             * until the final byte arrives (same "drop but keep consuming"
+             * policy the parser already used for params beyond its cap). */
             return;
         }
         if (c == '\x1B') {
