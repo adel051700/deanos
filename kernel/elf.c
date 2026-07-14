@@ -294,6 +294,10 @@ extern const uint8_t _binary_build_user_net_elf_start[];
 extern const uint8_t _binary_build_user_net_elf_end[];
 extern const uint8_t _binary_build_user_mouse_elf_start[];
 extern const uint8_t _binary_build_user_mouse_elf_end[];
+extern const uint8_t _binary_build_user_about_elf_start[];
+extern const uint8_t _binary_build_user_about_elf_end[];
+extern const uint8_t _binary_build_user_dean_elf_start[];
+extern const uint8_t _binary_build_user_dean_elf_end[];
 
 static void elf_task_wrapper(void) {
     int tid = task_current_id();
@@ -791,4 +795,16 @@ void elf_install_test_programs(void) {
     if (!mouse_node) return;
     uint32_t mouse_size = (uint32_t)(_binary_build_user_mouse_elf_end - _binary_build_user_mouse_elf_start);
     vfs_write(mouse_node, 0, mouse_size, _binary_build_user_mouse_elf_start);
+
+    vfs_create(bin, "about", VFS_FILE);
+    vfs_node_t* about_node = vfs_finddir(bin, "about");
+    if (!about_node) return;
+    uint32_t about_size = (uint32_t)(_binary_build_user_about_elf_end - _binary_build_user_about_elf_start);
+    vfs_write(about_node, 0, about_size, _binary_build_user_about_elf_start);
+
+    vfs_create(bin, "dean", VFS_FILE);
+    vfs_node_t* dean_node = vfs_finddir(bin, "dean");
+    if (!dean_node) return;
+    uint32_t dean_size = (uint32_t)(_binary_build_user_dean_elf_end - _binary_build_user_dean_elf_start);
+    vfs_write(dean_node, 0, dean_size, _binary_build_user_dean_elf_start);
 }
