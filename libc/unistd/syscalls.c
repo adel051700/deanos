@@ -16,6 +16,7 @@
 #include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/vm.h>
 #include <sys/vmstat.h>
 #include <unistd.h>
 
