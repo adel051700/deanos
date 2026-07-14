@@ -284,6 +284,8 @@ extern const uint8_t _binary_build_user_cls_elf_start[];
 extern const uint8_t _binary_build_user_cls_elf_end[];
 extern const uint8_t _binary_build_user_disk_elf_start[];
 extern const uint8_t _binary_build_user_disk_elf_end[];
+extern const uint8_t _binary_build_user_blk_elf_start[];
+extern const uint8_t _binary_build_user_blk_elf_end[];
 extern const uint8_t _binary_build_user_vm_elf_start[];
 extern const uint8_t _binary_build_user_vm_elf_end[];
 extern const uint8_t _binary_build_user_color_elf_start[];
@@ -757,6 +759,12 @@ void elf_install_test_programs(void) {
     if (!disk_node) return;
     uint32_t disk_size = (uint32_t)(_binary_build_user_disk_elf_end - _binary_build_user_disk_elf_start);
     vfs_write(disk_node, 0, disk_size, _binary_build_user_disk_elf_start);
+
+    vfs_create(bin, "blk", VFS_FILE);
+    vfs_node_t* blk_node = vfs_finddir(bin, "blk");
+    if (!blk_node) return;
+    uint32_t blk_size = (uint32_t)(_binary_build_user_blk_elf_end - _binary_build_user_blk_elf_start);
+    vfs_write(blk_node, 0, blk_size, _binary_build_user_blk_elf_start);
 
     vfs_create(bin, "vm", VFS_FILE);
     vfs_node_t* vm_node = vfs_finddir(bin, "vm");
