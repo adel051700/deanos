@@ -4,7 +4,7 @@
  * paging test hooks with no userspace equivalent (see spec Non-goals). */
 #include <stdio.h>
 #include <string.h>
-#include <sys/vm.h>
+#include <sys/vmstat.h>
 
 int main(int argc, char** argv) {
     if (argc > 1 && strcmp(argv[1], "stats") != 0) {
