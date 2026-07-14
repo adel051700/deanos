@@ -29,6 +29,9 @@ extern "C" {
 /* recv/send/sendto/recvfrom flags */
 #define MSG_DONTWAIT 0x40
 
+#define SOCK_STREAM 1
+#define SOCK_DGRAM  2
+
 typedef uint32_t socklen_t;
 
 int socket(int domain, int type, int protocol);
