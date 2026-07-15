@@ -33,21 +33,6 @@ static inline int frame_valid(uint32_t frame) {
     return (frame < g_bitmap_bits) && (g_bitmap != NULL);
 }
 
-/* Reserve [start,end) in frame granularity (set bits to 1 if in range) */
-static void bitmap_reserve_range(uintptr_t start, uintptr_t end) {
-    if (end <= start) return;
-    uint32_t first = addr_to_frame(ALIGN_UP(start, PMM_FRAME_SIZE));
-    uint32_t last  = addr_to_frame(end); // end is exclusive
-    if (last > g_bitmap_bits) last = g_bitmap_bits;
-
-    for (uint32_t f = first; f < last; ++f) {
-        if (!BIT_TST(g_bitmap, f)) {
-            BIT_SET(g_bitmap, f);
-            if (g_free_frames) g_free_frames--;
-        }
-    }
-}
-
 /* Free [start,end) frames (clear bits to 0) */
 static void bitmap_free_range(uintptr_t start, uintptr_t end) {
     if (end <= start) return;

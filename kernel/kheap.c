@@ -94,34 +94,6 @@ static header_t* find_fit(size_t total) {
     return NULL;
 }
 
-static header_t* coalesce(header_t* h) {
-    // Try merge with next
-    header_t* n = blk_next(h, g_heap_end);
-    if (n && !blk_alloc(n)) {
-        // Remove n from free list, merge
-        free_list_remove(n);
-        size_t new_sz = blk_size(h) + blk_size(n);
-        h->size_and_flags = (new_sz | 0); // keep free
-        blk_footer(h)->size_and_flags = h->size_and_flags;
-    }
-
-    // Try merge with prev
-    header_t* p = blk_prev(h, g_heap_base);
-    if (p && !blk_alloc(p)) {
-        // h is not in free list yet, but p is; just grow p
-        free_list_remove(p);
-        size_t new_sz = blk_size(p) + blk_size(h);
-        p->size_and_flags = (new_sz | 0);
-        blk_footer(p)->size_and_flags = p->size_and_flags;
-        // Insert merged block
-        free_list_insert(p);
-        return p;
-    }
-
-    // Insert (or re-insert) this block if not already
-    return h;
-}
-
 static header_t* coalesce_neighbors(header_t* h) {
     // Merge with next if free
     header_t* n = blk_next(h, g_heap_end);

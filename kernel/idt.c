@@ -33,26 +33,6 @@ void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags) {
     idt_entries[num].base_high = (base >> 16) & 0xFFFF;
 }
 
-static void pic_initialize(void) {
-    // --- Master PIC Initialization ---
-    outb(0x20, 0x11); io_wait();
-    outb(0x21, 0x20); io_wait();
-    outb(0x21, 0x04); io_wait();
-    outb(0x21, 0x01); io_wait();
-
-    // --- Slave PIC Initialization ---
-    outb(0xA0, 0x11); io_wait();
-    outb(0xA1, 0x28); io_wait();
-    outb(0xA1, 0x02); io_wait();
-    outb(0xA1, 0x01); io_wait();
-
-    // --- Set Interrupt Masks (OCW1) ---
-    outb(0x21, 0xF8);
-    io_wait();
-    outb(0xA1, 0xFF);
-    io_wait();
-}
-
 void idt_initialize(void) {
     idtp.limit = (sizeof(struct idt_entry) * IDT_ENTRIES) - 1;
     idtp.base = (uint32_t)&idt_entries;
