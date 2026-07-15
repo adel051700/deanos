@@ -2,7 +2,6 @@
 #include "include/kernel/gdt.h"
 #include "include/kernel/keyboard.h"
 #include "include/kernel/mouse.h"
-#include "include/kernel/shell.h"
 #include "include/kernel/rtc.h"
 #include "include/kernel/task.h"
 #include "include/kernel/log.h"
@@ -29,18 +28,6 @@
 #include <string.h>
 #include <stdio.h>
 
-static void shell_task(void) {
-    while (1) {
-        /* Drain all pending keystrokes so commands run immediately. */
-        while (keyboard_data_available()) {
-            char c = keyboard_getchar();
-            if (c != 0)
-                shell_process_char(c);
-        }
-        __asm__ __volatile__("hlt; nop");
-    }
-}
-
 /* klog helper: message + decimal number, since klog has no formatting. */
 static void init_klog_num(const char* msg, int num) {
     char line[64];
@@ -55,19 +42,12 @@ static void init_klog_num(const char* msg, int num) {
  * kernel shell only if sh can't be started at all. */
 static void init_task(void) {
     terminal_enable_cursor();
-    /* Pre-mark async output so sh's first write doesn't get the
-     * fresh-line '\n' shell_write_async_output inserts. */
-    shell_mark_tty_async_output();
 
     for (;;) {
         static const char* sh_argv[] = { "/bin/sh" };
         int pid = elf_exec_with_stdio("/bin/sh", 0, -1, -1, sh_argv, 1);
         if (pid < 0) {
-            init_klog_num("init: /bin/sh exec failed, starting kernel shell; err=", pid);
-            shell_initialize();
-            if (task_create_named(shell_task, 0, TASK_DEFAULT_QUANTUM, "shell") < 0) {
-                klog("init: kernel shell task creation failed");
-            }
+            init_klog_num("init: /bin/sh exec failed, halting; err=", pid);
             break;
         }
         init_klog_num("init: spawned /bin/sh pid=", pid);

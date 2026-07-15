@@ -10,7 +10,6 @@
 #include "include/kernel/elf.h"
 #include "include/kernel/paging.h"
 #include "include/kernel/vfs.h"
-#include "include/kernel/shell.h"
 #include "include/kernel/net.h"
 #include "include/kernel/net_lwip.h"
 #include "include/kernel/random.h"
@@ -265,7 +264,7 @@ static long sys_write(uint32_t fd, const char* buf, size_t len) {
 
     /* Fallback console for default stdout/stderr when unbound. */
     if (fd == 1 || fd == 2) {
-        shell_write_async_output(buf, len);
+        terminal_write(buf, (size_t)len);
         return (long)len;
     }
 
