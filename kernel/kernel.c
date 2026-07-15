@@ -38,8 +38,8 @@ static void init_klog_num(const char* msg, int num) {
     klog(line);
 }
 
-/* PID-1-style loop: keep a foreground /bin/sh alive; fall back to the
- * kernel shell only if sh can't be started at all. */
+/* PID-1-style loop: keep a foreground /bin/sh alive; halt if sh can't
+ * be started at all. */
 static void init_task(void) {
     terminal_enable_cursor();
 
@@ -59,7 +59,7 @@ static void init_task(void) {
         task_sleep_ticks(100); /* ~1 s: bound a crash-loop's respawn rate */
     }
 
-    /* Fallback path: park forever; the kernel shell task owns the tty. */
+    /* Fallback path: /bin/sh exec failed with no retry left; park forever. */
     for (;;) task_sleep_ticks(6000);
 }
 

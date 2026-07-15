@@ -166,8 +166,8 @@ void net_service_tick(void) {
      * does that plus far more (it also serializes against every direct
      * task-context raw-API caller, which in_tick never covered).
      *
-     * The IRQ-side call is intentionally kept: the shell busy-spins (hlt+nop
-     * while READY) so the idle thread never runs, making the IRQ pump the
+     * The IRQ-side call is intentionally kept: any busy-spinning READY task
+     * (hlt+nop) keeps the idle thread from running, making the IRQ pump the
      * only thing that drives DHCP/ARP/TCP timeouts in the background.
      */
     flags = net_lock();
