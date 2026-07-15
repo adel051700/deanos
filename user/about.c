@@ -4,6 +4,6 @@
 int main(void) {
     printf("DeanOS - A minimal operating system\n");
     printf("Created as a learning project\n");
-    printf("Version 0.8\n");
+    printf("Version 0.9\n");
     return 0;
 }

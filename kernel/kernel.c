@@ -50,8 +50,7 @@ static void init_task(void) {
             init_klog_num("init: /bin/sh exec failed, halting; err=", pid);
             break;
         }
-        init_klog_num("init: spawned /bin/sh pid=", pid);
-
+    
         int status = 0;
         (void)task_waitpid(pid, &status, 0);
         terminal_release_controlling();
