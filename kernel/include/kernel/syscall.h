@@ -82,6 +82,8 @@ enum {
     SYS_dup2 = 75,
     SYS_disk_part_info = 76,
     SYS_disk_ctl       = 77,
+    SYS_tty_set_canonical = 78,
+    SYS_tty_get_canonical = 79,
 };
 
 /* getrandom() flags */

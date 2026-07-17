@@ -849,6 +849,16 @@ static long sys_tcgetpgrp(uint32_t fd) {
     return (long)terminal_get_foreground_pgid();
 }
 
+static long sys_tty_set_canonical(uint32_t fd, int32_t enable) {
+    (void)fd;
+    return (long)terminal_set_canonical(enable ? 1 : 0);
+}
+
+static long sys_tty_get_canonical(uint32_t fd) {
+    (void)fd;
+    return (long)terminal_get_canonical();
+}
+
 static long sys_mkdir(const char* path) {
     char kpath[SYS_PATH_MAX];
     if (!path) return -1;
@@ -1511,6 +1521,8 @@ static long syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2, uint32_t a3
         case SYS_net_info: return sys_net_info((net_info_t*)a1);
         case SYS_net_ping: return sys_net_ping((const uint8_t*)a1, a2, a3);
         case SYS_net_dhcp_renew: return sys_net_dhcp_renew();
+        case SYS_tty_set_canonical: return sys_tty_set_canonical(a1, (int32_t)a2);
+        case SYS_tty_get_canonical: return sys_tty_get_canonical(a1);
         default:        return -38; /* ENOSYS */
     }
 }

@@ -36,6 +36,8 @@ int getpgrp(void);
 int setsid(void);
 int tcsetpgrp(int fd, int pgrp);
 int tcgetpgrp(int fd);
+int tty_set_canonical(int fd, int enable);
+int tty_get_canonical(int fd);
 int chmod(const char* path, uint16_t mode);
 int chown(const char* path, uint32_t uid, uint32_t gid);
 int chdir(const char* path);

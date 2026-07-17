@@ -171,6 +171,14 @@ int tcgetpgrp(int fd) {
     return (int)syscall1(SYS_tcgetpgrp, (unsigned)fd);
 }
 
+int tty_set_canonical(int fd, int enable) {
+    return (int)syscall2(SYS_tty_set_canonical, (unsigned)fd, (unsigned)enable);
+}
+
+int tty_get_canonical(int fd) {
+    return (int)syscall1(SYS_tty_get_canonical, (unsigned)fd);
+}
+
 int chmod(const char* path, uint16_t mode) {
     return (int)syscall2(SYS_chmod, (unsigned)path, (unsigned)mode);
 }
