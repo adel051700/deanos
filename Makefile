@@ -74,7 +74,6 @@ kernel/mbr.c \
 kernel/syscall.c \
 kernel/task.c \
 kernel/tss.c \
-kernel/usermode.c \
 kernel/vfs.c \
 kernel/ramfs.c \
 kernel/minfs.c \

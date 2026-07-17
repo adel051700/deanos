@@ -227,53 +227,10 @@ void rtl8139_set_rx_callback(rtl8139_rx_callback_t cb) {
     g_rx_callback = cb;
 }
 
-int rtl8139_send_test_frame(void) {
-    uint8_t frame[60] = {
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0x02, 0x13, 0x37, 0x00, 0x00, 0x01,
-        0x88, 0xb5,
-    };
-
-    for (uint32_t i = 14; i < sizeof(frame); ++i) {
-        frame[i] = (uint8_t)i;
-    }
-
-    return rtl8139_send_raw(frame, (uint16_t)sizeof(frame));
-}
-
 void rtl8139_get_mac(uint8_t out_mac[6]) {
     if (!out_mac) return;
     for (uint32_t i = 0; i < 6; ++i) {
         out_mac[i] = g_dev.mac[i];
     }
-}
-
-void rtl8139_get_stats(rtl8139_stats_t* out_stats) {
-    if (!out_stats) return;
-    out_stats->interrupts = g_dev.stats.interrupts;
-    out_stats->rx_packets = g_dev.stats.rx_packets;
-    out_stats->tx_packets = g_dev.stats.tx_packets;
-    out_stats->rx_irqs = g_dev.stats.rx_irqs;
-    out_stats->tx_irqs = g_dev.stats.tx_irqs;
-    out_stats->link_events = g_dev.stats.link_events;
-    out_stats->rx_drops = g_dev.stats.rx_drops;
-}
-
-void rtl8139_get_debug_info(rtl8139_debug_info_t* out_info) {
-    if (!out_info) return;
-
-    out_info->vendor_id = g_dev.pci.vendor_id;
-    out_info->device_id = g_dev.pci.device_id;
-    out_info->io_base = g_dev.io_base;
-    out_info->irq = g_dev.irq;
-
-    if (!g_dev.ready) {
-        out_info->command = 0;
-        out_info->media_status = 0;
-        return;
-    }
-
-    out_info->command = rtl_inb(RTL_REG_CR);
-    out_info->media_status = rtl_inb(RTL_REG_MSR);
 }
 

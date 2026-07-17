@@ -49,40 +49,12 @@ static void bitmap_free_range(uintptr_t start, uintptr_t end) {
     }
 }
 
-/* Try to find a run of 'count' zero bits with alignment in frames */
-static int find_free_run(uint32_t count, uint32_t align_frames, uint32_t* out_first) {
-    if (count == 0 || g_bitmap_bits == 0) return 0;
-    if (align_frames == 0) align_frames = 1;
-    uint32_t i = 0;
-    while (i + count <= g_bitmap_bits) {
-        if (align_frames > 1) {
-            uint32_t aligned = (i + align_frames - 1) & ~(align_frames - 1);
-            if (aligned != i) {
-                i = aligned;
-                if (i + count > g_bitmap_bits) break;
-            }
-        }
-        if (BIT_TST(g_bitmap, i)) { i++; continue; }
-        uint32_t j = 0;
-        for (; j < count; ++j) {
-            if (BIT_TST(g_bitmap, i + j)) break;
-        }
-        if (j == count) {
-            *out_first = i;
-            return 1;
-        }
-        i += j + 1;
-    }
-    return 0;
-}
-
 uint32_t pmm_total_frames(void) { return g_bitmap_bits; }
 uint32_t pmm_free_frames(void)  { return g_free_frames; }
 
 /* Early bump allocator: place bitmap right after kernel.
    We only need it during init to carve the bitmap. */
 static uintptr_t boot_alloc_ptr = 0;
-static uintptr_t g_reserved_end = 0;  // <- add
 
 static void boot_alloc_init(void) {
     uintptr_t after_kernel = (uintptr_t)&_kernel_end;
@@ -143,7 +115,6 @@ void pmm_initialize(struct multiboot_tag_mmap* mmap_tag) {
     g_free_frames = 0;
 
     uintptr_t reserved_end = boot_alloc_ptr;
-    g_reserved_end = reserved_end;     // <- remember end of boot-reserved region
 
     // Pass 2 free usable
     cur = (uint8_t*)mmap_tag + sizeof(*mmap_tag);
@@ -197,52 +168,6 @@ void phys_free_frame(uintptr_t phys_addr) {
         if (g_refcounts) g_refcounts[f] = 0;
         g_free_frames++;
     }
-}
-
-uintptr_t phys_alloc_contiguous(uint32_t count, uint32_t align_frames) {
-    if (count == 0) return 0;
-    if (align_frames == 0) align_frames = 1;
-    // align_frames must be power-of-two
-    if (align_frames & (align_frames - 1)) return 0;
-
-    uint32_t first;
-    if (!find_free_run(count, align_frames, &first)) return 0;
-
-    for (uint32_t j = 0; j < count; ++j) {
-        BIT_SET(g_bitmap, first + j);
-        if (g_refcounts) g_refcounts[first + j] = 1;
-    }
-    if (g_free_frames >= count) g_free_frames -= count;
-    return frame_to_addr(first);
-}
-
-int pmm_self_test(uint32_t frames_to_test) {
-    if (!g_bitmap) return -10;
-    if (frames_to_test == 0) return -1;
-    if (frames_to_test > 512) frames_to_test = 512;
-
-    uint32_t before = pmm_free_frames();
-    uintptr_t list[512];
-    uint32_t got = 0;
-
-    for (; got < frames_to_test; ++got) {
-        uintptr_t f = phys_alloc_frame();
-        if (!f) break;
-        list[got] = f;
-        // uniqueness cheap check vs earlier ones
-        for (uint32_t k = 0; k < got; ++k)
-            if (list[k] == f) return -3;
-    }
-    if (got == 0) return -2;
-
-    for (uint32_t i = 0; i < got; ++i) phys_free_frame(list[i]);
-
-    if (pmm_free_frames() != before) return -4;
-    return 0;
-}
-
-uintptr_t pmm_reserved_region_end(void) {
-    return g_reserved_end;
 }
 
 void pmm_frame_ref(uintptr_t phys_addr) {

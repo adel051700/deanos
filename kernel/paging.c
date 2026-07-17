@@ -783,46 +783,6 @@ int paging_unmap_user_range(uintptr_t start, uintptr_t size) {
     return changed;
 }
 
-int paging_register_demand_region(uintptr_t start, uintptr_t size, uint32_t flags) {
-    if (size == 0) return -1;
-    uintptr_t s = start & ~0xFFFu;
-    uintptr_t e = (start + size + PAGE_SIZE - 1) & ~0xFFFu;
-    if (e <= s) return -2;
-
-    for (uint32_t i = 0; i < DEMAND_REGION_MAX; ++i) {
-        if (!g_demand_regions[i].used) continue;
-        uintptr_t rs = g_demand_regions[i].start;
-        uintptr_t re = g_demand_regions[i].end;
-        if (!(e <= rs || s >= re)) return -3;
-    }
-
-    for (uint32_t i = 0; i < DEMAND_REGION_MAX; ++i) {
-        if (g_demand_regions[i].used) continue;
-        g_demand_regions[i].start = s;
-        g_demand_regions[i].end = e;
-        g_demand_regions[i].flags = flags;
-        g_demand_regions[i].used = 1;
-        g_demand_region_count++;
-        return 0;
-    }
-
-    return -4;
-}
-
-int paging_mark_cow(uintptr_t vaddr) {
-    uintptr_t page = vaddr & ~0xFFFu;
-    uint32_t pd = (page >> 22) & 0x3FF;
-    uint32_t ti = (page >> 12) & 0x3FF;
-    uint32_t* cur_pd = pd_from_phys(g_current_cr3);
-    uint32_t* pt = get_pt_from_pd(cur_pd, pd);
-    if (!pt) return -1;
-    if ((pt[ti] & PTE_P) == 0u) return -2;
-
-    pt[ti] = (pt[ti] | PTE_COW) & ~PTE_W;
-    invlpg((void*)page);
-    return 0;
-}
-
 void paging_get_stats(paging_stats_t* out) {
     if (!out) return;
     out->demand_regions = g_demand_region_count;
@@ -896,14 +856,6 @@ void paging_release_mm(uint32_t cr3_phys) {
 
     if (cr3_phys == g_kernel_cr3) return;
     destroy_mm(cr3_phys);
-}
-
-uint32_t paging_mm_refcount(uint32_t cr3_phys) {
-    if (!cr3_phys) return 0;
-    cr3_phys &= ~0xFFFu;
-    int slot = mm_find_slot(cr3_phys);
-    if (slot < 0) return 0;
-    return g_mm_slots[slot].refs;
 }
 
 int paging_fork_current_cow(uint32_t* out_child_cr3_phys) {

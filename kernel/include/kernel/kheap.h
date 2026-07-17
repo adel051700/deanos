@@ -11,7 +11,6 @@
  - kcalloc: allocate and zero-initialize
  - krealloc: resize a block
  - kheap_free_bytes: total bytes currently free in the heap (internal accounting, includes headers/footers)
- - kheap_self_test: basic allocator test, returns 0 on success
 */
 
 void   kheap_initialize(void);
@@ -21,6 +20,5 @@ void*  kcalloc(size_t nmemb, size_t size);
 void*  krealloc(void* ptr, size_t new_size);
 
 size_t kheap_free_bytes(void);
-int    kheap_self_test(void);
 
 #endif

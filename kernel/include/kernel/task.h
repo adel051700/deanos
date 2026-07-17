@@ -167,9 +167,6 @@ void tasking_initialize(void);
 int  task_create_named(void (*entry)(void), uint32_t stack_size,
                        uint32_t quantum, const char* name);
 
-/* Convenience: default quantum, auto-generated name. */
-int  task_create(void (*entry)(void), uint32_t stack_size);
-
 void task_yield(void);
 void task_exit(void);
 void task_exit_with_status(uint32_t status);
@@ -177,9 +174,6 @@ void task_exit_with_status(uint32_t status);
 int  task_kill(int id);
 int  task_send_signal(int pid, int sig);
 int  task_send_signal_pgid(int pgid, int sig);
-int  task_set_signal_ignored(int sig, int ignored);
-/* Block until the task with the given ID is TASK_DEAD (or not found). */
-void task_wait(int id);
 int task_waitpid(int pid, int* status, uint32_t options);
 /* Block current task for N scheduler ticks (N=0 => yield). */
 void task_sleep_ticks(uint64_t ticks);
@@ -200,13 +194,10 @@ uint32_t task_count(void);
 const task_t* task_get(uint32_t index);
 int task_current_id(void);
 int task_current_ppid(void);
-int task_parent_id(int id);
 int task_current_sid(void);
 int task_current_pgid(void);
 int task_current_uid(void);
 int task_current_gid(void);
-int task_getsid(int pid);
-int task_getpgid(int pid);
 int task_setpgid(int pid, int pgid);
 int task_setsid(void);
 int task_pgid_exists_in_session(uint32_t sid, uint32_t pgid);

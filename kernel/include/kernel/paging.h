@@ -42,12 +42,6 @@ int paging_map_user(uintptr_t vaddr);
 /* Unmap and release user pages in [start, start+size). */
 int paging_unmap_user_range(uintptr_t start, uintptr_t size);
 
-/* Register a lazily populated region. Pages are allocated on first fault. */
-int paging_register_demand_region(uintptr_t start, uintptr_t size, uint32_t flags);
-
-/* Mark an already-mapped user page as copy-on-write (hook for future fork). */
-int paging_mark_cow(uintptr_t vaddr);
-
 /* Query VM hook counters for diagnostics. */
 void paging_get_stats(paging_stats_t* out);
 
@@ -68,8 +62,5 @@ int  paging_create_mm(uint32_t* out_cr3_phys);
 int  paging_fork_current_cow(uint32_t* out_child_cr3_phys);
 void paging_retain_mm(uint32_t cr3_phys);
 void paging_release_mm(uint32_t cr3_phys);
-
-/* Debug helper: return tracked MM refcount for a CR3 (0 if unknown). */
-uint32_t paging_mm_refcount(uint32_t cr3_phys);
 
 #endif

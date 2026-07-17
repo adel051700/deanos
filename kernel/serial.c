@@ -33,10 +33,6 @@ void serial_initialize(void) {
     g_serial_ready = 1;
 }
 
-int serial_is_available(void) {
-    return g_serial_ready;
-}
-
 void serial_write_char(char c) {
     if (!g_serial_ready) return;
     while (!serial_can_transmit()) {

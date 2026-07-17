@@ -391,20 +391,6 @@ void e1000_set_rx_callback(e1000_rx_callback_t cb) {
     g_rx_callback = cb;
 }
 
-int e1000_send_test_frame(void) {
-    uint8_t frame[60] = {
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
-        0x88, 0xb5,
-    };
-
-    for (uint32_t i = 14; i < sizeof(frame); ++i) {
-        frame[i] = (uint8_t)i;
-    }
-
-    return e1000_send_raw(frame, (uint16_t)sizeof(frame));
-}
-
 void e1000_get_mac(uint8_t out_mac[6]) {
     if (!out_mac) return;
     if (g_ready && e1000_mac_is_zero(g_mac)) {
@@ -413,38 +399,5 @@ void e1000_get_mac(uint8_t out_mac[6]) {
     for (uint32_t i = 0; i < 6; ++i) {
         out_mac[i] = g_mac[i];
     }
-}
-
-void e1000_get_stats(e1000_stats_t* out_stats) {
-    if (!out_stats) return;
-    out_stats->interrupts = g_stats.interrupts;
-    out_stats->rx_packets = g_stats.rx_packets;
-    out_stats->tx_packets = g_stats.tx_packets;
-    out_stats->rx_irqs = g_stats.rx_irqs;
-    out_stats->tx_irqs = g_stats.tx_irqs;
-    out_stats->link_events = g_stats.link_events;
-    out_stats->rx_drops = g_stats.rx_drops;
-}
-
-void e1000_get_debug_info(e1000_debug_info_t* out_info) {
-    if (!out_info) return;
-
-    out_info->vendor_id = g_dev.vendor_id;
-    out_info->device_id = g_dev.device_id;
-    out_info->io_base = g_io_base;
-    out_info->irq = g_irq;
-
-    if (!g_ready) {
-        out_info->ctrl = 0;
-        out_info->status = 0;
-        out_info->ral0 = 0;
-        out_info->rah0 = 0;
-        return;
-    }
-
-    out_info->ctrl = e1000_read(E1000_REG_CTRL);
-    out_info->status = e1000_read(E1000_REG_STATUS);
-    out_info->ral0 = e1000_read(E1000_REG_RAL0);
-    out_info->rah0 = e1000_read(E1000_REG_RAH0);
 }
 

@@ -24,9 +24,6 @@ void idt_initialize(void);
 // Set an entry in the IDT
 void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags);
 
-// Load the IDT (implemented in assembly)
-extern void idt_load(struct idt_ptr *idt);
-
 // Enable interrupts
 void interrupts_enable(void);
 

@@ -20,7 +20,6 @@ typedef struct mouse_state {
 void mouse_initialize(void);
 int mouse_is_ready(void);
 void mouse_get_state(mouse_state_t* out);
-void mouse_clear_motion(void);
 void mouse_reset_counters(void);
 
 #endif

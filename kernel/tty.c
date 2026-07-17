@@ -399,9 +399,6 @@
     }
     void terminal_setscale(uint32_t scale) { current_scale = scale; }
 
-    uint32_t terminal_get_color(void) { return term_color; }
-    uint32_t terminal_get_background(void) { return term_bg; }
-
     int terminal_set_foreground_pgid(int pgid) {
         if (pgid < 0) return -1;
         terminal_foreground_pgid = pgid;

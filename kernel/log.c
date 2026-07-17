@@ -24,18 +24,6 @@ void klog_init(void) {
     head = 0;
 }
 
-void klog_write(const char* s, size_t len) {
-    if (!s || len == 0) return;
-
-    for (size_t i = 0; i < len; ++i) {
-        buf[head % KLOG_BUF_SZ] = s[i];
-        head++;
-    }
-    /* Mirror to terminal and serial debug port. */
-    terminal_write(s, len);
-    serial_write_buf(s, len);
-}
-
 void klog(const char* s) {
     size_t n = 0;
     while (s[n]) n++;
@@ -55,17 +43,6 @@ void klog(const char* s) {
 
     serial_write_buf(s, n);
     serial_write_buf("\n", 1);
-}
-
-void klog_dump(void) {
-    size_t end = head;
-    size_t count = (end > KLOG_BUF_SZ) ? KLOG_BUF_SZ : end;
-    size_t start = end - count;
-
-    for (size_t i = 0; i < count; ++i) {
-        char c = buf[(start + i) % KLOG_BUF_SZ];
-        terminal_write(&c, 1);
-    }
 }
 
 size_t klog_read(char* out, size_t out_len) {

@@ -14,10 +14,6 @@ void pmm_initialize(struct multiboot_tag_mmap* mmap_tag);
 uintptr_t phys_alloc_frame(void);
 void      phys_free_frame(uintptr_t phys_addr);
 
-/* Allocate N contiguous frames. align_frames must be a power of two (in frames), e.g. 1,2,4...
-   Returns 0 on failure. */
-uintptr_t phys_alloc_contiguous(uint32_t count, uint32_t align_frames);
-
 /* Frame refcount helpers (used by VM/COW hooks). */
 void     pmm_frame_ref(uintptr_t phys_addr);
 void     pmm_frame_unref(uintptr_t phys_addr);
@@ -26,7 +22,5 @@ uint16_t pmm_frame_refcount(uintptr_t phys_addr);
 /* Stats */
 uint32_t  pmm_total_frames(void);
 uint32_t  pmm_free_frames(void);
-int pmm_self_test(uint32_t frames_to_test);
 
-uintptr_t pmm_reserved_region_end(void);
 #endif

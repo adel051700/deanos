@@ -243,35 +243,3 @@ size_t kheap_free_bytes(void) {
     }
     return sum;
 }
-
-int kheap_self_test(void) {
-    if (!g_initialized) kheap_initialize();
-
-    size_t before = kheap_free_bytes();
-
-    // Allocate a few blocks
-    void* a = kmalloc(32);
-    void* b = kmalloc(64);
-    void* c = kmalloc(1024);
-    if (!a || !b || !c) return -1;
-
-    // Touch memory
-    memset(a, 0xAA, 32);
-    memset(b, 0xBB, 64);
-    memset(c, 0xCC, 1024);
-
-    // Realloc grow/shrink
-    c = krealloc(c, 2048);
-    if (!c) return -2;
-    c = krealloc(c, 256);
-    if (!c) return -3;
-
-    // Free in different order
-    kfree(b);
-    kfree(a);
-    kfree(c);
-
-    size_t after = kheap_free_bytes();
-    // Allow small bookkeeping differences? Here we expect exact match.
-    return (after == before) ? 0 : -4;
-}

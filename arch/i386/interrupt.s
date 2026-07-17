@@ -130,11 +130,3 @@ isr_common_stub:
     add $8, %esp          // discard int_no, err_code
     sti
     iret
-
-// Load IDT
-.global idt_load
-idt_load:
-    movl 4(%esp), %eax  // Get pointer to IDT
-    lidt (%eax)         // Load IDT
-    // DO NOT enable interrupts here - let kernel_main do it after handlers are registered
-    ret

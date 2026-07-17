@@ -9,11 +9,5 @@ extern void enter_usermode(uint32_t entry, uint32_t user_esp);
 struct fork_frame;
 extern void enter_usermode_fork(const struct fork_frame* frame);
 
-/* Create a kernel task that immediately drops to ring 3 and runs `entry`. */
-int user_task_create(void (*entry)(void), const char* name);
-
-/* A tiny test program that runs entirely in ring 3. */
-void user_test_program(void);
-
 #endif
 

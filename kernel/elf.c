@@ -400,10 +400,6 @@ int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd,
     return tid;
 }
 
-int elf_exec(const char* path, int wait) {
-    return elf_exec_with_stdio(path, wait, -1, -1, NULL, 0);
-}
-
 int elf_execve_current(const char* path, const char* const argv[], int argc,
                         struct registers* r) {
     if (!path || !r) return -1;

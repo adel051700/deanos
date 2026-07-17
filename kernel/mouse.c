@@ -244,13 +244,6 @@ void mouse_get_state(mouse_state_t* out) {
     interrupts_enable();
 }
 
-void mouse_clear_motion(void) {
-    interrupts_disable();
-    g_mouse.dx_total = 0;
-    g_mouse.dy_total = 0;
-    interrupts_enable();
-}
-
 void mouse_reset_counters(void) {
     interrupts_disable();
     g_mouse.dx_total = 0;

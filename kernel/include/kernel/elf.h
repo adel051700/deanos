@@ -102,7 +102,6 @@ int elf_validate(const uint8_t* data, uint32_t size);
  *
  * If `wait` is non-zero the caller blocks until the task exits.
  */
-int elf_exec(const char* path, int wait);
 int elf_exec_with_stdio(const char* path, int wait, int stdin_fd, int stdout_fd,
                          const char* const argv[], int argc);
 

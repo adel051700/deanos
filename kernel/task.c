@@ -689,10 +689,6 @@ int task_create_named(void (*entry)(void), uint32_t stack_size,
     return (int)t->id;
 }
 
-int task_create(void (*entry)(void), uint32_t stack_size) {
-    return task_create_named(entry, stack_size, TASK_DEFAULT_QUANTUM, NULL);
-}
-
 void task_exit(void) {
     task_exit_with_status(0);
 }
@@ -764,10 +760,6 @@ int task_fork_user(const fork_frame_t* frame) {
     child->fork_frame = *frame;
     child->fork_resume_user = 1;
     return child_id;
-}
-
-void task_wait(int id) {
-    (void)task_waitpid(id, NULL, 0);
 }
 
 int task_waitpid(int pid, int* status, uint32_t options) {
@@ -882,29 +874,6 @@ int task_send_signal_pgid(int pgid, int sig) {
     return matched ? 0 : -1;
 }
 
-int task_set_signal_ignored(int sig, int ignored) {
-    if (g_current < 0) return -1;
-    if (!signal_is_supported(sig)) return -1;
-    if (sig == KSIGKILL) return -1;
-
-    uint32_t bit = KSIG_BIT(sig);
-    if (ignored) {
-        g_tasks[g_current].ignored_signals |= bit;
-        if (sig > 0 && sig <= KSIG_MAX) {
-            g_tasks[g_current].signal_handlers[(uint32_t)sig] = KSIG_IGN;
-            g_tasks[g_current].signal_restorers[(uint32_t)sig] = 0;
-        }
-        g_tasks[g_current].pending_signals &= ~bit;
-    } else {
-        g_tasks[g_current].ignored_signals &= ~bit;
-        if (sig > 0 && sig <= KSIG_MAX && g_tasks[g_current].signal_handlers[(uint32_t)sig] == KSIG_IGN) {
-            g_tasks[g_current].signal_handlers[(uint32_t)sig] = KSIG_DFL;
-            g_tasks[g_current].signal_restorers[(uint32_t)sig] = 0;
-        }
-    }
-    return 0;
-}
-
 void task_sleep_ticks(uint64_t ticks) {
     if (ticks == 0) {
         task_yield();
@@ -993,12 +962,6 @@ uint32_t task_count(void)              { return g_task_count; }
 const task_t* task_get(uint32_t idx)   { return (idx < g_task_count) ? &g_tasks[idx] : NULL; }
 int task_current_id(void)              { return (g_current >= 0) ? (int)g_tasks[g_current].id : -1; }
 int task_current_ppid(void)            { return (g_current >= 0) ? (int)g_tasks[g_current].parent_id : -1; }
-int task_parent_id(int id) {
-    int idx = find_task_index_by_id(id);
-    if (idx < 0) return -1;
-    return (int)g_tasks[idx].parent_id;
-}
-
 int task_current_sid(void) {
     return (g_current >= 0) ? (int)g_tasks[g_current].sid : -1;
 }
@@ -1013,18 +976,6 @@ int task_current_uid(void) {
 
 int task_current_gid(void) {
     return (g_current >= 0) ? (int)g_tasks[g_current].gid : -1;
-}
-
-int task_getsid(int pid) {
-    int idx = resolve_target_task_index(pid);
-    if (idx < 0) return -1;
-    return (int)g_tasks[idx].sid;
-}
-
-int task_getpgid(int pid) {
-    int idx = resolve_target_task_index(pid);
-    if (idx < 0) return -1;
-    return (int)g_tasks[idx].pgid;
 }
 
 int task_pgid_exists_in_session(uint32_t sid, uint32_t pgid) {
