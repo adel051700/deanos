@@ -170,29 +170,95 @@ static void autocomplete(void) {
     }
 }
 
-/* ---- history (old kernel shell semantics, in-memory only) ------------ */
+/* ---- history (old kernel shell semantics, persisted to a file) ------- */
 
 #define SH_HISTORY_SIZE 32
+#define SH_HISTORY_FILE "/.sh_history"
 static char history[SH_HISTORY_SIZE][SH_LINE_MAX];
 static int  hist_len;
 static int  hist_pos; /* == hist_len when not browsing */
 static char edit_backup[SH_LINE_MAX];
 
-static void history_add(const char* cmd) {
-    if (!cmd || !*cmd) { hist_pos = hist_len; return; }
+typedef enum { HIST_SKIPPED = 0, HIST_APPENDED = 1, HIST_EVICTED = 2 } hist_add_result_t;
+
+/* Memory-only add: today's exact history semantics (dedup consecutive
+ * duplicates, cap at SH_HISTORY_SIZE by shifting out the oldest). Used
+ * directly by history_load() so loading never re-persists what it read. */
+static hist_add_result_t history_add_mem(const char* cmd) {
+    if (!cmd || !*cmd) { hist_pos = hist_len; return HIST_SKIPPED; }
     if (hist_len > 0 && strcmp(history[hist_len - 1], cmd) == 0) {
         hist_pos = hist_len; /* consecutive duplicate: skip */
-        return;
+        return HIST_SKIPPED;
     }
     if (hist_len < SH_HISTORY_SIZE) {
         strcpy(history[hist_len], cmd); /* cmd is < SH_LINE_MAX by construction */
         hist_len++;
-    } else {
-        for (int i = 1; i < SH_HISTORY_SIZE; i++)
-            strcpy(history[i - 1], history[i]);
-        strcpy(history[SH_HISTORY_SIZE - 1], cmd);
+        hist_pos = hist_len;
+        return HIST_APPENDED;
     }
+    for (int i = 1; i < SH_HISTORY_SIZE; i++)
+        strcpy(history[i - 1], history[i]);
+    strcpy(history[SH_HISTORY_SIZE - 1], cmd);
     hist_pos = hist_len;
+    return HIST_EVICTED;
+}
+
+/* Appends one line to SH_HISTORY_FILE. Used while the ring hasn't wrapped
+ * yet, so the file is always exactly today's history[] on disk. */
+static void history_persist_append(const char* cmd) {
+    int fd = open(SH_HISTORY_FILE, O_WRONLY | O_CREAT | O_APPEND);
+    if (fd < 0) return; /* read-only root, no disk, etc: history still works in-memory */
+    write(fd, cmd, strlen(cmd));
+    write(fd, "\n", 1);
+    close(fd);
+}
+
+/* Rewrites SH_HISTORY_FILE from history[] in full. Used once the ring
+ * wraps, since history[] is then the sole authoritative view — this keeps
+ * the file bounded at SH_HISTORY_SIZE lines forever, so history_load()
+ * never needs more than a single bounded sequential read. */
+static void history_persist_rewrite(void) {
+    int fd = open(SH_HISTORY_FILE, O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0) return;
+    for (int i = 0; i < hist_len; i++) {
+        write(fd, history[i], strlen(history[i]));
+        write(fd, "\n", 1);
+    }
+    close(fd);
+}
+
+static void history_add(const char* cmd) {
+    hist_add_result_t r = history_add_mem(cmd);
+    if (r == HIST_APPENDED) history_persist_append(cmd);
+    else if (r == HIST_EVICTED) history_persist_rewrite();
+}
+
+/* Loads prior sessions' history from SH_HISTORY_FILE at shell startup.
+ * The file is always <= SH_HISTORY_SIZE lines (history_persist_rewrite
+ * keeps it that way), so a single bounded read covers it. Missing file is
+ * a silent no-op (cold start, matches today's empty-history behavior). */
+static void history_load(void) {
+    int fd = open(SH_HISTORY_FILE, O_RDONLY);
+    if (fd < 0) return;
+
+    static char buf[SH_HISTORY_SIZE * SH_LINE_MAX];
+    size_t total = 0;
+    for (;;) {
+        ssize_t n = read(fd, buf + total, sizeof(buf) - total);
+        if (n <= 0) break;
+        total += (size_t)n;
+        if (total >= sizeof(buf)) break;
+    }
+    close(fd);
+
+    size_t line_start = 0;
+    for (size_t i = 0; i < total; i++) {
+        if (buf[i] == '\n') {
+            buf[i] = '\0';
+            if (i > line_start) history_add_mem(&buf[line_start]);
+            line_start = i + 1;
+        }
+    }
 }
 
 /* Replace the visible line: cursor to end, destructive-\b erase, print new.
@@ -727,6 +793,7 @@ int main(void) {
     signal(SIGINT, SIG_IGN);
     tcsetpgrp(0, getpid());
     tty_set_canonical(0, 0); /* kernel default is canonical; sh does its own line editing */
+    history_load();
 
     char* argv[SH_ARGV_MAX];
 
