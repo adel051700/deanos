@@ -726,6 +726,7 @@ int main(void) {
     setsid();
     signal(SIGINT, SIG_IGN);
     tcsetpgrp(0, getpid());
+    tty_set_canonical(0, 0); /* kernel default is canonical; sh does its own line editing */
 
     char* argv[SH_ARGV_MAX];
 
