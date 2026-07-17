@@ -261,11 +261,17 @@ static void history_load(void) {
     }
 }
 
-/* Replace the visible line: cursor to end, destructive-\b erase, print new.
- * (The tty's \b erases the cell — the old shell's exact erase method.) */
+/* Erase `len` characters currently on screen, cursor currently `cur` chars
+ * from the start of that displayed text (moves right to the end first,
+ * then destructive-\b erases — the old shell's exact erase method). */
+static void erase_line_display(size_t len, size_t cur) {
+    term_right(len - cur);
+    for (size_t i = 0; i < len; i++) write(1, "\b", 1);
+}
+
+/* Replace the visible line: erase, print new. */
 static void set_line(const char* s) {
-    term_right(ed_len - ed_cur);
-    for (size_t i = 0; i < ed_len; i++) write(1, "\b", 1);
+    erase_line_display(ed_len, ed_cur);
     ed_len = 0;
     ed_cur = 0;
     if (s && *s) {
@@ -278,6 +284,90 @@ static void set_line(const char* s) {
         ed_buf[0] = '\0';
     }
     ed_cur = ed_len;
+}
+
+/* ---- reverse search (Ctrl-R), bash-style incremental ------------------ */
+
+static int    search_active = 0;
+static char   search_term[SH_LINE_MAX];
+static size_t search_len = 0;
+static int    search_match_idx = -1;      /* index into history[], or >= hist_len = no match */
+static char   search_saved_line[SH_LINE_MAX]; /* ed_buf snapshot, restored on cancel */
+static size_t search_disp_len = 0;        /* length of the search-prompt text on screen */
+
+static void search_redraw(void) {
+    erase_line_display(search_disp_len, search_disp_len);
+    search_term[search_len] = '\0';
+    const char* match = (search_match_idx >= 0 && search_match_idx < hist_len)
+                         ? history[search_match_idx] : "";
+    search_disp_len = (size_t)printf("(reverse-i-search)`%s': %s", search_term, match);
+}
+
+/* Searches history[] from `start` down to 0 for the first entry
+ * containing search_term as a substring. Leaves search_match_idx
+ * unchanged on a miss (keeps showing the last good match, bash's
+ * behavior), then redraws either way. */
+static void search_find_from(int start) {
+    search_term[search_len] = '\0';
+    for (int i = start; i >= 0; i--) {
+        if (strstr(history[i], search_term)) { search_match_idx = i; break; }
+    }
+    search_redraw();
+}
+
+static void search_enter(void) {
+    erase_line_display(ed_len, ed_cur);
+    size_t i = 0;
+    while (i < ed_len) { search_saved_line[i] = ed_buf[i]; i++; }
+    search_saved_line[i] = '\0';
+    search_active = 1;
+    search_len = 0;
+    search_term[0] = '\0';
+    search_match_idx = hist_len;
+    search_disp_len = 0;
+    search_find_from(hist_len - 1);
+}
+
+static void search_add_char(char c) {
+    if (search_len >= SH_LINE_MAX - 1) return;
+    search_term[search_len++] = c;
+    int start = (search_match_idx < hist_len) ? search_match_idx : hist_len - 1;
+    search_find_from(start);
+}
+
+static void search_backspace(void) {
+    if (search_len > 0) search_len--;
+    search_match_idx = hist_len;
+    search_find_from(hist_len - 1);
+}
+
+static void search_step(void) {
+    int start = (search_match_idx < hist_len) ? (search_match_idx - 1) : (hist_len - 1);
+    search_find_from(start);
+}
+
+/* Shared by cancel/accept: erase the search prompt, write `s` as the new
+ * line. Does not touch history state. */
+static void restore_line_display(const char* s) {
+    erase_line_display(search_disp_len, search_disp_len);
+    size_t i = 0;
+    while (s[i] && i < SH_LINE_MAX - 1) { ed_buf[i] = s[i]; i++; }
+    ed_buf[i] = '\0';
+    ed_len = i;
+    ed_cur = i;
+    write(1, ed_buf, ed_len);
+}
+
+static void search_cancel(void) {
+    restore_line_display(search_saved_line);
+    search_active = 0;
+}
+
+static void search_accept_and_exit(void) {
+    const char* s = (search_match_idx >= 0 && search_match_idx < hist_len)
+                     ? history[search_match_idx] : search_saved_line;
+    restore_line_display(s);
+    search_active = 0;
 }
 
 static void history_prev(void) {
@@ -317,6 +407,7 @@ static int read_line(void) {
     ed_len = 0;
     ed_cur = 0;
     ed_buf[0] = '\0';
+    search_active = 0;
 
     int esc = 0; /* 0 idle, 1 got ESC, 2 in CSI */
     char csi_params[8];
@@ -339,6 +430,7 @@ static int read_line(void) {
             }
             if (esc == 2) {
                 if (c >= 0x40 && c <= 0x7E) { /* final byte */
+                    if (search_active) search_accept_and_exit();
                     handle_csi(c, csi_params, csi_len);
                     esc = 0;
                 } else if (csi_len < sizeof(csi_params)) {
@@ -346,7 +438,32 @@ static int read_line(void) {
                 }
                 continue;
             }
-            if (c == 27) { esc = 1; continue; }
+            if (c == 27) {
+                if (search_active) search_accept_and_exit();
+                esc = 1;
+                continue;
+            }
+
+            if (search_active) {
+                if (c == 18) { search_step(); continue; }  /* ^R again: next older match */
+                if (c == '\n' || c == '\r') {
+                    search_accept_and_exit();
+                    write(1, "\n", 1);
+                    ed_buf[ed_len] = '\0';
+                    return 0;
+                }
+                if (c == 7) { search_cancel(); continue; } /* ^G: cancel */
+                if (c == '\b' || c == 127) { search_backspace(); continue; }
+                if ((unsigned char)c >= ' ' && (unsigned char)c != 0x7F) {
+                    search_add_char(c);
+                    continue;
+                }
+                /* any other control byte: accept the match, then let it
+                 * fall through to the normal dispatch below for this
+                 * same byte (e.g. ^C aborts, ^L clears, Tab completes,
+                 * on the now-accepted line). */
+                search_accept_and_exit();
+            }
 
             if (c == '\n' || c == '\r') {
                 write(1, "\n", 1);
@@ -366,6 +483,7 @@ static int read_line(void) {
             }
             if (c == '\t') { autocomplete(); continue; }
             if (c == '\b' || c == 127) { do_backspace(); continue; }
+            if (c == 18) { search_enter(); continue; } /* ^R: start reverse search */
             if ((unsigned char)c >= ' ' && (unsigned char)c != 0x7F) {
                 insert_char_at_cursor(c); /* old-shell printable filter */
             }
