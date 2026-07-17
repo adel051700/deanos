@@ -439,7 +439,15 @@ static int read_line(void) {
                 continue;
             }
             if (c == 27) {
-                if (search_active) search_cancel();
+                /* A real arrow/function key sends ESC '[' <byte> together
+                 * from the keyboard driver, landing in the same read()
+                 * burst — check the next buffered byte before deciding
+                 * this is a standalone Escape (which cancels search) vs.
+                 * the start of a sequence (deferred to the CSI-final
+                 * branch below, which accepts the match first). */
+                if (search_active && !(i + 1 < n && in[i + 1] == '[')) {
+                    search_cancel();
+                }
                 esc = 1;
                 continue;
             }
