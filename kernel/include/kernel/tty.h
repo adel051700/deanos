@@ -25,8 +25,8 @@ int terminal_set_controlling_sid(int sid);
 int terminal_get_controlling_sid(void);
 void terminal_release_controlling(void);
 
-int  tty_set_canonical(int enable);
-int  tty_get_canonical(void);
+int  terminal_set_canonical(int enable);
+int  terminal_get_canonical(void);
 int  tty_process_input_byte(char c);
 long tty_drain_ready(char* buf, size_t len);
 #endif

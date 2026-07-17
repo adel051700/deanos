@@ -438,13 +438,13 @@
     static int    tty_line_ready;    /* 1 once a line (or EOF) is complete, until fully drained */
     static size_t tty_line_consumed; /* drain offset into tty_line_buf while tty_line_ready */
 
-    int tty_set_canonical(int enable) {
+    int terminal_set_canonical(int enable) {
         int prev = tty_canonical_mode;
         tty_canonical_mode = enable ? 1 : 0;
         return prev;
     }
 
-    int tty_get_canonical(void) {
+    int terminal_get_canonical(void) {
         return tty_canonical_mode;
     }
 
