@@ -439,7 +439,7 @@ static int read_line(void) {
                 continue;
             }
             if (c == 27) {
-                if (search_active) search_accept_and_exit();
+                if (search_active) search_cancel();
                 esc = 1;
                 continue;
             }
