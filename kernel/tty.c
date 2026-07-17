@@ -431,3 +431,80 @@
         terminal_foreground_pgid = 0;
     }
 
+    #define TTY_LINE_MAX 256
+    static int    tty_canonical_mode = 1; /* default: canonical */
+    static char   tty_line_buf[TTY_LINE_MAX];
+    static size_t tty_line_len;      /* bytes typed so far / ready-line length once ready */
+    static int    tty_line_ready;    /* 1 once a line (or EOF) is complete, until fully drained */
+    static size_t tty_line_consumed; /* drain offset into tty_line_buf while tty_line_ready */
+
+    int tty_set_canonical(int enable) {
+        int prev = tty_canonical_mode;
+        tty_canonical_mode = enable ? 1 : 0;
+        return prev;
+    }
+
+    int tty_get_canonical(void) {
+        return tty_canonical_mode;
+    }
+
+    /* Feeds one raw input byte through the canonical-mode line discipline:
+     * echoes it and handles ERASE (\b), KILL (^U), EOF (^D), and INTR (^C —
+     * SIGINT delivery itself already happens unconditionally in
+     * keyboard.c's IRQ handler; this only resets the in-progress line).
+     * Returns nonzero once a line becomes ready for tty_drain_ready(). */
+    int tty_process_input_byte(char c) {
+        if (c == '\n' || c == '\r') {
+            if (tty_line_len < TTY_LINE_MAX - 1) tty_line_buf[tty_line_len++] = '\n';
+            terminal_putchar('\n');
+            tty_line_ready = 1;
+            return 1;
+        }
+        if (c == '\b') {
+            if (tty_line_len > 0) {
+                tty_line_len--;
+                terminal_putchar('\b');
+                terminal_putchar(' ');
+                terminal_putchar('\b');
+            }
+            return 0;
+        }
+        if (c == (char)21) { /* ^U: kill line */
+            while (tty_line_len > 0) {
+                tty_line_len--;
+                terminal_putchar('\b');
+                terminal_putchar(' ');
+                terminal_putchar('\b');
+            }
+            return 0;
+        }
+        if (c == (char)4) { /* ^D: EOF */
+            tty_line_ready = 1;
+            return 1;
+        }
+        if (c == (char)3) { /* ^C: visual reset only */
+            terminal_writestring("^C\n");
+            tty_line_len = 0;
+            return 0;
+        }
+        if (tty_line_len < TTY_LINE_MAX - 1) {
+            tty_line_buf[tty_line_len++] = c;
+            terminal_putchar(c);
+        }
+        return 0;
+    }
+
+    long tty_drain_ready(char* buf, size_t len) {
+        if (!tty_line_ready) return -1;
+        size_t avail = tty_line_len - tty_line_consumed;
+        size_t n = (len < avail) ? len : avail;
+        memcpy(buf, tty_line_buf + tty_line_consumed, n);
+        tty_line_consumed += n;
+        if (tty_line_consumed >= tty_line_len) {
+            tty_line_len = 0;
+            tty_line_consumed = 0;
+            tty_line_ready = 0;
+        }
+        return (long)n;
+    }
+
