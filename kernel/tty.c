@@ -432,6 +432,12 @@
     }
 
     #define TTY_LINE_MAX 256
+    /* ponytail: single global, not per-process, not saved/restored across
+     * exec — matches this file's other console-wide state (foreground
+     * pgid, controlling sid). /bin/sh flips this to raw at startup and
+     * nothing ever flips it back, so every child it launches inherits raw
+     * mode too; canonical mode is unreachable in the shipped system until
+     * something explicitly requests it and restores raw afterward. */
     static int    tty_canonical_mode = 1; /* default: canonical */
     static char   tty_line_buf[TTY_LINE_MAX];
     static size_t tty_line_len;      /* bytes typed so far / ready-line length once ready */
