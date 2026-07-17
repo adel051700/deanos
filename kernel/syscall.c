@@ -284,8 +284,41 @@ static long sys_read(uint32_t fd, char* buf, size_t len) {
     }
 
     /* Fallback keyboard input for default stdin when unbound. Blocks the
-     * foreground task until the keyboard IRQ delivers at least one char. */
+     * foreground task until a line (canonical) or any byte (raw) is ready. */
     if (fd == 0) {
+        if (terminal_get_canonical()) {
+            /* Ownership check runs even on the fast path (a ready cooked
+             * line from a previous call) so it matches the raw path's
+             * behavior of re-validating on every read, not just while
+             * waiting for new input. */
+            int fg_pgid = terminal_get_foreground_pgid();
+            int ctl_sid = terminal_get_controlling_sid();
+            if (t && ((fg_pgid > 0 && (int)t->pgid != fg_pgid) ||
+                      (ctl_sid > 0 && (int)t->sid != ctl_sid))) {
+                return -1;
+            }
+
+            long ready = tty_drain_ready(buf, len);
+            if (ready >= 0) return ready;
+
+            for (;;) {
+                fg_pgid = terminal_get_foreground_pgid();
+                ctl_sid = terminal_get_controlling_sid();
+                if (t && ((fg_pgid > 0 && (int)t->pgid != fg_pgid) ||
+                          (ctl_sid > 0 && (int)t->sid != ctl_sid))) {
+                    return -1;
+                }
+                if (keyboard_data_available()) {
+                    if (tty_process_input_byte(keyboard_getchar())) {
+                        return tty_drain_ready(buf, len);
+                    }
+                    continue;
+                }
+                if (task_block_on_keyboard() < 0) return 0;
+                if (t && t->pending_signals) return -EINTR;
+            }
+        }
+
         for (;;) {
             int fg_pgid = terminal_get_foreground_pgid();
             int ctl_sid = terminal_get_controlling_sid();
