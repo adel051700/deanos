@@ -75,7 +75,7 @@
 48. ~~TTY improvements: line discipline, canonical/raw mode, and control characters.~~
 49. ~~Terminal UX: command history persistence and reverse search.~~
 50. ~~Shell scripting mini-language: variables, simple loops, and conditionals.~~
-51. Boot reliability: support booting cleanly from disk without ISO fallback.
+51. ~~Boot reliability: support booting cleanly from disk without ISO fallback.~~
 52. SMP research task: AP bootstrap plan and per-CPU data structures.
 53. SMP phase 1: bring up second core and schedule idle task there.
 54. Locking audit: spinlocks/mutexes around scheduler, VFS, and heap critical paths.
