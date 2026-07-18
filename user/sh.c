@@ -1146,6 +1146,110 @@ static int exec_line(char* line) {
     return status;
 }
 
+#define SH_BLOCK_LINES_MAX 64
+#define SH_NEST_MAX        8
+
+/* A source of raw lines for the block interpreter: either the interactive
+ * editor (with a "> " continuation prompt) or a pre-split array — a
+ * captured block body and a script file are both just arrays. */
+typedef struct {
+    int    interactive;
+    char** lines;   /* unused when interactive */
+    int    nlines, idx;
+} line_src_t;
+
+/* Returns 0 with `out` filled, -1 at EOF (array sources) or ^C
+ * (interactive — read_line()'s existing -1-on-cancel return propagates
+ * the same way it does at the top-level prompt). */
+static int src_next(line_src_t* s, char* out, size_t outsz) {
+    if (s->interactive) {
+        write(1, "> ", 2);
+        if (read_line() < 0) return -1;
+        strncpy(out, ed_buf, outsz - 1);
+        out[outsz - 1] = '\0';
+        return 0;
+    }
+    if (s->idx >= s->nlines) return -1;
+    strncpy(out, s->lines[s->idx++], outsz - 1);
+    out[outsz - 1] = '\0';
+    return 0;
+}
+
+static void src_init_array(line_src_t* s, char** lines, int nlines) {
+    s->interactive = 0;
+    s->lines = lines;
+    s->nlines = nlines;
+    s->idx = 0;
+}
+
+static void src_init_interactive(line_src_t* s) {
+    s->interactive = 1;
+    s->lines = 0;
+    s->nlines = 0;
+    s->idx = 0;
+}
+
+static const char* const SH_TERM_FI[]   = { "fi" };
+static const char* const SH_TERM_DONE[] = { "done" };
+
+/* nesting-depth-indexed scratch: capture_until's callers pass a row of
+ * this so a recursive control-flow parse never puts a 64*256-byte buffer
+ * on the 8KB user stack. Declared here since both this file's capture
+ * call sites (Task 6/7) and this definition need the same storage. */
+static char block_scratch[SH_NEST_MAX][SH_BLOCK_LINES_MAX][SH_LINE_MAX];
+static int  block_depth;
+
+static int opens_block(const char* word) {
+    return strcmp(word, "if") == 0 || strcmp(word, "while") == 0 || strcmp(word, "for") == 0;
+}
+
+/* Reads raw lines from `src` into `stored` (capped at SH_BLOCK_LINES_MAX),
+ * tracking nesting depth by counting first-word if/while/for opens against
+ * standalone fi/done closes. Stops once depth is back to 0 and the line's
+ * first word exactly matches one of `terms[nterms]`; that terminator line
+ * itself is written to `matched_line` (pass 0/0 if the caller doesn't need
+ * it) and its index into `terms[]` is returned. Returns -1 on EOF or if
+ * the block overflows SH_BLOCK_LINES_MAX (both are "missing fi/done" —
+ * caller reports the error). The matched line is NOT included in `stored`. */
+static int capture_until(line_src_t* src, const char* const terms[], int nterms,
+                          char stored[][SH_LINE_MAX], int* n_stored,
+                          char* matched_line, size_t matched_line_sz) {
+    int depth = 0;
+    *n_stored = 0;
+    char line[SH_LINE_MAX];
+
+    for (;;) {
+        if (src_next(src, line, sizeof(line)) < 0) return -1;
+
+        const char* p = line;
+        while (*p == ' ') p++;
+        char word[16];
+        size_t wn = 0;
+        while (*p && *p != ' ' && wn < sizeof(word) - 1) word[wn++] = *p++;
+        word[wn] = '\0';
+
+        if (depth == 0) {
+            for (int t = 0; t < nterms; t++) {
+                if (strcmp(word, terms[t]) == 0) {
+                    if (matched_line) {
+                        strncpy(matched_line, line, matched_line_sz - 1);
+                        matched_line[matched_line_sz - 1] = '\0';
+                    }
+                    return t;
+                }
+            }
+        }
+
+        if (opens_block(word)) depth++;
+        else if (strcmp(word, "fi") == 0 || strcmp(word, "done") == 0) depth--;
+
+        if (*n_stored >= SH_BLOCK_LINES_MAX) return -1;
+        strncpy(stored[*n_stored], line, SH_LINE_MAX - 1);
+        stored[*n_stored][SH_LINE_MAX - 1] = '\0';
+        (*n_stored)++;
+    }
+}
+
 /* Poll every live pid; print and free jobs whose pids have all exited.
  * Called before each prompt and by the jobs builtin. */
 static void jobs_reap(void) {
