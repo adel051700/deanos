@@ -75,6 +75,120 @@ static void set_status_var(int status) {
     set_var("?", buf);
 }
 
+/* ---- word/name helpers -------------------------------------------------- */
+
+static int is_ident_start(char c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+static int is_ident_char(char c)  { return is_ident_start(c) || (c >= '0' && c <= '9'); }
+
+/* ---- integer arithmetic: $((expr)) — + - * / %, parens, unary minus,
+ * bare identifiers resolved as variables (get_var + atoi; unset or
+ * non-numeric reads as 0). Division/modulo by zero reads as 0 rather than
+ * faulting. ---------------------------------------------------------- */
+
+static int ae_expr(const char** p);
+
+static void ae_skip_ws(const char** p) { while (**p == ' ') (*p)++; }
+
+static int ae_factor(const char** p) {
+    ae_skip_ws(p);
+    if (**p == '(') {
+        (*p)++;
+        int v = ae_expr(p);
+        ae_skip_ws(p);
+        if (**p == ')') (*p)++;
+        return v;
+    }
+    if (**p == '-') { (*p)++; return -ae_factor(p); }
+    if (**p >= '0' && **p <= '9') {
+        int v = 0;
+        while (**p >= '0' && **p <= '9') v = v * 10 + (*(*p)++ - '0');
+        return v;
+    }
+    if (is_ident_start(**p)) {
+        char name[SH_VAR_NAME_MAX];
+        size_t n = 0;
+        while (is_ident_char(**p) && n < sizeof(name) - 1) name[n++] = *(*p)++;
+        name[n] = '\0';
+        return atoi(get_var(name));
+    }
+    return 0; /* malformed input: 0 rather than crashing */
+}
+
+static int ae_term(const char** p) {
+    int v = ae_factor(p);
+    for (;;) {
+        ae_skip_ws(p);
+        if (**p == '*') { (*p)++; v *= ae_factor(p); }
+        else if (**p == '/') { (*p)++; int d = ae_factor(p); v = d ? v / d : 0; }
+        else if (**p == '%') { (*p)++; int d = ae_factor(p); v = d ? v % d : 0; }
+        else break;
+    }
+    return v;
+}
+
+static int ae_expr(const char** p) {
+    int v = ae_term(p);
+    for (;;) {
+        ae_skip_ws(p);
+        if (**p == '+') { (*p)++; v += ae_term(p); }
+        else if (**p == '-') { (*p)++; v -= ae_term(p); }
+        else break;
+    }
+    return v;
+}
+
+static int arith_eval(const char* expr) {
+    const char* p = expr;
+    return ae_expr(&p);
+}
+
+/* Expands one already-whitespace-split token: $((expr)) must start the
+ * token (whole-token match, no embedded whitespace — see design doc);
+ * $name / ${name} / $? may appear anywhere in the token and are
+ * substituted in place. Everything else copies through literally. */
+static void expand_word(const char* in, char* out, size_t outsz) {
+    if (in[0] == '$' && in[1] == '(' && in[2] == '(') {
+        const char* close = strstr(in + 3, "))");
+        if (close) {
+            char expr[SH_LINE_MAX];
+            size_t elen = (size_t)(close - (in + 3));
+            if (elen >= sizeof(expr)) elen = sizeof(expr) - 1;
+            memcpy(expr, in + 3, elen);
+            expr[elen] = '\0';
+            itoa(arith_eval(expr), out, 10);
+            return;
+        }
+    }
+
+    size_t oi = 0;
+    const char* p = in;
+    while (*p && oi < outsz - 1) {
+        if (*p != '$') { out[oi++] = *p++; continue; }
+
+        if (p[1] == '?') {
+            const char* val = get_var("?");
+            for (const char* s = val; *s && oi < outsz - 1; s++) out[oi++] = *s;
+            p += 2;
+            continue;
+        }
+
+        int braced = (p[1] == '{');
+        const char* np = p + 1 + braced;
+        if (!is_ident_start(*np)) { out[oi++] = *p++; continue; } /* lone '$': literal */
+
+        char name[SH_VAR_NAME_MAX];
+        size_t n = 0;
+        while (is_ident_char(*np) && n < sizeof(name) - 1) name[n++] = *np++;
+        name[n] = '\0';
+        if (braced && *np == '}') np++;
+
+        const char* val = get_var(name);
+        for (const char* s = val; *s && oi < outsz - 1; s++) out[oi++] = *s;
+        p = np;
+    }
+    out[oi] = '\0';
+}
+
 /* ---- line editor (ported from the retired kernel shell) ------------- */
 
 static char   ed_buf[SH_LINE_MAX];
