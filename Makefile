@@ -670,6 +670,9 @@ iso: install
 run: iso
 	qemu-system-i386 -cdrom $(ISO_PATH)
 
+run-disk: iso
+	qemu-system-i386 -hda $(ISO_PATH)
+
 run-net: iso
 	qemu-system-i386 -cdrom $(ISO_PATH) -netdev user,id=net0 -device e1000,netdev=net0
 
