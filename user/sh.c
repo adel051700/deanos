@@ -1197,6 +1197,7 @@ static const char* const SH_TERM_DONE[] = { "done" };
  * on the 8KB user stack. Declared here since both this file's capture
  * call sites (Task 6/7) and this definition need the same storage. */
 static char block_scratch[SH_NEST_MAX][SH_BLOCK_LINES_MAX][SH_LINE_MAX];
+static char for_words_scratch[SH_NEST_MAX][SH_ARGV_MAX][SH_LINE_MAX];
 static int  block_depth;
 
 static int opens_block(const char* word) {
@@ -1398,7 +1399,7 @@ static stmt_sig_t run_for(line_src_t* src, const char* header) {
     char* ptrs[SH_BLOCK_LINES_MAX];
     for (int i = 0; i < n_body; i++) ptrs[i] = block_scratch[block_depth][i];
 
-    char words[SH_ARGV_MAX][SH_LINE_MAX];
+    char (*words)[SH_LINE_MAX] = for_words_scratch[block_depth];
     int nwords = 0;
     {
         char tmp[SH_LINE_MAX];
