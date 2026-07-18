@@ -473,11 +473,17 @@ static long sys_waitpid(int32_t pid, int32_t* status, uint32_t options) {
 
 static long sys_open(const char* path, uint32_t flags) {
     char kpath[SYS_PATH_MAX];
+    char resolved[SYS_PATH_MAX];
     if (!path) return -1;
     int cs = copy_user_string(kpath, path, sizeof(kpath));
     if (cs == -EFAULT) return -EFAULT;
     if (cs < 0) return -1;
-    return (long)vfs_fd_open(kpath, flags);
+
+    task_t* cur = task_current();
+    if (!cur) return -1;
+    if (vfs_normalize_path(cur->cwd, kpath, resolved, sizeof(resolved)) < 0) return -1;
+
+    return (long)vfs_fd_open(resolved, flags);
 }
 
 static long sys_close(uint32_t fd) {
