@@ -1250,6 +1250,117 @@ static int capture_until(line_src_t* src, const char* const terms[], int nterms,
     }
 }
 
+/* ---- if/elif/else/fi control flow --------------------------------------- */
+
+typedef enum { STMT_NORMAL, STMT_BREAK, STMT_CONTINUE } stmt_sig_t;
+
+/* Finds "; <tail>" in `line` starting at `line + skip`, copies everything
+ * between them (trimmed) into `out`. Returns 0 on success, -1 if the
+ * separator isn't found (caller reports "expected '; then'" etc). */
+static int extract_header(const char* line, size_t skip, const char* tail,
+                           char* out, size_t outsz) {
+    const char* p = line + skip;
+    while (*p == ' ') p++;
+
+    char needle[16];
+    needle[0] = ';';
+    needle[1] = ' ';
+    strcpy(needle + 2, tail);
+    const char* sep = strstr(p, needle);
+    if (!sep) return -1;
+
+    size_t n = (size_t)(sep - p);
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, p, n);
+    out[n] = '\0';
+    while (n > 0 && out[n - 1] == ' ') out[--n] = '\0';
+    return 0;
+}
+
+static stmt_sig_t exec_block(line_src_t* src); /* forward decl: run_if calls it */
+
+static stmt_sig_t run_if(line_src_t* src, const char* header) {
+    size_t skip = (strncmp(header, "elif", 4) == 0) ? 4 : 2; /* "elif" vs "if" */
+    char cond[SH_LINE_MAX];
+    if (extract_header(header, skip, "then", cond, sizeof(cond)) < 0) {
+        printf("sh: if: expected '; then'\n");
+        return STMT_NORMAL;
+    }
+
+    char linebuf[SH_LINE_MAX];
+    strcpy(linebuf, cond);
+    int status = exec_line(linebuf);
+
+    static const char* const terms[] = { "elif", "else", "fi" };
+    int n_stored = 0;
+    char matched[SH_LINE_MAX];
+    int which = capture_until(src, terms, 3, block_scratch[block_depth], &n_stored,
+                               matched, sizeof(matched));
+    if (which < 0) { printf("sh: if: missing fi\n"); return STMT_NORMAL; }
+
+    if (status == 0) {
+        stmt_sig_t sig = STMT_NORMAL;
+        if (block_depth + 1 >= SH_NEST_MAX) {
+            printf("sh: too deeply nested\n");
+        } else {
+            char* ptrs[SH_BLOCK_LINES_MAX];
+            for (int i = 0; i < n_stored; i++) ptrs[i] = block_scratch[block_depth][i];
+            line_src_t body;
+            src_init_array(&body, ptrs, n_stored);
+            block_depth++;
+            sig = exec_block(&body);
+            block_depth--;
+        }
+        if (which != 2) { /* not already at fi: discard the unused elif/else..fi */
+            int dn = 0;
+            capture_until(src, SH_TERM_FI, 1, block_scratch[block_depth], &dn, 0, 0);
+        }
+        return sig;
+    }
+
+    if (which == 2) return STMT_NORMAL; /* condition false, no elif/else */
+    if (which == 0) return run_if(src, matched); /* elif: recurse on its own condition */
+
+    /* which == 1: else */
+    if (block_depth + 1 >= SH_NEST_MAX) { printf("sh: too deeply nested\n"); return STMT_NORMAL; }
+    int en = 0;
+    int w2 = capture_until(src, SH_TERM_FI, 1, block_scratch[block_depth], &en, 0, 0);
+    if (w2 < 0) { printf("sh: if: missing fi\n"); return STMT_NORMAL; }
+    char* ptrs2[SH_BLOCK_LINES_MAX];
+    for (int i = 0; i < en; i++) ptrs2[i] = block_scratch[block_depth][i];
+    line_src_t body2;
+    src_init_array(&body2, ptrs2, en);
+    block_depth++;
+    stmt_sig_t sig2 = exec_block(&body2);
+    block_depth--;
+    return sig2;
+}
+
+static stmt_sig_t exec_block(line_src_t* src) {
+    for (;;) {
+        char line[SH_LINE_MAX];
+        if (src_next(src, line, sizeof(line)) < 0) return STMT_NORMAL; /* EOF: end of block */
+
+        char* p = line;
+        while (*p == ' ') p++;
+        if (*p == '\0' || *p == '#') continue; /* blank line / comment */
+
+        char word[16];
+        size_t wn = 0;
+        const char* q = p;
+        while (*q && *q != ' ' && wn < sizeof(word) - 1) word[wn++] = *q++;
+        word[wn] = '\0';
+
+        if (strcmp(word, "if") == 0) {
+            stmt_sig_t s = run_if(src, p);
+            if (s != STMT_NORMAL) return s;
+            continue;
+        }
+
+        exec_line(p);
+    }
+}
+
 /* Poll every live pid; print and free jobs whose pids have all exited.
  * Called before each prompt and by the jobs builtin. */
 static void jobs_reap(void) {
@@ -1398,6 +1509,24 @@ int main(void) {
         print_prompt();
         if (read_line() < 0) { hist_pos = hist_len; continue; }
         history_add(ed_buf);
-        exec_line(ed_buf);
+
+        char line[SH_LINE_MAX];
+        strcpy(line, ed_buf);
+
+        char* p = line;
+        while (*p == ' ') p++;
+        char word[16];
+        size_t wn = 0;
+        const char* q = p;
+        while (*q && *q != ' ' && wn < sizeof(word) - 1) word[wn++] = *q++;
+        word[wn] = '\0';
+
+        if (strcmp(word, "if") == 0) {
+            line_src_t top;
+            src_init_interactive(&top);
+            run_if(&top, p);
+        } else {
+            exec_line(line);
+        }
     }
 }
