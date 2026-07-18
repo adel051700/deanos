@@ -142,20 +142,43 @@ static int arith_eval(const char* expr) {
     return ae_expr(&p);
 }
 
+/* Scans forward from `p` (already past the "$((" prefix) tracking paren
+ * depth opened *within* the expression. Returns a pointer to the first
+ * ')' that closes the wrapper (i.e. found at depth 0), or NULL if the
+ * string ends first. The caller must still confirm the very next char
+ * is also ')' to accept the "))" wrapper close. */
+static const char* find_arith_close(const char* p) {
+    int depth = 0;
+    while (*p) {
+        if (*p == '(') { depth++; p++; }
+        else if (*p == ')') {
+            if (depth == 0) return p;
+            depth--; p++;
+        } else {
+            p++;
+        }
+    }
+    return 0;
+}
+
 /* Expands one already-whitespace-split token: $((expr)) must start the
  * token (whole-token match, no embedded whitespace — see design doc);
  * $name / ${name} / $? may appear anywhere in the token and are
  * substituted in place. Everything else copies through literally. */
 static void expand_word(const char* in, char* out, size_t outsz) {
     if (in[0] == '$' && in[1] == '(' && in[2] == '(') {
-        const char* close = strstr(in + 3, "))");
-        if (close) {
+        const char* close = find_arith_close(in + 3);
+        if (close && close[1] == ')') {
             char expr[SH_LINE_MAX];
             size_t elen = (size_t)(close - (in + 3));
             if (elen >= sizeof(expr)) elen = sizeof(expr) - 1;
             memcpy(expr, in + 3, elen);
             expr[elen] = '\0';
-            itoa(arith_eval(expr), out, 10);
+            char numbuf[12];
+            itoa(arith_eval(expr), numbuf, 10);
+            size_t oi = 0;
+            for (const char* s = numbuf; *s && oi < outsz - 1; s++) out[oi++] = *s;
+            out[oi] = '\0';
             return;
         }
     }
