@@ -275,7 +275,7 @@ static void insert_completion(const char* rest) {
  * (builtins, /bin, /bin/test); later words = path via dir_read. First
  * prefix match wins; silent no-op otherwise. */
 static void autocomplete(void) {
-    static const char* const sh_builtins[] = { "cd", "exit", "help", "jobs", "fg", "bg", 0 };
+    static const char* const sh_builtins[] = { "cd", "exit", "help", "jobs", "fg", "bg", "test", 0 };
 
     ed_buf[ed_len] = '\0';
 
@@ -783,7 +783,7 @@ static struct sh_job sh_jobs[SH_JOBS_MAX];
 static int sh_job_seq;
 
 static int is_builtin_name(const char* name) {
-    static const char* const names[] = { "cd", "exit", "help", "jobs", "fg", "bg", 0 };
+    static const char* const names[] = { "cd", "exit", "help", "jobs", "fg", "bg", "test", "[", 0 };
     for (int i = 0; names[i]; i++)
         if (strcmp(names[i], name) == 0) return 1;
     return 0;
@@ -1017,6 +1017,7 @@ static void builtin_help(void);
 static void builtin_jobs(void);
 static void builtin_fg(const char* arg);
 static void builtin_bg(const char* arg);
+static int builtin_test(int argc, char** argv);
 
 /* ---- exec_line: assignment / plain command / pipeline dispatch -------- */
 
@@ -1096,6 +1097,7 @@ static int exec_line(char* line) {
         else if (strcmp(argv[0], "jobs") == 0) { builtin_jobs(); status = 0; }
         else if (strcmp(argv[0], "fg") == 0) { builtin_fg(argc > 1 ? argv[1] : 0); status = 0; }
         else if (strcmp(argv[0], "bg") == 0) { builtin_bg(argc > 1 ? argv[1] : 0); status = 0; }
+        else if (strcmp(argv[0], "test") == 0 || strcmp(argv[0], "[") == 0) status = builtin_test(argc, argv);
         else status = run_command(argv);
 
         set_status_var(status);
@@ -1228,10 +1230,56 @@ static void builtin_cd(const char* arg) {
 }
 
 static void builtin_help(void) {
-    printf("builtins: cd [path], exit, help, jobs, fg [pgid], bg [pgid]\n");
+    printf("builtins: cd [path], exit, help, jobs, fg [pgid], bg [pgid], test/[ ...\n");
     printf("pipelines: a | b | c (max %d stages), < in, > out, >> append, & background\n",
            SH_PIPE_MAX_STAGES);
     printf("everything else runs from /bin (then /bin/test)\n");
+}
+
+/* test / [ — numeric (-eq -ne -lt -le -gt -ge), string (= !=), and file
+ * (-f -d -e) checks. When invoked as `[`, the last argument must be `]`. */
+static int builtin_test(int argc, char** argv) {
+    if (strcmp(argv[0], "[") == 0) {
+        if (argc < 2 || strcmp(argv[argc - 1], "]") != 0) {
+            printf("sh: [: missing closing ]\n");
+            return 1;
+        }
+        argc--;
+    }
+
+    int n = argc - 1; /* operand count, argv[0] is "test" or "[" */
+
+    if (n == 1) return (*argv[1] != '\0') ? 0 : 1;
+
+    if (n == 2) {
+        struct stat st;
+        int found = (stat(argv[2], &st) == 0);
+        if (strcmp(argv[1], "-f") == 0) return (found && !(st.type & DT_DIR)) ? 0 : 1;
+        if (strcmp(argv[1], "-d") == 0) return (found && (st.type & DT_DIR)) ? 0 : 1;
+        if (strcmp(argv[1], "-e") == 0) return found ? 0 : 1;
+        printf("sh: test: unknown unary operator: %s\n", argv[1]);
+        return 1;
+    }
+
+    if (n == 3) {
+        const char* lhs = argv[1];
+        const char* op  = argv[2];
+        const char* rhs = argv[3];
+        if (strcmp(op, "=") == 0)  return (strcmp(lhs, rhs) == 0) ? 0 : 1;
+        if (strcmp(op, "!=") == 0) return (strcmp(lhs, rhs) != 0) ? 0 : 1;
+        int l = atoi(lhs), r = atoi(rhs);
+        if (strcmp(op, "-eq") == 0) return (l == r) ? 0 : 1;
+        if (strcmp(op, "-ne") == 0) return (l != r) ? 0 : 1;
+        if (strcmp(op, "-lt") == 0) return (l <  r) ? 0 : 1;
+        if (strcmp(op, "-le") == 0) return (l <= r) ? 0 : 1;
+        if (strcmp(op, "-gt") == 0) return (l >  r) ? 0 : 1;
+        if (strcmp(op, "-ge") == 0) return (l >= r) ? 0 : 1;
+        printf("sh: test: unknown binary operator: %s\n", op);
+        return 1;
+    }
+
+    printf("sh: test: bad number of arguments\n");
+    return 1;
 }
 
 int main(void) {
