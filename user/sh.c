@@ -1598,7 +1598,50 @@ static int builtin_test(int argc, char** argv) {
     return 1;
 }
 
-int main(void) {
+#define SH_SCRIPT_LINES_MAX 256
+#define SH_SCRIPT_BUF_MAX   (SH_SCRIPT_LINES_MAX * SH_LINE_MAX)
+
+/* Reads the whole script file into a static buffer (bounded single read,
+ * same pattern as history_load()), splits it on '\n', and interprets it
+ * through the same exec_block used for typed and captured blocks. */
+static int run_script(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        printf("sh: %s: no such file\n", path);
+        return 1;
+    }
+
+    static char buf[SH_SCRIPT_BUF_MAX];
+    size_t total = 0;
+    for (;;) {
+        ssize_t n = read(fd, buf + total, sizeof(buf) - total - 1);
+        if (n <= 0) break;
+        total += (size_t)n;
+        if (total >= sizeof(buf) - 1) break;
+    }
+    close(fd);
+    buf[total] = '\0';
+
+    static char* lines[SH_SCRIPT_LINES_MAX];
+    int nlines = 0;
+    size_t line_start = 0;
+    for (size_t i = 0; i <= total && nlines < SH_SCRIPT_LINES_MAX; i++) {
+        if (buf[i] == '\n' || (i == total && i > line_start)) {
+            buf[i] = '\0';
+            lines[nlines++] = &buf[line_start];
+            line_start = i + 1;
+        }
+    }
+
+    line_src_t src;
+    src_init_array(&src, lines, nlines);
+    exec_block(&src);
+    return atoi(get_var("?"));
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1) return run_script(argv[1]);
+
     setsid();
     signal(SIGINT, SIG_IGN);
     tcsetpgrp(0, getpid());
