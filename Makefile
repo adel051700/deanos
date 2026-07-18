@@ -153,7 +153,7 @@ USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
 ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LWIP_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
 
-.PHONY: all clean install directories iso run run-net run-net-rtl
+.PHONY: all clean install directories iso run run-disk run-net run-net-rtl
 .SUFFIXES: .o .c .s
 
 all: deanos.bin
