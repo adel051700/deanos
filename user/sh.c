@@ -15,6 +15,9 @@
 #define SH_ARGV_MAX 16 /* kernel ELF_ARGV_MAX, argv[0] included */
 #define SH_PIPE_MAX_STAGES 4
 #define SH_JOBS_MAX 16
+#define SH_VAR_MAX      32
+#define SH_VAR_NAME_MAX 32
+#define SH_VAR_VAL_MAX  128
 
 /* forward decl: defined in the path-resolution section below, used by
  * autocomplete()'s path completion above it. */
@@ -27,6 +30,49 @@ static void print_prompt(void) {
         cwd[1] = '\0';
     }
     printf("DeanOS %s $ ", cwd);
+}
+
+/* ---- shell variables (local to this sh process; not exported to child
+ * process environments — see the design doc's Non-goals) ---------------- */
+
+struct sh_var { char name[SH_VAR_NAME_MAX]; char val[SH_VAR_VAL_MAX]; int used; };
+static struct sh_var sh_vars[SH_VAR_MAX];
+
+static struct sh_var* var_find(const char* name) {
+    for (int i = 0; i < SH_VAR_MAX; i++)
+        if (sh_vars[i].used && strcmp(sh_vars[i].name, name) == 0) return &sh_vars[i];
+    return 0;
+}
+
+/* Unset variables read as "" (shell convention) — never NULL. */
+static const char* get_var(const char* name) {
+    struct sh_var* v = var_find(name);
+    return v ? v->val : "";
+}
+
+/* Reuses an existing slot for `name`, else the first free slot; silently
+ * no-ops if the table is full (32 variables is generous for a script —
+ * running out just drops the assignment rather than crashing). */
+static void set_var(const char* name, const char* val) {
+    struct sh_var* v = var_find(name);
+    if (!v) {
+        for (int i = 0; i < SH_VAR_MAX; i++) {
+            if (!sh_vars[i].used) { v = &sh_vars[i]; break; }
+        }
+        if (!v) return;
+        strncpy(v->name, name, SH_VAR_NAME_MAX - 1);
+        v->name[SH_VAR_NAME_MAX - 1] = '\0';
+        v->used = 1;
+    }
+    strncpy(v->val, val, SH_VAR_VAL_MAX - 1);
+    v->val[SH_VAR_VAL_MAX - 1] = '\0';
+}
+
+/* $? — set after every simple command, pipeline, and condition. */
+static void set_status_var(int status) {
+    char buf[12];
+    itoa(status, buf, 10);
+    set_var("?", buf);
 }
 
 /* ---- line editor (ported from the retired kernel shell) ------------- */
