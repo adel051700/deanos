@@ -1147,7 +1147,7 @@ static int exec_line(char* line) {
 }
 
 #define SH_BLOCK_LINES_MAX 64
-#define SH_NEST_MAX        8
+#define SH_NEST_MAX        4
 
 /* A source of raw lines for the block interpreter: either the interactive
  * editor (with a "> " continuation prompt) or a pre-split array — a
@@ -1345,8 +1345,6 @@ static stmt_sig_t run_while(line_src_t* src, const char* header) {
         printf("sh: while: expected '; do'\n");
         return STMT_NORMAL;
     }
-    if (block_depth + 1 >= SH_NEST_MAX) { printf("sh: too deeply nested\n"); return STMT_NORMAL; }
-
     int n_body = 0;
     if (capture_until(src, SH_TERM_DONE, 1, block_scratch[block_depth], &n_body, 0, 0) < 0) {
         printf("sh: while: missing done\n");
@@ -1354,6 +1352,8 @@ static stmt_sig_t run_while(line_src_t* src, const char* header) {
     }
     char* ptrs[SH_BLOCK_LINES_MAX];
     for (int i = 0; i < n_body; i++) ptrs[i] = block_scratch[block_depth][i];
+
+    if (block_depth + 1 >= SH_NEST_MAX) { printf("sh: too deeply nested\n"); return STMT_NORMAL; }
 
     block_depth++;
     for (;;) {
@@ -1389,8 +1389,6 @@ static stmt_sig_t run_for(line_src_t* src, const char* header) {
         printf("sh: for: expected '; do'\n");
         return STMT_NORMAL;
     }
-    if (block_depth + 1 >= SH_NEST_MAX) { printf("sh: too deeply nested\n"); return STMT_NORMAL; }
-
     int n_body = 0;
     if (capture_until(src, SH_TERM_DONE, 1, block_scratch[block_depth], &n_body, 0, 0) < 0) {
         printf("sh: for: missing done\n");
@@ -1398,6 +1396,8 @@ static stmt_sig_t run_for(line_src_t* src, const char* header) {
     }
     char* ptrs[SH_BLOCK_LINES_MAX];
     for (int i = 0; i < n_body; i++) ptrs[i] = block_scratch[block_depth][i];
+
+    if (block_depth + 1 >= SH_NEST_MAX) { printf("sh: too deeply nested\n"); return STMT_NORMAL; }
 
     char (*words)[SH_LINE_MAX] = for_words_scratch[block_depth];
     int nwords = 0;
