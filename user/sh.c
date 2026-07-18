@@ -1336,6 +1336,92 @@ static stmt_sig_t run_if(line_src_t* src, const char* header) {
     return sig2;
 }
 
+/* ---- while/do/done, for/do/done, break, continue ------------------------ */
+
+static stmt_sig_t run_while(line_src_t* src, const char* header) {
+    char cond[SH_LINE_MAX];
+    if (extract_header(header, 5 /* "while" */, "do", cond, sizeof(cond)) < 0) {
+        printf("sh: while: expected '; do'\n");
+        return STMT_NORMAL;
+    }
+    if (block_depth + 1 >= SH_NEST_MAX) { printf("sh: too deeply nested\n"); return STMT_NORMAL; }
+
+    int n_body = 0;
+    if (capture_until(src, SH_TERM_DONE, 1, block_scratch[block_depth], &n_body, 0, 0) < 0) {
+        printf("sh: while: missing done\n");
+        return STMT_NORMAL;
+    }
+    char* ptrs[SH_BLOCK_LINES_MAX];
+    for (int i = 0; i < n_body; i++) ptrs[i] = block_scratch[block_depth][i];
+
+    block_depth++;
+    for (;;) {
+        char linebuf[SH_LINE_MAX];
+        strcpy(linebuf, cond);
+        if (exec_line(linebuf) != 0) break;
+
+        line_src_t body;
+        src_init_array(&body, ptrs, n_body);
+        if (exec_block(&body) == STMT_BREAK) break;
+        /* STMT_CONTINUE and STMT_NORMAL both just re-check the condition */
+    }
+    block_depth--;
+    return STMT_NORMAL;
+}
+
+static stmt_sig_t run_for(line_src_t* src, const char* header) {
+    const char* p = header + 3; /* skip "for" */
+    while (*p == ' ') p++;
+    char var[SH_VAR_NAME_MAX];
+    size_t vn = 0;
+    while (is_ident_char(*p) && vn < sizeof(var) - 1) var[vn++] = *p++;
+    var[vn] = '\0';
+    while (*p == ' ') p++;
+    if (strncmp(p, "in ", 3) != 0) {
+        printf("sh: for: expected 'in'\n");
+        return STMT_NORMAL;
+    }
+    p += 3;
+
+    char listline[SH_LINE_MAX];
+    if (extract_header(p, 0, "do", listline, sizeof(listline)) < 0) {
+        printf("sh: for: expected '; do'\n");
+        return STMT_NORMAL;
+    }
+    if (block_depth + 1 >= SH_NEST_MAX) { printf("sh: too deeply nested\n"); return STMT_NORMAL; }
+
+    int n_body = 0;
+    if (capture_until(src, SH_TERM_DONE, 1, block_scratch[block_depth], &n_body, 0, 0) < 0) {
+        printf("sh: for: missing done\n");
+        return STMT_NORMAL;
+    }
+    char* ptrs[SH_BLOCK_LINES_MAX];
+    for (int i = 0; i < n_body; i++) ptrs[i] = block_scratch[block_depth][i];
+
+    char words[SH_ARGV_MAX][SH_LINE_MAX];
+    int nwords = 0;
+    {
+        char tmp[SH_LINE_MAX];
+        strcpy(tmp, listline);
+        char* wargv[SH_ARGV_MAX];
+        int wargc = split_args(tmp, wargv);
+        for (int i = 0; i < wargc && i < SH_ARGV_MAX; i++) {
+            expand_word(wargv[i], words[i], SH_LINE_MAX);
+            nwords++;
+        }
+    }
+
+    block_depth++;
+    for (int i = 0; i < nwords; i++) {
+        set_var(var, words[i]);
+        line_src_t body;
+        src_init_array(&body, ptrs, n_body);
+        if (exec_block(&body) == STMT_BREAK) break;
+    }
+    block_depth--;
+    return STMT_NORMAL;
+}
+
 static stmt_sig_t exec_block(line_src_t* src) {
     for (;;) {
         char line[SH_LINE_MAX];
@@ -1356,6 +1442,18 @@ static stmt_sig_t exec_block(line_src_t* src) {
             if (s != STMT_NORMAL) return s;
             continue;
         }
+        if (strcmp(word, "while") == 0) {
+            stmt_sig_t s = run_while(src, p);
+            if (s != STMT_NORMAL) return s;
+            continue;
+        }
+        if (strcmp(word, "for") == 0) {
+            stmt_sig_t s = run_for(src, p);
+            if (s != STMT_NORMAL) return s;
+            continue;
+        }
+        if (strcmp(word, "break") == 0) return STMT_BREAK;
+        if (strcmp(word, "continue") == 0) return STMT_CONTINUE;
 
         exec_line(p);
     }
@@ -1448,6 +1546,8 @@ static void builtin_help(void) {
     printf("builtins: cd [path], exit, help, jobs, fg [pgid], bg [pgid], test/[ ...\n");
     printf("pipelines: a | b | c (max %d stages), < in, > out, >> append, & background\n",
            SH_PIPE_MAX_STAGES);
+    printf("control flow: if/elif/else/fi, while/do/done, for VAR in ...; do/done, break, continue\n");
+    printf("variables: name=value, $name, ${name}, $((expr)), $?\n");
     printf("everything else runs from /bin (then /bin/test)\n");
 }
 
@@ -1525,6 +1625,16 @@ int main(void) {
             line_src_t top;
             src_init_interactive(&top);
             run_if(&top, p);
+        } else if (strcmp(word, "while") == 0) {
+            line_src_t top;
+            src_init_interactive(&top);
+            run_while(&top, p);
+        } else if (strcmp(word, "for") == 0) {
+            line_src_t top;
+            src_init_interactive(&top);
+            run_for(&top, p);
+        } else if (strcmp(word, "break") == 0 || strcmp(word, "continue") == 0) {
+            printf("sh: %s: only valid inside a loop\n", word);
         } else {
             exec_line(line);
         }
