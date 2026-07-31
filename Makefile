@@ -28,6 +28,12 @@ VERSION = $(MAJOR)_$(MINOR)
 ISO_DIR = isos
 ISO_NAME = deanos-$(DATE)-$(VERSION).iso
 ISO_PATH = $(ISO_DIR)/$(ISO_NAME)
+INSTALL_BUILD_DIR = $(BUILD_DIR)/install
+PAYLOAD_BIN = $(BUILD_DIR)/deanos-payload.bin
+GRUB_BOOT_IMG = $(INSTALL_BUILD_DIR)/grub_boot.img
+GRUB_CORE_IMG = $(INSTALL_BUILD_DIR)/grub_core.img
+GRUB_COMBINED_IMG = $(INSTALL_BUILD_DIR)/grub_combined.img
+INSTALL_BLOB_OBJS = $(INSTALL_BUILD_DIR)/kernel_payload_blob.o $(INSTALL_BUILD_DIR)/grub_combined_blob.o $(INSTALL_BUILD_DIR)/grub_install_cfg_blob.o
 # Cross-compiler settings
 CFLAGS?=-O2 -g
 CPPFLAGS?=
@@ -151,12 +157,31 @@ USER_ELFS = $(USER_BUILD_DIR)/anim.elf $(USER_BUILD_DIR)/forktest.elf $(USER_BUI
 USER_BLOB_OBJS = $(USER_BUILD_DIR)/anim_blob.o $(USER_BUILD_DIR)/forktest_blob.o $(USER_BUILD_DIR)/execvetest_blob.o $(USER_BUILD_DIR)/waittest_blob.o $(USER_BUILD_DIR)/waitstress_blob.o $(USER_BUILD_DIR)/waitstressbg_blob.o $(USER_BUILD_DIR)/catfd_blob.o $(USER_BUILD_DIR)/sigtest_blob.o $(USER_BUILD_DIR)/mmaptest_blob.o $(USER_BUILD_DIR)/shmtest_blob.o $(USER_BUILD_DIR)/faulttest_blob.o $(USER_BUILD_DIR)/nxstacktest_blob.o $(USER_BUILD_DIR)/randtest_blob.o $(USER_BUILD_DIR)/argvtest_blob.o $(USER_BUILD_DIR)/syscalltest_blob.o $(USER_BUILD_DIR)/fstest_blob.o $(USER_BUILD_DIR)/dmesgtest_blob.o $(USER_BUILD_DIR)/blktest_blob.o $(USER_BUILD_DIR)/nettest_blob.o $(USER_BUILD_DIR)/ls_blob.o $(USER_BUILD_DIR)/cat_blob.o $(USER_BUILD_DIR)/touch_blob.o $(USER_BUILD_DIR)/mkdir_blob.o $(USER_BUILD_DIR)/write_blob.o $(USER_BUILD_DIR)/rm_blob.o $(USER_BUILD_DIR)/stat_blob.o $(USER_BUILD_DIR)/id_blob.o $(USER_BUILD_DIR)/pwd_blob.o $(USER_BUILD_DIR)/chmod_blob.o $(USER_BUILD_DIR)/chown_blob.o $(USER_BUILD_DIR)/echo_blob.o $(USER_BUILD_DIR)/uptime_blob.o $(USER_BUILD_DIR)/time_blob.o $(USER_BUILD_DIR)/tz_blob.o $(USER_BUILD_DIR)/sh_blob.o $(USER_BUILD_DIR)/tasks_blob.o $(USER_BUILD_DIR)/dmesg_blob.o $(USER_BUILD_DIR)/kill_blob.o $(USER_BUILD_DIR)/cls_blob.o $(USER_BUILD_DIR)/disk_blob.o $(USER_BUILD_DIR)/vm_blob.o $(USER_BUILD_DIR)/color_blob.o $(USER_BUILD_DIR)/net_blob.o $(USER_BUILD_DIR)/blk_blob.o $(USER_BUILD_DIR)/mouse_blob.o $(USER_BUILD_DIR)/about_blob.o $(USER_BUILD_DIR)/dean_blob.o
 
 # All object files - BOOT.S MUST BE FIRST for multiboot header!
-ALL_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LWIP_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
+BASE_OBJS = $(ARCH_BUILD_DIR)/boot/boot.o $(ARCH_BUILD_DIR)/interrupt.o $(ARCH_BUILD_DIR)/gdt.o $(ARCH_C_OBJS) $(KERNEL_OBJS) $(LWIP_OBJS) $(LIBC_OBJS) $(USER_BLOB_OBJS)
+ALL_OBJS = $(BASE_OBJS) $(INSTALL_BLOB_OBJS)
 
 .PHONY: all clean install directories iso run run-disk run-net run-net-rtl
 .SUFFIXES: .o .c .s
 
 all: deanos.bin
+
+$(PAYLOAD_BIN): directories $(BASE_OBJS) arch/i386/boot/linker.ld
+	$(CC) -T arch/i386/boot/linker.ld -o $@ $(CFLAGS) $(BASE_OBJS) $(LDFLAGS) $(LIBS)
+
+$(GRUB_BOOT_IMG) $(GRUB_CORE_IMG) &: scripts/gen-install-grub-blob.sh | directories
+	scripts/gen-install-grub-blob.sh $(INSTALL_BUILD_DIR)
+
+$(GRUB_COMBINED_IMG): $(GRUB_BOOT_IMG) $(GRUB_CORE_IMG)
+	cat $(GRUB_BOOT_IMG) $(GRUB_CORE_IMG) > $@
+
+$(INSTALL_BUILD_DIR)/kernel_payload_blob.o: $(PAYLOAD_BIN) | directories
+	$(LD) -r -m elf_i386 -b binary $< -o $@
+
+$(INSTALL_BUILD_DIR)/grub_combined_blob.o: $(GRUB_COMBINED_IMG) | directories
+	$(LD) -r -m elf_i386 -b binary $< -o $@
+
+$(INSTALL_BUILD_DIR)/grub_install_cfg_blob.o: grub-install.cfg | directories
+	$(LD) -r -m elf_i386 -b binary $< -o $@
 
 deanos.bin: directories $(ALL_OBJS) arch/i386/boot/linker.ld
 	$(CC) -T arch/i386/boot/linker.ld -o $@ $(CFLAGS) $(ALL_OBJS) $(LDFLAGS) $(LIBS)
@@ -185,6 +210,7 @@ directories:
 	@mkdir -p $(LIBC_USER_BUILD_DIR)/unistd
 	@mkdir -p $(LIBC_USER_BUILD_DIR)/netdb
 	@mkdir -p $(LIBC_USER_BUILD_DIR)/string
+	@mkdir -p $(INSTALL_BUILD_DIR)
 
 # Compile lwIP core source files
 $(LWIP_BUILD_DIR)/%.o: $(LWIP_DIR)/src/%.c | directories
