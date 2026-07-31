@@ -94,17 +94,16 @@ static int resolve_dev_index(const char* name) {
 #define DISK_INSTALL_BOOT_CODE_LEN 440u   /* preserve MBR partition table + signature */
 #define DISK_INSTALL_PART_START_LBA 2048u /* must match kernel/mbr.c's MBR_TRACK_ALIGN_LBA */
 
-static unsigned char g_install_copybuf[DISK_INSTALL_COPY_CHUNK];
-
 static int copy_dev_to_file(const char* devpath, const char* destpath) {
     int sfd = open(devpath, O_RDONLY);
     if (sfd < 0) return -1;
     int dfd = open(destpath, O_CREAT | O_WRONLY);
     if (dfd < 0) { close(sfd); return -1; }
+    unsigned char copybuf[DISK_INSTALL_COPY_CHUNK];
     ssize_t n;
     int ok = 1;
-    while ((n = read(sfd, g_install_copybuf, DISK_INSTALL_COPY_CHUNK)) > 0) {
-        if (write(dfd, g_install_copybuf, (size_t)n) != n) { ok = 0; break; }
+    while ((n = read(sfd, copybuf, DISK_INSTALL_COPY_CHUNK)) > 0) {
+        if (write(dfd, copybuf, (size_t)n) != n) { ok = 0; break; }
     }
     if (n < 0) ok = 0;
     close(sfd);
@@ -149,6 +148,19 @@ static int do_setup(const char* devname, int fat32) {
 }
 
 static int cmd_install(const char* devname) {
+    /* Check the install payload exists BEFORE touching the target disk:
+     * a pass-1 kernel (installed system) has no /dev/install* files, and
+     * discovering that after DISK_CTL_INIT_FAT32 has already wiped the
+     * target would destroy its contents for nothing. */
+    struct stat st;
+    if (stat("/dev/installkernel", &st) < 0 ||
+        stat("/dev/installgrubcore", &st) < 0 ||
+        stat("/dev/installgrubcfg", &st) < 0) {
+        printf("disk: install payload not available (this kernel was not "
+               "built with install support)\n");
+        return 1;
+    }
+
     int diskidx = resolve_dev_index(devname);
     if (diskidx < 0) { printf("disk: unknown device\n"); return 1; }
 
