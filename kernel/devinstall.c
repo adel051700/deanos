@@ -15,12 +15,12 @@
 #include <stdint.h>
 #include <string.h>
 
-extern const uint8_t _binary_build_deanos_payload_bin_start[];
-extern const uint8_t _binary_build_deanos_payload_bin_end[];
-extern const uint8_t _binary_build_install_grub_combined_img_start[];
-extern const uint8_t _binary_build_install_grub_combined_img_end[];
-extern const uint8_t _binary_grub_install_cfg_start[];
-extern const uint8_t _binary_grub_install_cfg_end[];
+extern const uint8_t _binary_build_deanos_payload_bin_start[] __attribute__((weak));
+extern const uint8_t _binary_build_deanos_payload_bin_end[] __attribute__((weak));
+extern const uint8_t _binary_build_install_grub_combined_img_start[] __attribute__((weak));
+extern const uint8_t _binary_build_install_grub_combined_img_end[] __attribute__((weak));
+extern const uint8_t _binary_grub_install_cfg_start[] __attribute__((weak));
+extern const uint8_t _binary_grub_install_cfg_end[] __attribute__((weak));
 
 typedef struct {
     const uint8_t* data;
@@ -49,6 +49,8 @@ static int32_t devinstall_write(vfs_node_t* node, uint32_t offset,
 static void make_blob_dev(vfs_node_t* dev, const char* name,
                            devinstall_blob_t* slot,
                            const uint8_t* start, const uint8_t* end) {
+    /* Skip creating a file for 0-sized blobs (e.g., in pass-1 payload build). */
+    if (end == start) return;
     if (vfs_create(dev, name, VFS_FILE) < 0) return;
     vfs_node_t* n = vfs_finddir(dev, name);
     if (!n) return;

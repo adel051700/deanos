@@ -167,7 +167,7 @@ ALL_OBJS = $(BASE_OBJS) $(INSTALL_BLOB_OBJS)
 all: deanos.bin
 
 $(PAYLOAD_BIN): directories $(BASE_OBJS) arch/i386/boot/linker.ld
-	$(CC) -T arch/i386/boot/linker.ld -o $@ $(CFLAGS) $(BASE_OBJS) $(LDFLAGS) -Wl,--unresolved-symbols=ignore-all $(LIBS)
+	$(CC) -T arch/i386/boot/linker.ld -o $@ $(CFLAGS) $(BASE_OBJS) $(LDFLAGS) $(LIBS)
 
 $(GRUB_BOOT_IMG) $(GRUB_CORE_IMG) &: scripts/gen-install-grub-blob.sh | directories
 	scripts/gen-install-grub-blob.sh $(INSTALL_BUILD_DIR)
