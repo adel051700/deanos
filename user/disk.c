@@ -246,6 +246,15 @@ static int cmd_install(const char* devname) {
     }
     close(gfd);
 
+    /* blk_write() on the raw disk goes through blockdev.c's write-back
+     * cache (128 entries); without an explicit flush the tail of the
+     * grub core.img writes above can still be dirty-only in RAM when the
+     * machine is powered off for a standalone boot test. */
+    if (blk_flush((int)diskidx) < 0) {
+        printf("disk: install could not flush writes to disk\n");
+        return 1;
+    }
+
     printf("disk: installed on %s -- boot with '-hda <image>' only, no -cdrom needed\n", devname);
     return 0;
 }
