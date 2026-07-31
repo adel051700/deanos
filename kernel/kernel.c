@@ -22,6 +22,7 @@
 #include "include/kernel/stack_protector.h"
 #include "include/kernel/fault.h"
 #include "include/kernel/random.h"
+#include "include/kernel/devinstall.h"
 #include "include/kernel/tty.h"
 
 #include <stdint.h>
@@ -118,6 +119,7 @@ void kernel_main(void) {
     vfs_initialize();
     ramfs_initialize();
     devrandom_initialize();
+    devinstall_initialize();
     minfs_auto_mount();
     (void)fat32_auto_mount((uint32_t)-1);
     elf_install_test_programs();
