@@ -184,14 +184,9 @@ static int cmd_install(const char* devname) {
     if (rc == -19) { printf("disk: unknown device\n"); return 1; }
     if (rc < 0) { printf("disk: install mount failed\n"); return 1; }
 
-    char bootdir[40], grubdir[48], kpath[48], cfgpath[64];
-    strcpy(bootdir, "/mnt/"); strcat(bootdir, pname); strcat(bootdir, "/boot");
-    strcpy(grubdir, bootdir); strcat(grubdir, "/grub");
-    strcpy(kpath, bootdir); strcat(kpath, "/deanos.bin");
-    strcpy(cfgpath, grubdir); strcat(cfgpath, "/grub.cfg");
-
-    if (mkdir(bootdir) < 0) { printf("disk: install could not create /boot\n"); return 1; }
-    if (mkdir(grubdir) < 0) { printf("disk: install could not create /boot/grub\n"); return 1; }
+    char kpath[40], cfgpath[40];
+    strcpy(kpath, "/mnt/"); strcat(kpath, pname); strcat(kpath, "/deanos.bin");
+    strcpy(cfgpath, "/mnt/"); strcat(cfgpath, pname); strcat(cfgpath, "/grub.cfg");
 
     if (copy_dev_to_file("/dev/installkernel", kpath) < 0) {
         printf("disk: install could not copy kernel\n");

@@ -30,7 +30,7 @@ trap 'rm -rf "$WORK"' EXIT
 cd "$WORK"
 touch tmpfs
 
-grub-mkimage -O i386-pc -o grub_core.img -p '(hd0,msdos1)/boot/grub' $MODS
+grub-mkimage -O i386-pc -o grub_core.img -p '(hd0,msdos1)/' $MODS
 cp /usr/lib/grub/i386-pc/boot.img .
 
 truncate -s 2M scratch.img
