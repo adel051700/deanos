@@ -4,6 +4,9 @@
 #include <string.h>
 #include <sys/disk.h>
 #include <sys/blk.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* Mirror the kernel's token resolution (all-decimal = device index) so
  * messages and composed partition names use the real device name. */
@@ -39,6 +42,7 @@ static void usage(void) {
     printf("  disk setup <disk>\n");
     printf("  disk mountfat32 <partition>\n");
     printf("  disk setupfat32 <disk>\n");
+    printf("  disk install <disk> <disk>   (WIPES target, type disk name twice to confirm)\n");
 }
 
 static void print_hex8(unsigned v) {
@@ -75,6 +79,39 @@ static int find_part(const char* name, struct disk_part_info* out) {
     return -1;
 }
 
+/* Numeric blockdev index for name -> needed by blk_read/blk_write, which
+ * take an index, not a name (unlike disk_ctl). */
+static int resolve_dev_index(const char* name) {
+    struct blk_info bi;
+    for (unsigned i = 0; blk_info(i, &bi) == 0; i++) {
+        if (strcmp(bi.name, name) == 0) return (int)bi.id;
+    }
+    return -1;
+}
+
+#define DISK_INSTALL_COPY_CHUNK   1024u
+#define DISK_INSTALL_SECTOR       512u
+#define DISK_INSTALL_BOOT_CODE_LEN 440u   /* preserve MBR partition table + signature */
+#define DISK_INSTALL_PART_START_LBA 2048u /* must match kernel/mbr.c's MBR_TRACK_ALIGN_LBA */
+
+static unsigned char g_install_copybuf[DISK_INSTALL_COPY_CHUNK];
+
+static int copy_dev_to_file(const char* devpath, const char* destpath) {
+    int sfd = open(devpath, O_RDONLY);
+    if (sfd < 0) return -1;
+    int dfd = open(destpath, O_CREAT | O_WRONLY);
+    if (dfd < 0) { close(sfd); return -1; }
+    ssize_t n;
+    int ok = 1;
+    while ((n = read(sfd, g_install_copybuf, DISK_INSTALL_COPY_CHUNK)) > 0) {
+        if (write(dfd, g_install_copybuf, (size_t)n) != n) { ok = 0; break; }
+    }
+    if (n < 0) ok = 0;
+    close(sfd);
+    close(dfd);
+    return ok ? 0 : -1;
+}
+
 static int do_setup(const char* devname, int fat32) {
     const char* what = fat32 ? "setupfat32" : "setup";
 
@@ -108,6 +145,113 @@ static int do_setup(const char* devname, int fat32) {
     }
     if (fat32) printf("disk: FAT32 ready at /mnt/%s\n", pname);
     else printf("disk: ready at /mnt/%s\n", pname);
+    return 0;
+}
+
+static int cmd_install(const char* devname) {
+    int diskidx = resolve_dev_index(devname);
+    if (diskidx < 0) { printf("disk: unknown device\n"); return 1; }
+
+    struct blk_info bi;
+    if (blk_info((unsigned)diskidx, &bi) < 0) {
+        printf("disk: unknown device\n");
+        return 1;
+    }
+    if (bi.flags & BLOCKDEV_FLAG_ATAPI) {
+        printf("disk: refusing to install onto a CD/ATAPI device\n");
+        return 1;
+    }
+
+    int rc = disk_ctl(DISK_CTL_INIT_FAT32, devname);
+    if (rc == -19) { printf("disk: unknown device\n"); return 1; } /* -ENODEV */
+    if (rc < 0) { printf("disk: install failed while creating MBR\n"); return 1; }
+
+    char pname[20];
+    strcpy(pname, devname);
+    strcat(pname, "p1");
+
+    struct disk_part_info p;
+    if (find_part(pname, &p) < 0) {
+        printf("disk: install could not find new partition\n");
+        return 1;
+    }
+
+    rc = disk_ctl(DISK_CTL_MKFS_FAT32, pname);
+    if (rc == -19) { printf("disk: unknown device\n"); return 1; }
+    if (rc < 0) { printf("disk: install format failed\n"); return 1; }
+
+    rc = disk_ctl(DISK_CTL_MOUNT_FAT32, pname);
+    if (rc == -19) { printf("disk: unknown device\n"); return 1; }
+    if (rc < 0) { printf("disk: install mount failed\n"); return 1; }
+
+    char bootdir[40], grubdir[48], kpath[48], cfgpath[64];
+    strcpy(bootdir, "/mnt/"); strcat(bootdir, pname); strcat(bootdir, "/boot");
+    strcpy(grubdir, bootdir); strcat(grubdir, "/grub");
+    strcpy(kpath, bootdir); strcat(kpath, "/deanos.bin");
+    strcpy(cfgpath, grubdir); strcat(cfgpath, "/grub.cfg");
+
+    if (mkdir(bootdir) < 0) { printf("disk: install could not create /boot\n"); return 1; }
+    if (mkdir(grubdir) < 0) { printf("disk: install could not create /boot/grub\n"); return 1; }
+
+    if (copy_dev_to_file("/dev/installkernel", kpath) < 0) {
+        printf("disk: install could not copy kernel\n");
+        return 1;
+    }
+    if (copy_dev_to_file("/dev/installgrubcfg", cfgpath) < 0) {
+        printf("disk: install could not copy grub.cfg\n");
+        return 1;
+    }
+
+    struct stat gcst;
+    if (stat("/dev/installgrubcore", &gcst) < 0) {
+        printf("disk: install missing grub boot blob\n");
+        return 1;
+    }
+    unsigned core_sectors = ((unsigned)gcst.size + DISK_INSTALL_SECTOR - 1u) / DISK_INSTALL_SECTOR;
+    if (core_sectors >= DISK_INSTALL_PART_START_LBA) {
+        printf("disk: install grub image too large for the boot gap\n");
+        return 1;
+    }
+
+    int gfd = open("/dev/installgrubcore", O_RDONLY);
+    if (gfd < 0) { printf("disk: install could not open grub boot blob\n"); return 1; }
+
+    unsigned char sector[DISK_INSTALL_SECTOR];
+    if (read(gfd, sector, DISK_INSTALL_SECTOR) != (ssize_t)DISK_INSTALL_SECTOR) {
+        printf("disk: install grub boot blob too short\n");
+        close(gfd);
+        return 1;
+    }
+
+    unsigned char mbr0[DISK_INSTALL_SECTOR];
+    if (blk_read((unsigned)diskidx, 0, mbr0) < 0) {
+        printf("disk: install could not read boot sector\n");
+        close(gfd);
+        return 1;
+    }
+    memcpy(mbr0, sector, DISK_INSTALL_BOOT_CODE_LEN);
+    if (blk_write((unsigned)diskidx, 0, mbr0) < 0) {
+        printf("disk: install could not write boot sector\n");
+        close(gfd);
+        return 1;
+    }
+
+    unsigned lba = 1;
+    ssize_t n;
+    while ((n = read(gfd, sector, DISK_INSTALL_SECTOR)) > 0) {
+        if (n < (ssize_t)DISK_INSTALL_SECTOR) {
+            memset(sector + n, 0, DISK_INSTALL_SECTOR - (size_t)n);
+        }
+        if (blk_write((unsigned)diskidx, lba, sector) < 0) {
+            printf("disk: install could not write core image at sector %u\n", lba);
+            close(gfd);
+            return 1;
+        }
+        lba++;
+    }
+    close(gfd);
+
+    printf("disk: installed on %s -- boot with '-hda <image>' only, no -cdrom needed\n", devname);
     return 0;
 }
 
@@ -185,6 +329,14 @@ int main(int argc, char** argv) {
     }
     if (strcmp(cmd, "setup") == 0)      return do_setup(devname, 0);
     if (strcmp(cmd, "setupfat32") == 0) return do_setup(devname, 1);
+    if (strcmp(cmd, "install") == 0) {
+        if (argc < 4 || strcmp(argv[2], argv[3]) != 0) {
+            printf("disk: install requires the disk name twice to confirm "
+                   "(disk install <disk> <disk>) -- this WIPES the target disk\n");
+            return 1;
+        }
+        return cmd_install(devname);
+    }
 
     usage();
     return 1;
